@@ -77,6 +77,15 @@ func TestClassify(t *testing.T) {
 			wantResetIn: 2 * time.Hour,
 		},
 		{
+			name: "rejected status uses Retry-After rather than the conservative guess",
+			resp: resp(429, map[string]string{
+				"Anthropic-Ratelimit-Unified-Status": "rejected",
+				"Retry-After":                        "7200",
+			}),
+			want:        lane.ActionRotate,
+			wantResetIn: 2 * time.Hour,
+		},
+		{
 			name:        "429 with no timing information rotates on a conservative 5h guess",
 			resp:        resp(429, nil),
 			want:        lane.ActionRotate,

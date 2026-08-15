@@ -386,18 +386,30 @@ func TestResetInThePastDoesNotLivelock(t *testing.T) {
 		_, _ = io.WriteString(w, `{"error":{"type":"rate_limit_error"}}`)
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Short: the loop is bounded by the context, and one second is plenty to
+	// observe the retry cadence.
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	_, err := h.engine.Execute(ctx, store.LaneAnthropic, post("{}"), []byte("{}"), h.waiter)
 	if err == nil {
 		t.Fatal("expected an error, got success")
 	}
 
-	// The clamp puts the account 60s out, so each round costs a real wait
-	// rather than becoming a hot loop. Bounding attempts is the assertion that
-	// matters; the exact count depends on how long the context lasts.
-	if n := len(h.attempts()); n > 20 {
-		t.Errorf("made %d upstream attempts, expected the cooldown floor to throttle retries", n)
+	// The guard is the cooldown floor: every retry round must be separated by
+	// a real wait. Attempt *count* is not the thing to assert here, because
+	// the test waiter advances a fake clock instantly and so makes waiting
+	// free; in production those same waits are wall-clock seconds.
+	h.waiter.mu.Lock()
+	waits := append([]time.Duration(nil), h.waiter.waits...)
+	h.waiter.mu.Unlock()
+
+	if len(waits) == 0 {
+		t.Fatal("engine retried without ever waiting: that is the hot loop this guards against")
+	}
+	for i, d := range waits {
+		if d < minCooldown {
+			t.Fatalf("wait %d was %v, shorter than the %v cooldown floor", i, d, minCooldown)
+		}
 	}
 	hh := h.engine.store.Health("a")
 	if !hh.ResetAt.After(base) {

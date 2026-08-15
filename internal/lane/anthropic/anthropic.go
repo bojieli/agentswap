@@ -307,8 +307,18 @@ func classify429(resp *http.Response, now time.Time, cfg config.Retry) lane.Outc
 	status := strings.ToLower(strings.TrimSpace(resp.Header.Get(hdrStatus)))
 
 	// An explicit rejection is unambiguous: this account's window is spent.
+	// Take the reset time from whatever the server actually told us, in order
+	// of precision. Falling back to the conservative guess when a real figure
+	// is available would park the request for hours longer than necessary.
 	if status == statusRejected {
-		return rotate(reset, hasReset, now, cfg, "quota exhausted (status=rejected)")
+		switch {
+		case hasReset:
+			return lane.Outcome{Action: lane.ActionRotate, ResetAt: reset, Reason: "quota exhausted (status=rejected)"}
+		case hasRA:
+			return lane.Outcome{Action: lane.ActionRotate, ResetAt: now.Add(ra), Reason: "quota exhausted (status=rejected)"}
+		default:
+			return rotate(time.Time{}, false, now, cfg, "quota exhausted (status=rejected)")
+		}
 	}
 
 	// Otherwise infer from how long we are told to wait. A short delay is a

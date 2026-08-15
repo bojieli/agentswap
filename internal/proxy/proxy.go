@@ -196,7 +196,7 @@ func (s *Server) writeExecuteError(w http.ResponseWriter, waiter *streamWaiter, 
 
 	case errors.Is(err, engine.ErrNoAccounts):
 		s.fail(w, waiter, http.StatusServiceUnavailable, "no_accounts", fmt.Sprintf(
-			"no usable %s account: %v. Run `agentswap import` or `agentswap login %s`.", laneID, err, laneID))
+			"no usable %s account: %v. Run `agentswap import`, or `agentswap add-key %s --key ...`.", laneID, err, laneID))
 
 	default:
 		s.Log.Error("request failed", "lane", laneID, "err", err)

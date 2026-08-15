@@ -1,0 +1,187 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"net/http"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/bojieli/agentswap/internal/proxy"
+	"github.com/bojieli/agentswap/internal/store"
+)
+
+func cmdStatus(args []string) error {
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	watch := fs.Duration("watch", 0, "refresh on an interval, e.g. --watch 5s")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *watch <= 0 {
+		return printStatus()
+	}
+	for {
+		fmt.Print("\033[H\033[2J") // clear
+		if err := printStatus(); err != nil {
+			return err
+		}
+		time.Sleep(*watch)
+	}
+}
+
+func printStatus() error {
+	st, cfg, err := openStore()
+	if err != nil {
+		return err
+	}
+	all := st.All()
+	if len(all) == 0 {
+		fmt.Println("no accounts yet — run `agentswap import`")
+		return nil
+	}
+
+	// Prefer the daemon's live view. Health is only flushed to disk every few
+	// seconds, so reading the file alone reports quota that is seconds to
+	// minutes stale — and stale quota is the one number nobody can act on.
+	health := func(id string) store.Health { return st.Health(id) }
+	live, err := fetchLiveStatus(cfg.Addr)
+	if err == nil {
+		health = func(id string) store.Health { return live[id] }
+	} else {
+		fmt.Println("(daemon not running — showing last saved state)")
+		fmt.Println()
+	}
+
+	sort.SliceStable(all, func(i, j int) bool {
+		if all[i].Lane != all[j].Lane {
+			return all[i].Lane < all[j].Lane
+		}
+		return all[i].Priority < all[j].Priority
+	})
+
+	now := time.Now()
+	fmt.Printf("%-18s %-10s %-11s %-7s %-7s %-12s\n", "ACCOUNT", "LANE", "STATE", "5H/PRI", "7D/SEC", "RECOVERS")
+	for _, a := range all {
+		h := health(a.ID)
+
+		state := string(h.State)
+		if !a.Enabled {
+			state = "disabled"
+		} else if h.Available(now) && h.State != store.StateAvailable {
+			// The stored state is stale: its deadline has already passed.
+			state = "available"
+		}
+
+		primary, secondary := "-", "-"
+		if len(h.Windows) > 0 {
+			primary = fmt.Sprintf("%.0f%%", h.Windows[0].Utilization)
+		}
+		if len(h.Windows) > 1 {
+			secondary = fmt.Sprintf("%.0f%%", h.Windows[1].Utilization)
+		}
+
+		recovers := "-"
+		if t := h.NextAvailable(now); !t.IsZero() {
+			recovers = humanUntil(t.Sub(now))
+		} else if h.State == store.StateInvalid {
+			recovers = "needs login"
+		}
+
+		fmt.Printf("%-18s %-10s %-11s %-7s %-7s %-12s\n",
+			truncate(a.Display(), 18), a.Lane, state, primary, secondary, recovers)
+	}
+
+	if line := poolSummary(st, health, now); line != "" {
+		fmt.Printf("\n%s\n", line)
+	}
+	return nil
+}
+
+// poolSummary reports, per lane, whether anything is actually usable right
+// now — the question a user opening this table is trying to answer.
+func poolSummary(st *store.Store, health func(string) store.Health, now time.Time) string {
+	var parts []string
+	for _, l := range []store.LaneID{store.LaneAnthropic, store.LaneOpenAI} {
+		accounts := st.Accounts(l)
+		if len(accounts) == 0 {
+			continue
+		}
+		ready := 0
+		var soonest time.Time
+		for _, a := range accounts {
+			h := health(a.ID)
+			if h.Available(now) {
+				ready++
+				continue
+			}
+			if t := h.NextAvailable(now); !t.IsZero() && (soonest.IsZero() || t.Before(soonest)) {
+				soonest = t
+			}
+		}
+		switch {
+		case ready > 0:
+			parts = append(parts, fmt.Sprintf("%s: %d/%d ready", l, ready, len(accounts)))
+		case !soonest.IsZero():
+			parts = append(parts, fmt.Sprintf("%s: all spent, next in %s", l, humanUntil(soonest.Sub(now))))
+		default:
+			parts = append(parts, fmt.Sprintf("%s: no usable account", l))
+		}
+	}
+	return strings.Join(parts, "   ")
+}
+
+func humanUntil(d time.Duration) string {
+	if d <= 0 {
+		return "now"
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
+}
+
+// fetchLiveStatus asks a running daemon for its in-memory health, which is
+// always fresher than the periodically flushed state file.
+func fetchLiveStatus(addr string) (map[string]store.Health, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/_agentswap/status", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("daemon returned %s", resp.Status)
+	}
+
+	var out struct {
+		Accounts []proxy.AccountStatus `json:"accounts"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	m := make(map[string]store.Health, len(out.Accounts))
+	for _, a := range out.Accounts {
+		m[a.ID] = a.Health
+	}
+	return m, nil
+}
