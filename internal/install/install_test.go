@@ -10,6 +10,12 @@ import (
 	"time"
 )
 
+// claudeDir is the Claude Code config directory used by these tests. Setting
+// CLAUDE_CONFIG_DIR rather than HOME keeps them hermetic on Windows too, where
+// os.UserHomeDir reads %USERPROFILE% and a test that sets HOME would quietly
+// rewrite the real one.
+func claudeDir(base string) string { return filepath.Join(base, ".claude") }
+
 const addr = "127.0.0.1:8420"
 
 // testMaxHold is the default park.max_hold; the client timeout is derived
@@ -18,11 +24,11 @@ const testMaxHold = 30 * time.Minute
 
 func TestInstallClaudePreservesUnrelatedSettings(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir(home))
+	if err := os.MkdirAll(claudeDir(home), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(home, ".claude", "settings.json")
+	path := filepath.Join(claudeDir(home), "settings.json")
 	original := `{
   "model": "opus[1m]",
   "theme": "light",
@@ -65,11 +71,11 @@ func TestInstallClaudePreservesUnrelatedSettings(t *testing.T) {
 
 func TestUninstallClaudeRestoresTheUsersEnv(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir(home))
+	if err := os.MkdirAll(claudeDir(home), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(home, ".claude", "settings.json")
+	path := filepath.Join(claudeDir(home), "settings.json")
 	if err := os.WriteFile(path, []byte(`{"env":{"MY_OWN_VAR":"keep-me"},"theme":"dark"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -101,11 +107,11 @@ func TestUninstallClaudeRestoresTheUsersEnv(t *testing.T) {
 
 func TestUninstallClaudeLeavesADeliberateOverrideAlone(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir(home))
+	if err := os.MkdirAll(claudeDir(home), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(home, ".claude", "settings.json")
+	path := filepath.Join(claudeDir(home), "settings.json")
 	// The user has since pointed the CLI at their own gateway. That is not
 	// ours to delete.
 	if err := os.WriteFile(path, []byte(`{"env":{"ANTHROPIC_BASE_URL":"https://my-gateway.example"}}`), 0o600); err != nil {
@@ -184,7 +190,7 @@ func TestInstallCodexIsIdempotent(t *testing.T) {
 func TestDryRunWritesNothing(t *testing.T) {
 	home := t.TempDir()
 	codexHome := t.TempDir()
-	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir(home))
 	t.Setenv("CODEX_HOME", codexHome)
 
 	if _, err := InstallClaude(addr, testMaxHold, true); err != nil {
@@ -193,7 +199,7 @@ func TestDryRunWritesNothing(t *testing.T) {
 	if _, err := InstallCodex(addr, true); err != nil {
 		t.Fatalf("codex dry run: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".claude", "settings.json")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(claudeDir(home), "settings.json")); !os.IsNotExist(err) {
 		t.Error("dry run created the claude settings file")
 	}
 	if _, err := os.Stat(filepath.Join(codexHome, "config.toml")); !os.IsNotExist(err) {
@@ -203,11 +209,11 @@ func TestDryRunWritesNothing(t *testing.T) {
 
 func TestInstallBacksUpBeforeModifying(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir(home))
+	if err := os.MkdirAll(claudeDir(home), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(home, ".claude", "settings.json")
+	path := filepath.Join(claudeDir(home), "settings.json")
 	if err := os.WriteFile(path, []byte(`{"theme":"light"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -250,8 +256,8 @@ func TestClientTimeoutOutlastsTheLongestPark(t *testing.T) {
 // derived timeout. Uninstall still has to recognise the block as its own.
 func TestUninstallRemovesTheBlockAfterMaxHoldChanged(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir(home))
+	if err := os.MkdirAll(claudeDir(home), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -266,10 +272,31 @@ func TestUninstallRemovesTheBlockAfterMaxHoldChanged(t *testing.T) {
 		t.Fatalf("uninstall: %v", err)
 	}
 
-	b, _ := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	b, _ := os.ReadFile(filepath.Join(claudeDir(home), "settings.json"))
 	for _, k := range []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "API_TIMEOUT_MS"} {
 		if strings.Contains(string(b), k) {
 			t.Errorf("%s survived uninstall: %s", k, b)
 		}
+	}
+}
+
+// Claude Code honours CLAUDE_CONFIG_DIR, so agentswap has to as well. Writing
+// to ~/.claude while the CLI reads elsewhere would leave `install` reporting
+// success having configured nothing — and `doctor` insisting the CLI is not
+// wired up however many times you run it.
+func TestInstallFollowsClaudeConfigDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "custom-claude")
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+
+	plan, err := InstallClaude(addr, testMaxHold, false)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	want := filepath.Join(dir, "settings.json")
+	if plan.Path != want {
+		t.Errorf("wrote %q, want %q", plan.Path, want)
+	}
+	if _, err := os.Stat(want); err != nil {
+		t.Errorf("settings not written to the configured directory: %v", err)
 	}
 }

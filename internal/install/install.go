@@ -61,12 +61,29 @@ type Plan struct {
 }
 
 // ClaudeSettingsPath returns the user-level Claude Code settings file.
+//
+// CLAUDE_CONFIG_DIR is honored because Claude Code honors it. Writing to
+// ~/.claude while the CLI reads somewhere else would leave `agentswap install`
+// reporting success having configured nothing, and `doctor` insisting the CLI
+// is not wired up no matter how many times you run it.
 func ClaudeSettingsPath() (string, error) {
+	dir, err := ClaudeConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "settings.json"), nil
+}
+
+// ClaudeConfigDir is where Claude Code keeps its settings and credentials.
+func ClaudeConfigDir() (string, error) {
+	if d := os.Getenv("CLAUDE_CONFIG_DIR"); d != "" {
+		return d, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".claude", "settings.json"), nil
+	return filepath.Join(home, ".claude"), nil
 }
 
 // CodexConfigPath returns the Codex config file.

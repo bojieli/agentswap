@@ -181,6 +181,9 @@ Every field, and what it costs to get it wrong, is in
 | `~/.claude/settings.json` | an `env` block, merged key by key |
 | `~/.codex/config.toml` | an additive, delimited provider + profile block |
 
+The last two follow `CLAUDE_CONFIG_DIR` and `CODEX_HOME` when you have set them,
+since the CLIs themselves do.
+
 Both CLI files are backed up before any change and restored exactly by
 `agentswap uninstall`, which removes only values it recognises as its own.
 

@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/bojieli/agentswap/internal/install"
 	"github.com/bojieli/agentswap/internal/store"
 )
 
@@ -56,11 +57,13 @@ func claudeCredentialPath() (path string, explicit bool, err error) {
 	if p := os.Getenv("CLAUDE_CREDENTIALS_PATH"); p != "" {
 		return p, true, nil
 	}
-	home, err := os.UserHomeDir()
+	// CLAUDE_CONFIG_DIR moves the whole directory, credentials included. It is
+	// not an explicit choice of *file*, so the Keychain fallback still applies.
+	dir, err := install.ClaudeConfigDir()
 	if err != nil {
 		return "", false, err
 	}
-	return filepath.Join(home, ".claude", ".credentials.json"), false, nil
+	return filepath.Join(dir, ".credentials.json"), false, nil
 }
 
 // CodexAuthPath returns the default location of Codex's auth file.

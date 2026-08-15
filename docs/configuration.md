@@ -24,6 +24,10 @@ Where the files live is controlled by the environment, not by this file:
 `AGENTSWAP_HOME` wins, then `XDG_CONFIG_HOME/agentswap`, then
 `~/.config/agentswap`.
 
+The CLIs' own files are found the way the CLIs find them: `CLAUDE_CONFIG_DIR`
+and `CODEX_HOME` are honoured, so `agentswap install` writes where the CLI
+will actually read.
+
 ## Top level
 
 ### `addr`

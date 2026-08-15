@@ -44,6 +44,10 @@ version moves for anything that changes behaviour.
   gave up before the daemon did. It is now derived from `max_hold`.
 - **`CLAUDE_CREDENTIALS_PATH` pointing at a missing file fell back to the macOS
   Keychain**, importing whichever account happened to be logged in there.
+- **`CLAUDE_CONFIG_DIR` was ignored.** Claude Code honours it, so `install`
+  wrote to `~/.claude` while the CLI read somewhere else — reporting success
+  having configured nothing, with `doctor` then insisting the CLI was not wired
+  up however many times you ran it.
 - A client that hung up mid-upload was reported as a 413; one that hung up
   mid-wait was logged at error level and answered with a 502 nobody would read.
 
