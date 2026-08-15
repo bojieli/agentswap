@@ -283,6 +283,17 @@ func probe(addr string) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
+// gracefulStopSupported reports whether this platform lets a test ask the
+// daemon to shut down cleanly.
+//
+// A Windows console does deliver Ctrl-C as os.Interrupt, so a user pressing it
+// gets the same clean shutdown as everywhere else. What is not available is
+// sending that event to a child process from a test: it needs
+// GenerateConsoleCtrlEvent and a shared console group, which a test binary does
+// not have. So on Windows stop() is a hard kill, and the tests that assert on
+// clean-shutdown behaviour say so rather than pretending.
+func gracefulStopSupported() bool { return runtime.GOOS != "windows" }
+
 // stop shuts the daemon down the way a user would, and waits for it.
 func (d *daemonProc) stop(t *testing.T) {
 	t.Helper()

@@ -377,6 +377,9 @@ func TestStatusShowsAccountsAddedAfterStartup(t *testing.T) {
 }
 
 func TestHealthSurvivesADaemonRestart(t *testing.T) {
+	if !gracefulStopSupported() {
+		t.Skip("cannot deliver Ctrl-C to a child process here")
+	}
 	e := newEnv(t)
 	e.pool("spent", "fresh")
 	e.upstream.handle(func(w http.ResponseWriter, _ *http.Request, req recorded) {
@@ -412,6 +415,9 @@ func TestHealthSurvivesADaemonRestart(t *testing.T) {
 // A clean shutdown should not leave other commands chasing a daemon that is
 // gone.
 func TestShutdownClearsThePublishedAddress(t *testing.T) {
+	if !gracefulStopSupported() {
+		t.Skip("cannot deliver Ctrl-C to a child process here")
+	}
 	e := newEnv(t)
 	e.pool("only")
 	d := e.serve()
@@ -506,4 +512,41 @@ func TestAdminStatusEndpointShape(t *testing.T) {
 			t.Errorf("status endpoint leaks %s:\n%s", leak, body)
 		}
 	}
+}
+
+// A daemon that was killed rather than asked to stop leaves its address behind.
+// Every other command has to notice that nothing answers there and fall back,
+// on every platform — this is what a hard kill or a crash actually looks like.
+func TestStaleDaemonAddressDoesNotBreakStatus(t *testing.T) {
+	e := newEnv(t)
+	e.pool("only")
+
+	dead := freePort(t)
+	writeFile(t, filepath.Join(e.home, "daemon.json"),
+		`{"addr":"`+dead+`","pid":999999,"version":"dev","started_at":"2026-01-01T00:00:00Z"}`)
+
+	out := e.mustRun("status").out()
+	mustContain(t, out, "daemon not running", "status with a stale address")
+	mustContain(t, out, "only", "status with a stale address")
+
+	r := e.run("doctor")
+	if r.code == 0 {
+		t.Error("doctor passed while pointed at a daemon that is not there")
+	}
+	mustContain(t, r.out(), "agentswap serve", "doctor with a stale address")
+}
+
+// And once a daemon really is running, the stale entry must not keep other
+// commands looking at the wrong place.
+func TestStaleDaemonAddressIsReplacedOnStartup(t *testing.T) {
+	e := newEnv(t)
+	e.pool("only")
+	writeFile(t, filepath.Join(e.home, "daemon.json"),
+		`{"addr":"`+freePort(t)+`","pid":999999,"version":"dev","started_at":"2026-01-01T00:00:00Z"}`)
+
+	d := e.serve()
+	if got := e.publishedAddr(); got != d.addr {
+		t.Errorf("published address = %q, want the running daemon's %q", got, d.addr)
+	}
+	mustNotContain(t, e.mustRun("status").out(), "daemon not running", "status")
 }
