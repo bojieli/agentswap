@@ -106,6 +106,7 @@ func cmdUninstall(args []string) error {
 // so the first failure reported is the first thing to fix.
 func cmdDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
+	addrFlag := fs.String("addr", "", "daemon address (default: wherever the running daemon says it is)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -127,33 +128,81 @@ func cmdDoctor(args []string) error {
 			fmt.Printf("       %s\n", detail)
 		}
 	}
-
-	// 1. Is there anything to route to?
-	for _, l := range []store.LaneID{store.LaneAnthropic, store.LaneOpenAI} {
-		n := len(st.Accounts(l))
-		check(n > 0, fmt.Sprintf("%s lane has accounts (%d)", l, n),
-			map[bool]string{true: "", false: "run `agentswap import`"}[n > 0])
+	// note reports something true but not wrong. Most people use one of the two
+	// CLIs, and reporting the other as a fault makes the exit code meaningless
+	// — which makes the whole command meaningless.
+	note := func(label, detail string) {
+		fmt.Printf("[    ] %s\n", label)
+		if detail != "" {
+			fmt.Printf("       %s\n", detail)
+		}
 	}
 
-	// 2. Is the daemon up?
-	daemonUp := probeDaemon(cfg.Addr)
-	check(daemonUp, "daemon is listening on "+cfg.Addr,
-		map[bool]string{true: "", false: "run `agentswap serve`"}[daemonUp])
+	// 1. Is there anything to route to? An empty lane only matters when every
+	// lane is empty.
+	counts := map[store.LaneID]int{}
+	total := 0
+	lanes := []store.LaneID{store.LaneAnthropic, store.LaneOpenAI}
+	for _, l := range lanes {
+		counts[l] = len(st.Accounts(l))
+		total += counts[l]
+	}
+	if total == 0 {
+		check(false, "the pool has accounts (0)",
+			"run `agentswap import`, or `agentswap add-key anthropic --key ...`")
+	}
+	for _, l := range lanes {
+		switch {
+		case counts[l] > 0:
+			check(true, fmt.Sprintf("%s lane has accounts (%d)", l, counts[l]), "")
+		case total > 0:
+			note(fmt.Sprintf("%s lane has no accounts", l),
+				fmt.Sprintf("fine if you do not use it; otherwise `agentswap add-key %s --key ...`", l))
+		}
+	}
+
+	// 2. Is the daemon up? It may have been started on another address.
+	addr, daemonUp := probeDaemon(daemonAddrs(cfg.Addr, *addrFlag))
+	if daemonUp {
+		check(true, "daemon is listening on "+addr, "")
+	} else {
+		addr = cfg.Addr
+		check(false, "daemon is listening on "+addr, "run `agentswap serve`")
+	}
 
 	// 3. Are the CLIs actually pointed at it? A daemon nothing talks to is the
 	// most confusing failure mode of all, because everything looks healthy.
+	//
+	// Being pointed at the wrong address is its own diagnosis: telling someone
+	// to run `install` when they already have would rewrite the same value and
+	// change nothing.
 	claudePath, _ := install.ClaudeSettingsPath()
-	claudeWired := fileContains(claudePath, "http://"+cfg.Addr+"/anthropic")
-	check(claudeWired, "Claude Code is pointed at agentswap",
-		map[bool]string{true: "", false: "run `agentswap install`"}[claudeWired])
-
+	claudeAddr := wiredAddr(claudePath, "/anthropic", addr, cfg.Addr)
 	codexPath, _ := install.CodexConfigPath()
-	codexWired := fileContains(codexPath, "http://"+cfg.Addr+"/openai")
-	detail := "run `agentswap install`"
-	if codexWired {
-		detail = "start Codex with: codex --profile " + install.ProfileName
+	codexAddr := wiredAddr(codexPath, "/openai", addr, cfg.Addr)
+
+	if claudeAddr == "" && codexAddr == "" {
+		check(false, "a CLI is pointed at agentswap", "run `agentswap install`")
 	}
-	check(codexWired, "Codex has an agentswap profile", detail)
+	reportWiring := func(name, wired, fixOnly string) {
+		switch {
+		case wired == addr:
+			check(true, name+" is pointed at agentswap", "")
+		case wired != "":
+			check(false, fmt.Sprintf("%s is pointed at %s, but the daemon is on %s", name, wired, addr),
+				"start the daemon without --addr, or set \"addr\" in config.json and re-run `agentswap install`")
+		default:
+			note(name+" is not pointed at agentswap",
+				"fine if you do not use it; otherwise `agentswap install --only "+fixOnly+"`")
+		}
+	}
+	reportWiring("Claude Code", claudeAddr, "claude")
+	reportWiring("Codex", codexAddr, "codex")
+	if codexAddr == addr {
+		// Codex has no equivalent of Claude Code's automatic pickup, so a
+		// correct config still needs the flag at the call site.
+		fmt.Printf("       start Codex with: codex --profile %s\n", install.ProfileName)
+	}
 
 	// 4. Report anything the pool already knows is broken.
 	for _, a := range st.All() {
@@ -171,7 +220,17 @@ func cmdDoctor(args []string) error {
 	return fmt.Errorf("%d problem(s) found", problems)
 }
 
-func probeDaemon(addr string) bool {
+// probeDaemon tries each candidate address and reports the first that answers.
+func probeDaemon(addrs []string) (string, bool) {
+	for _, addr := range addrs {
+		if probeDaemonAt(addr) {
+			return addr, true
+		}
+	}
+	return "", false
+}
+
+func probeDaemonAt(addr string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/_agentswap/health", nil)
@@ -187,6 +246,18 @@ func probeDaemon(addr string) bool {
 		Status string `json:"status"`
 	}
 	return json.NewDecoder(resp.Body).Decode(&out) == nil && out.Status == "ok"
+}
+
+// wiredAddr reports which of the candidate addresses a CLI's config file points
+// agentswap at, or "" if none of them do. Distinguishing "wired elsewhere" from
+// "not wired" is what lets doctor give advice that would actually help.
+func wiredAddr(path, suffix string, candidates ...string) string {
+	for _, addr := range candidates {
+		if addr != "" && fileContains(path, "http://"+addr+suffix) {
+			return addr
+		}
+	}
+	return ""
 }
 
 func fileContains(path, needle string) bool {

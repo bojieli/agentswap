@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bojieli/agentswap/internal/config"
+	"github.com/bojieli/agentswap/internal/daemon"
 	"github.com/bojieli/agentswap/internal/proxy"
 	"github.com/bojieli/agentswap/internal/store"
 )
@@ -17,23 +20,24 @@ import (
 func cmdStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	watch := fs.Duration("watch", 0, "refresh on an interval, e.g. --watch 5s")
+	addr := fs.String("addr", "", "daemon address (default: wherever the running daemon says it is)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
 	if *watch <= 0 {
-		return printStatus()
+		return printStatus(*addr)
 	}
 	for {
 		fmt.Print("\033[H\033[2J") // clear
-		if err := printStatus(); err != nil {
+		if err := printStatus(*addr); err != nil {
 			return err
 		}
 		time.Sleep(*watch)
 	}
 }
 
-func printStatus() error {
+func printStatus(addrOverride string) error {
 	st, cfg, err := openStore()
 	if err != nil {
 		return err
@@ -52,7 +56,7 @@ func printStatus() error {
 	// missing from its answer. Falling back per account keeps that row honest
 	// instead of printing it blank.
 	health := func(id string) store.Health { return st.Health(id) }
-	live, err := fetchLiveStatus(cfg.Addr)
+	live, err := fetchLiveStatus(daemonAddrs(cfg.Addr, addrOverride))
 	if err == nil {
 		health = func(id string) store.Health {
 			if h, ok := live[id]; ok {
@@ -167,9 +171,38 @@ func truncate(s string, n int) string {
 	return s[:n-1] + "…"
 }
 
+// daemonAddrs is where a running daemon might be, most authoritative first: an
+// explicit --addr, then whatever the daemon published on startup, then the
+// configured address. `serve --addr` is legitimate, and without this every
+// other command would report a healthy daemon as down.
+func daemonAddrs(configured, override string) []string {
+	if override != "" {
+		return []string{override}
+	}
+	dir, err := config.Dir()
+	if err != nil {
+		return []string{configured}
+	}
+	return daemon.Addrs(dir, configured)
+}
+
 // fetchLiveStatus asks a running daemon for its in-memory health, which is
 // always fresher than the periodically flushed state file.
-func fetchLiveStatus(addr string) (map[string]store.Health, error) {
+func fetchLiveStatus(addrs []string) (map[string]store.Health, error) {
+	var err error
+	for _, addr := range addrs {
+		var m map[string]store.Health
+		if m, err = fetchLiveStatusFrom(addr); err == nil {
+			return m, nil
+		}
+	}
+	if err == nil {
+		err = errors.New("no daemon address to try")
+	}
+	return nil, err
+}
+
+func fetchLiveStatusFrom(addr string) (map[string]store.Health, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 

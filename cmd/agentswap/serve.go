@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bojieli/agentswap/internal/config"
+	"github.com/bojieli/agentswap/internal/daemon"
 	"github.com/bojieli/agentswap/internal/engine"
 	"github.com/bojieli/agentswap/internal/proxy"
 	"github.com/bojieli/agentswap/internal/store"
@@ -58,6 +59,16 @@ func cmdServe(args []string) error {
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 30 * time.Second,
 	}
+
+	// Publish where we are listening so `status` and `doctor` can find us even
+	// when --addr disagrees with the config file.
+	if err := daemon.Write(dir, daemon.Info{
+		Addr: cfg.Addr, PID: os.Getpid(), Version: version, StartedAt: time.Now(),
+	}); err != nil {
+		log.Warn("could not record the daemon address", "err", err,
+			"effect", "status and doctor will look at the configured address instead")
+	}
+	defer func() { _ = daemon.Clear(dir) }()
 
 	done := make(chan struct{})
 	go st.RunHealthFlusher(done, 5*time.Second)
