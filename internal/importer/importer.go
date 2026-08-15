@@ -42,17 +42,25 @@ type codexAuth struct {
 	} `json:"tokens"`
 }
 
-// ClaudeCredentialPath returns the default location of Claude Code's
-// credential file.
+// ClaudeCredentialPath returns the location of Claude Code's credential file.
 func ClaudeCredentialPath() (string, error) {
+	path, _, err := claudeCredentialPath()
+	return path, err
+}
+
+// claudeCredentialPath also reports whether the location was chosen by the
+// user. That decides whether falling back to the Keychain is helpful or
+// dangerous: someone who named a file means that file, and quietly importing a
+// different account from the Keychain instead would pool the wrong credential.
+func claudeCredentialPath() (path string, explicit bool, err error) {
 	if p := os.Getenv("CLAUDE_CREDENTIALS_PATH"); p != "" {
-		return p, nil
+		return p, true, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	return filepath.Join(home, ".claude", ".credentials.json"), nil
+	return filepath.Join(home, ".claude", ".credentials.json"), false, nil
 }
 
 // CodexAuthPath returns the default location of Codex's auth file.
@@ -67,8 +75,10 @@ func CodexAuthPath() (string, error) {
 	return filepath.Join(home, ".codex", "auth.json"), nil
 }
 
-// ImportClaude builds an account from the current Claude Code login.
-func ImportClaude(id, label string) (*store.Account, error) {
+// ImportClaude builds an account from the current Claude Code login. The
+// account is returned unnamed: only the caller knows how many credentials this
+// import turned up, and that decides whether names need disambiguating.
+func ImportClaude() (*store.Account, error) {
 	raw, err := readClaudeCredentials()
 	if err != nil {
 		return nil, err
@@ -82,7 +92,7 @@ func ImportClaude(id, label string) (*store.Account, error) {
 		return nil, fmt.Errorf("%w: claude credentials hold no oauth token; run `claude` and log in first", ErrNoCredentials)
 	}
 	return &store.Account{
-		ID: id, Lane: store.LaneAnthropic, Kind: store.KindOAuth, Label: label, Enabled: true,
+		Lane: store.LaneAnthropic, Kind: store.KindOAuth, Enabled: true,
 		AccessToken:      o.AccessToken,
 		RefreshToken:     o.RefreshToken,
 		ExpiresAt:        o.ExpiresAt,
@@ -94,7 +104,7 @@ func ImportClaude(id, label string) (*store.Account, error) {
 // readClaudeCredentials reads the credential file, falling back to the macOS
 // Keychain where Claude Code stores it instead of on disk.
 func readClaudeCredentials() ([]byte, error) {
-	path, err := ClaudeCredentialPath()
+	path, explicit, err := claudeCredentialPath()
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +115,7 @@ func readClaudeCredentials() ([]byte, error) {
 	if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	if runtime.GOOS == "darwin" {
+	if runtime.GOOS == "darwin" && !explicit {
 		if b, kerr := keychainCredentials(); kerr == nil {
 			return b, nil
 		}
@@ -126,7 +136,7 @@ func keychainCredentials() ([]byte, error) {
 
 // ImportCodex builds an account from the current Codex login, preferring the
 // ChatGPT subscription over a bare API key when both are present.
-func ImportCodex(id, label string) (*store.Account, error) {
+func ImportCodex() (*store.Account, error) {
 	path, err := CodexAuthPath()
 	if err != nil {
 		return nil, err
@@ -146,7 +156,7 @@ func ImportCodex(id, label string) (*store.Account, error) {
 
 	if a.Tokens.AccessToken != "" {
 		return &store.Account{
-			ID: id, Lane: store.LaneOpenAI, Kind: store.KindOAuth, Label: label, Enabled: true,
+			Lane: store.LaneOpenAI, Kind: store.KindOAuth, Enabled: true,
 			AccessToken:      a.Tokens.AccessToken,
 			RefreshToken:     a.Tokens.RefreshToken,
 			ChatGPTAccountID: a.Tokens.AccountID,
@@ -154,7 +164,7 @@ func ImportCodex(id, label string) (*store.Account, error) {
 	}
 	if a.APIKey != "" {
 		return &store.Account{
-			ID: id, Lane: store.LaneOpenAI, Kind: store.KindAPIKey, Label: label, Enabled: true,
+			Lane: store.LaneOpenAI, Kind: store.KindAPIKey, Enabled: true,
 			APIKey: a.APIKey,
 		}, nil
 	}

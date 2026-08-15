@@ -39,9 +39,76 @@ func TestResumeArgsDropsTheOriginalPrompt(t *testing.T) {
 	}
 
 	got = resumeArgs(KindCodex, []string{"codex", "exec", "fix tests", "--profile", "agentswap"})
-	want = []string{"codex", "resume", "--last", "--profile", "agentswap"}
+	want = []string{"codex", "exec", "resume", "--last", "--profile", "agentswap"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("codex resume = %v, want %v", got, want)
+	}
+}
+
+// A supervised run is unattended by definition, so resuming into an
+// interactive session is indistinguishable from a hang.
+func TestResumeKeepsTheSessionNonInteractive(t *testing.T) {
+	cases := []struct {
+		name     string
+		kind     Kind
+		original []string
+		want     []string
+	}{{
+		name:     "codex exec resumes as exec",
+		kind:     KindCodex,
+		original: []string{"codex", "exec", "fix the failing tests"},
+		want:     []string{"codex", "exec", "resume", "--last"},
+	}, {
+		name:     "interactive codex resumes interactively",
+		kind:     KindCodex,
+		original: []string{"codex"},
+		want:     []string{"codex", "resume", "--last"},
+	}, {
+		name:     "claude print mode is preserved",
+		kind:     KindClaude,
+		original: []string{"claude", "-p", "summarize the diff"},
+		want:     []string{"claude", "-p", "--continue"},
+	}, {
+		name:     "claude long-form print mode is preserved",
+		kind:     KindClaude,
+		original: []string{"claude", "--print", "summarize the diff"},
+		want:     []string{"claude", "--print", "--continue"},
+	}}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resumeArgs(tc.kind, tc.original); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("resumeArgs(%v) = %v, want %v", tc.original, got, tc.want)
+			}
+		})
+	}
+}
+
+// Resuming has to be a fixed point: a second quota wait rewrites args that are
+// already a resume command, and appending to those would build nonsense like
+// `codex exec resume --last resume --last`.
+func TestResumeArgsAreIdempotent(t *testing.T) {
+	first := resumeArgs(KindCodex, []string{"codex", "exec", "fix tests", "--profile", "agentswap"})
+	if second := resumeArgs(KindCodex, first); !reflect.DeepEqual(first, second) {
+		t.Errorf("second resume = %v, want the same as the first %v", second, first)
+	}
+
+	claude := resumeArgs(KindClaude, []string{"claude", "-p", "go"})
+	if got := resumeArgs(KindClaude, claude); !reflect.DeepEqual(got, claude) {
+		t.Errorf("second resume = %v, want the same as the first %v", got, claude)
+	}
+}
+
+// The injected profile is what routes Codex through the proxy at all. Dropping
+// it on resume would silently return the user to unpooled accounts, which is
+// the exact failure ensureCodexProfile exists to prevent.
+func TestResumeKeepsTheInjectedProfile(t *testing.T) {
+	args := ensureCodexProfile([]string{"codex", "exec", "fix tests"})
+	got := resumeArgs(KindCodex, args)
+
+	_, value, ok := codexProfile(got)
+	if !ok || value != "agentswap" {
+		t.Fatalf("resume args %v carry profile %q (ok=%v), want the agentswap profile", got, value, ok)
 	}
 }
 

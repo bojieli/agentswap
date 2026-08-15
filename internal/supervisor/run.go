@@ -98,7 +98,11 @@ func Run(ctx context.Context, opts Options) error {
 			fmt.Fprintf(opts.Out, "agentswap: could not clear ticket: %v\n", err)
 		}
 
-		args = resumeArgs(kind, opts.Args)
+		// Rewrite the args we actually ran, not the user's original: the
+		// agentswap profile is added to the first invocation, and resuming from
+		// the original would drop it and quietly bypass the proxy from the
+		// second attempt on.
+		args = resumeArgs(kind, args)
 		fmt.Fprintf(opts.Out, "agentswap: resuming %s\n\n", strings.Join(args, " "))
 	}
 }
@@ -106,29 +110,72 @@ func Run(ctx context.Context, opts Options) error {
 // resumeArgs rewrites the command to continue the previous session rather than
 // start a new one, discarding any prompt argument so the agent picks up where
 // it stopped instead of repeating the original instruction.
+//
+// What it must keep is whichever flag made the original run non-interactive.
+// A supervised run is usually unattended — that is the whole reason for it —
+// and resuming interactively leaves the CLI waiting on a terminal nobody is
+// watching, which looks exactly like a hang.
 func resumeArgs(kind Kind, original []string) []string {
 	switch kind {
 	case KindClaude:
-		return []string{original[0], "--continue"}
+		out := []string{original[0]}
+		if flag, ok := firstOf(original, "-p", "--print"); ok {
+			out = append(out, flag)
+		}
+		return append(out, "--continue")
+
 	case KindCodex:
-		out := []string{original[0], "resume", "--last"}
-		if i := indexOf(original, "--profile"); i >= 0 && i+1 < len(original) {
-			out = append(out, "--profile", original[i+1])
+		out := []string{original[0]}
+		// `codex exec` and `codex` are separate session kinds with separate
+		// resume subcommands; resuming an exec session with the interactive
+		// form finds nothing to resume.
+		//
+		// Matching anywhere in the argv would misfire only on a prompt that is
+		// the bare word "exec", and the cost of that is resuming in exec mode,
+		// which is what an unattended run wants anyway.
+		if indexOf(original, "exec") >= 0 {
+			out = append(out, "exec")
+		}
+		out = append(out, "resume", "--last")
+		if flag, value, ok := codexProfile(original); ok {
+			out = append(out, flag, value)
 		}
 		return out
 	}
 	return original
 }
 
+// firstOf returns whichever of names appears in args, preserving the spelling
+// the user chose.
+func firstOf(args []string, names ...string) (string, bool) {
+	for _, n := range names {
+		if indexOf(args, n) >= 0 {
+			return n, true
+		}
+	}
+	return "", false
+}
+
 // ensureCodexProfile adds the agentswap profile when the user has not named
 // one. Codex has no equivalent of Claude Code's automatic settings pickup, so
 // without this the run silently bypasses the proxy entirely.
 func ensureCodexProfile(args []string) []string {
-	if indexOf(args, "--profile") >= 0 || indexOf(args, "-p") >= 0 {
+	if _, _, ok := codexProfile(args); ok {
 		return args
 	}
 	out := append([]string{}, args...)
 	return append(out, "--profile", install.ProfileName)
+}
+
+// codexProfile finds an explicitly named profile and the spelling it was given
+// in, so a resume can carry it over unchanged.
+func codexProfile(args []string) (flag, value string, ok bool) {
+	for _, name := range []string{"--profile", "-p"} {
+		if i := indexOf(args, name); i >= 0 && i+1 < len(args) {
+			return name, args[i+1], true
+		}
+	}
+	return "", "", false
 }
 
 func indexOf(hay []string, needle string) int {

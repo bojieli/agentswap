@@ -30,29 +30,17 @@ func cmdImport(args []string) error {
 		return err
 	}
 
-	type source struct {
+	sources := []struct {
 		lane store.LaneID
-		load func(id, label string) (*store.Account, error)
-	}
-	sources := []source{
+		load func() (*store.Account, error)
+	}{
 		{store.LaneAnthropic, importer.ImportClaude},
 		{store.LaneOpenAI, importer.ImportCodex},
 	}
 
-	var imported int
+	var found []*store.Account
 	for _, s := range sources {
-		accountID := *id
-		if accountID == "" {
-			accountID = nextID(st, string(s.lane))
-		} else if len(sources) > 1 {
-			accountID = fmt.Sprintf("%s-%s", s.lane, *id)
-		}
-		lbl := *label
-		if lbl == "" {
-			lbl = accountID
-		}
-
-		a, err := s.load(accountID, lbl)
+		a, err := s.load()
 		if err != nil {
 			// A machine logged into only one of the two CLIs is the normal
 			// case, not a failure.
@@ -62,6 +50,22 @@ func cmdImport(args []string) error {
 			}
 			return err
 		}
+		found = append(found, a)
+	}
+	if len(found) == 0 {
+		return errors.New("nothing to import; log in with `claude` or `codex login` first")
+	}
+
+	taken := takenIDs(st)
+	nameImports(found, *id, *label, taken)
+
+	for _, a := range found {
+		verb := "imported"
+		if taken[a.ID] {
+			// Re-importing the same id is how you refresh a credential that has
+			// gone stale, so say which it was rather than looking like a no-op.
+			verb = "updated"
+		}
 		if err := st.Upsert(a); err != nil {
 			return err
 		}
@@ -69,24 +73,57 @@ func cmdImport(args []string) error {
 		if a.Kind == store.KindAPIKey {
 			kind = "api key"
 		}
-		fmt.Printf("  %-10s imported %q (%s)\n", s.lane, a.ID, kind)
-		imported++
+		fmt.Printf("  %-10s %s %q (%s)\n", a.Lane, verb, a.ID, kind)
 	}
 
-	if imported == 0 {
-		return errors.New("nothing to import; log in with `claude` or `codex login` first")
-	}
 	fmt.Printf("\n%d account(s) in the pool. Next: agentswap install && agentswap serve\n", len(st.All()))
 	return nil
 }
 
-// nextID picks the first unused id of the form "<lane>-N", so importing a
-// second account never silently overwrites the first.
-func nextID(st *store.Store, prefix string) string {
+// nameImports assigns ids and labels to the accounts one import turned up.
+//
+// A single credential takes --id verbatim: `agentswap import --id work` is the
+// documented way to name the second account you pooled. Two credentials from
+// one import cannot share an id, so each takes its lane as a prefix — which is
+// also the only case where an unqualified name would be ambiguous.
+func nameImports(found []*store.Account, userID, userLabel string, taken map[string]bool) {
+	seen := map[string]bool{}
+	for k := range taken {
+		seen[k] = true
+	}
+	for _, a := range found {
+		switch {
+		case userID == "":
+			a.ID = nextFreeID(string(a.Lane), seen)
+		case len(found) == 1:
+			a.ID = userID
+		default:
+			a.ID = fmt.Sprintf("%s-%s", a.Lane, userID)
+		}
+		seen[a.ID] = true
+
+		switch {
+		case userLabel == "":
+			a.Label = a.ID
+		case len(found) == 1:
+			a.Label = userLabel
+		default:
+			a.Label = fmt.Sprintf("%s (%s)", userLabel, a.Lane)
+		}
+	}
+}
+
+func takenIDs(st *store.Store) map[string]bool {
 	taken := map[string]bool{}
 	for _, a := range st.All() {
 		taken[a.ID] = true
 	}
+	return taken
+}
+
+// nextFreeID picks the first unused id of the form "<prefix>-N", so importing a
+// second account never silently overwrites the first.
+func nextFreeID(prefix string, taken map[string]bool) string {
 	for i := 1; ; i++ {
 		id := fmt.Sprintf("%s-%d", prefix, i)
 		if !taken[id] {
@@ -137,7 +174,7 @@ func cmdAddKey(args []string) error {
 	}
 	accountID := *id
 	if accountID == "" {
-		accountID = nextID(st, string(laneID)+"-key")
+		accountID = nextFreeID(string(laneID)+"-key", takenIDs(st))
 	}
 	lbl := *label
 	if lbl == "" {
