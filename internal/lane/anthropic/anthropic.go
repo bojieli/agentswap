@@ -240,8 +240,7 @@ func errorType(body []byte) string {
 }
 
 // Classify decides what to do with a response.
-func (*Lane) Classify(resp *http.Response, body []byte, cfg config.Retry) lane.Outcome {
-	now := timeNow()
+func (*Lane) Classify(resp *http.Response, body []byte, cfg config.Retry, now time.Time) lane.Outcome {
 	etype := errorType(body)
 
 	// An overloaded upstream sometimes arrives dressed as a 500 rather than a

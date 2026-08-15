@@ -89,7 +89,10 @@ type Lane interface {
 
 	// Classify decides what to do. body is the already-read error body for
 	// non-2xx responses and nil for 2xx, whose body may be an open stream.
-	Classify(resp *http.Response, body []byte, cfg config.Retry) Outcome
+	//
+	// now is passed in rather than read from the clock so that every deadline
+	// the engine acts on comes from one consistent source of time.
+	Classify(resp *http.Response, body []byte, cfg config.Retry, now time.Time) Outcome
 }
 
 // RetryAfterHeader reads a Retry-After header in either of its legal forms: delay

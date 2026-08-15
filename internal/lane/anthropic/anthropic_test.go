@@ -131,7 +131,7 @@ func TestClassify(t *testing.T) {
 	var l Lane
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := l.Classify(tc.resp, []byte(tc.body), cfg)
+			got := l.Classify(tc.resp, []byte(tc.body), cfg, testNow)
 			if got.Action != tc.want {
 				t.Errorf("action = %v, want %v (reason: %s)", got.Action, tc.want, got.Reason)
 			}
@@ -157,12 +157,12 @@ func TestClassifyBurstCutoffBoundary(t *testing.T) {
 
 	// Exactly at the cutoff must stay on the same account: the boundary is
 	// inclusive, so a 120s throttle does not needlessly discard a warm cache.
-	got := l.Classify(resp(429, map[string]string{"Retry-After": "120"}), nil, cfg)
+	got := l.Classify(resp(429, map[string]string{"Retry-After": "120"}), nil, cfg, testNow)
 	if got.Action != lane.ActionRetrySame {
 		t.Errorf("at cutoff: action = %v, want retry-same", got.Action)
 	}
 	// One second past it is quota exhaustion.
-	got = l.Classify(resp(429, map[string]string{"Retry-After": "121"}), nil, cfg)
+	got = l.Classify(resp(429, map[string]string{"Retry-After": "121"}), nil, cfg, testNow)
 	if got.Action != lane.ActionRotate {
 		t.Errorf("past cutoff: action = %v, want rotate", got.Action)
 	}
