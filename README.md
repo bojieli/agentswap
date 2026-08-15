@@ -171,6 +171,11 @@ cannot be retracted.
 
 ## Configuration
 
+```sh
+agentswap config          # where everything lives, and the values in effect
+agentswap config --write  # save those values as a file to edit
+```
+
 `~/.config/agentswap/config.json` — every field has a working default.
 
 ```json
@@ -186,6 +191,11 @@ cannot be retracted.
 
 `buffer` is added to every observed reset time, because server and client clocks
 disagree and retrying one second early wastes the whole wait.
+
+Accounts are not configured here: they are commands, because OAuth tokens are
+rewritten under you as they refresh. `agentswap set` changes an account's
+upstream, priority or label; see [docs/accounts.md](docs/accounts.md) for the
+whole picture.
 
 Every field, and what it costs to get it wrong, is in
 [docs/configuration.md](docs/configuration.md).

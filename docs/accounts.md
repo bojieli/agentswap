@@ -1,5 +1,58 @@
 # Managing accounts and keys
 
+## The whole picture
+
+Everything you can put in the pool, and every way to put it there:
+
+| What | How it gets in | How you change it |
+| --- | --- | --- |
+| A subscription you are signed in to | `agentswap import` | `agentswap login --id NAME` |
+| A subscription you are not signed in to yet | `agentswap login` | `agentswap login --id NAME` |
+| An API key, official or third-party | `agentswap add-key LANE` | `agentswap set NAME --key -` |
+| Which upstream an account talks to | `add-key --base-url` | `agentswap set NAME --base-url URL` |
+| The order accounts are tried in | `add-key --priority` | `agentswap set NAME --priority N` |
+| A name you will recognise | `--label` on either | `agentswap set NAME --label TEXT` |
+| Whether it is used at all | — | `agentswap disable` / `enable` / `remove` |
+
+Everything else is settings rather than credentials, and lives in one file you
+edit:
+
+```sh
+agentswap config          # where everything lives, and the values in effect
+agentswap config --write  # save those values as a file to edit
+```
+
+Nothing here needs you to open `accounts.json`.
+
+## A whole setup, start to finish
+
+```sh
+# 1. Adopt the login you already have.
+agentswap import
+
+# 2. Pool a second and third account. Each one: sign in, then this.
+agentswap login --id work
+agentswap login --id side-project
+
+# 3. Add a metered key as the last resort, entered at a prompt.
+agentswap add-key anthropic --id backup
+
+# 4. Add a company gateway that speaks the same protocol.
+agentswap add-key anthropic --id corp \
+  --base-url https://llm.corp.example.com/v1 --priority 150
+
+# 5. Point your CLIs at agentswap, and run it.
+agentswap install
+agentswap serve
+
+# 6. Check it.
+agentswap list
+agentswap doctor
+```
+
+Subscriptions are always tried before API keys, so 1–2 are spent before 3–4
+are touched. Within each group, lower `--priority` goes first.
+
 ## Where things live, and why it is not one file
 
 Three kinds of state, split by **who writes them**:
@@ -135,13 +188,60 @@ agentswap add-key anthropic --key - --id gateway \
 That key is sent to the host you name, which is the point of the feature and
 your judgement to make.
 
-To replace a key, add it again under the same `--id`. To order several, use
-`--priority` (lower is preferred). The same key is never added twice.
+To replace a key, `agentswap set NAME --key -`. To order several, `--priority`
+(lower is preferred). The same key is never added twice.
 
 If `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` is set in your environment,
 `agentswap import` mentions it and shows the command to adopt it. It will not
 adopt it for you: pooling a credential you never named is a surprise, and this
 one holds your money.
+
+## Base URLs
+
+Every account can talk to a different upstream. That is how a third-party
+provider joins the pool, and it works for subscriptions as well as keys — a
+gateway in front of your own account is an ordinary member.
+
+```sh
+agentswap add-key anthropic --key - --base-url https://llm.corp.example.com/v1
+agentswap set corp --base-url https://other.example.com/v1   # move it
+agentswap set corp --base-url ""                             # back to the vendor
+```
+
+The lane decides the *protocol*, not the vendor: everything in the `anthropic`
+lane speaks the Messages API, everything in `openai` speaks the Responses API.
+A provider that speaks one of those is a base URL away from being poolable. One
+that does not is not supported, because translating between protocols would
+mean owning a mapping that breaks whenever either vendor ships a feature.
+
+Defaults, when no base URL is set:
+
+| Lane | Kind | Upstream |
+| --- | --- | --- |
+| anthropic | either | `https://api.anthropic.com` |
+| openai | subscription | `https://chatgpt.com/backend-api/codex` |
+| openai | api key | `https://api.openai.com/v1` |
+
+## Settings, as opposed to credentials
+
+```sh
+agentswap config
+```
+
+shows the config directory (and which environment variable put it there), each
+file and whether it exists, whether the daemon is running, the CLIs' own files
+that `agentswap install` edits, and every setting currently in effect.
+
+Because every setting has a default, an absent `config.json` tells you nothing
+about the values behind it. To start editing from a complete file:
+
+```sh
+agentswap config --write     # writes config.json with the effective values
+```
+
+Do not redirect `--json` into that path yourself: the shell truncates the file
+before agentswap reads it. (An empty `config.json` is treated as absent for
+exactly this reason, but `--write` is the command that works.)
 
 ## Taking an account out without deleting it
 

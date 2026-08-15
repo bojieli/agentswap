@@ -263,3 +263,113 @@ func TestLoginAsksWhenBothLanesAreSettled(t *testing.T) {
 	}
 	mustContain(t, r.out(), "--lane anthropic", "login")
 }
+
+// Changing where an account points, or how it is ordered, must not require
+// re-supplying its credential or opening the JSON by hand.
+func TestSetChangesAnAccountInPlace(t *testing.T) {
+	e := newEnv(t)
+	e.mustRun("add-key", "anthropic", "--key", "sk-ant-secret-1234", "--id", "gw")
+
+	e.mustRun("set", "gw", "--base-url", "https://llm.corp.example.com/v1")
+	e.mustRun("set", "gw", "--priority", "200", "--label", "Corp gateway")
+
+	list := e.mustRun("list").out()
+	mustContain(t, list, "llm.corp.example.com", "list")
+	mustContain(t, list, "200", "list")
+	// The credential is untouched by all of that.
+	mustContain(t, list, "1234", "list")
+
+	// And it can be pointed back at the vendor's own API.
+	e.mustRun("set", "gw", "--base-url", "")
+	mustNotContain(t, e.mustRun("list").out(), "llm.corp.example.com", "list")
+}
+
+// A subscription can sit behind a gateway too, and that is not something
+// add-key can express.
+func TestSetWorksOnSubscriptions(t *testing.T) {
+	e := newEnv(t)
+	claudeLogin(t, e, "tok")
+	e.mustRun("import", "--id", "personal")
+
+	e.mustRun("set", "personal", "--base-url", "https://gateway.example.com", "--priority", "3")
+	list := e.mustRun("list").out()
+	mustContain(t, list, "gateway.example.com", "list")
+
+	// Its credential comes from signing in, not from a flag.
+	r := e.run("set", "personal", "--key", "-")
+	if r.code == 0 {
+		t.Error("set --key succeeded on a subscription")
+	}
+	mustContain(t, r.out(), "agentswap login --id personal", "set --key on a subscription")
+}
+
+func TestSetValidates(t *testing.T) {
+	e := newEnv(t)
+	e.mustRun("add-key", "anthropic", "--key", "k", "--id", "gw")
+
+	for _, args := range [][]string{
+		{"set", "gw", "--base-url", "notaurl"},
+		{"set", "gw", "--base-url", "ftp://nope.example"},
+		{"set", "missing", "--priority", "1"},
+		{"set", "gw"}, // nothing to change
+		{"set"},       // no id
+	} {
+		if r := e.run(args...); r.code == 0 {
+			t.Errorf("%v succeeded, want a failure\n%s", args, r.out())
+		}
+	}
+}
+
+// "Where does this live and what is it doing" is one question, and every
+// setting having a default makes an absent file a bad answer to it.
+func TestConfigShowsWhereEverythingLives(t *testing.T) {
+	e := newEnv(t)
+	e.mustRun("add-key", "anthropic", "--key", "k")
+
+	out := e.mustRun("config").out()
+	for _, want := range []string{
+		filepath.Join(e.home, "config.json"),
+		filepath.Join(e.home, "accounts.json"),
+		"AGENTSWAP_HOME", // why the directory is where it is
+		"drain_above",    // the effective settings, not just the file
+		"not running",    // the daemon
+	} {
+		mustContain(t, out, want, "config")
+	}
+	// It reports on credentials without printing any.
+	mustNotContain(t, out, "\"api_key\"", "config")
+}
+
+// The obvious way to save the settings — redirecting --json into the file —
+// truncates it before agentswap reads it, so --write exists instead.
+func TestConfigWriteRoundTrips(t *testing.T) {
+	e := newEnv(t)
+	e.mustRun("config", "--write")
+
+	path := filepath.Join(e.home, "config.json")
+	mustContain(t, readFile(t, path), "max_hold", "written config")
+
+	// Editing it takes effect, which is the whole point of writing it out.
+	writeFile(t, path, strings.Replace(readFile(t, path), `"30m0s"`, `"4h0m0s"`, 1))
+	mustContain(t, e.mustRun("config", "--json").out(), "4h0m0s", "config --json")
+
+	// It will not silently replace settings that are already there.
+	if r := e.run("config", "--write"); r.code == 0 {
+		t.Error("--write overwrote an existing config without --force")
+	}
+	e.mustRun("config", "--write", "--force")
+}
+
+// An empty config.json is what a redirect leaves behind, and refusing to start
+// over zero bytes would strand every command until the user deleted the file.
+func TestEmptyConfigFileIsTreatedAsAbsent(t *testing.T) {
+	e := newEnv(t)
+	e.mustRun("add-key", "anthropic", "--key", "k")
+	writeFile(t, filepath.Join(e.home, "config.json"), "")
+
+	for _, cmd := range []string{"list", "status", "config"} {
+		if r := e.run(cmd); r.code != 0 {
+			t.Errorf("%s failed with an empty config.json:\n%s", cmd, r.out())
+		}
+	}
+}

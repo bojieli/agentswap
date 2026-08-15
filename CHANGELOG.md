@@ -8,6 +8,10 @@ version moves for anything that changes behaviour.
 
 ### Fixed
 
+- **An empty `config.json` stopped every command.** Zero bytes is what a
+  redirect leaves behind, and refusing to start over it stranded the user until
+  they worked out that deleting the file was the cure. An empty file now says
+  the same thing as no file.
 - **The same login could be pooled twice.** Running `import` again without
   switching accounts added a second entry holding the same credential: `status`
   showed two accounts, and both were refused in the same instant. A login is
@@ -89,6 +93,14 @@ version moves for anything that changes behaviour.
 
 ### Added
 
+- **`agentswap set`**, which changes an account already in the pool: its
+  upstream, priority, label or key. Previously an account's base URL could only
+  be set when it was added — and never at all for a subscription — so moving a
+  key to a different gateway or reordering the pool meant hand-editing the file
+  that the daemon rewrites underneath you.
+- **`agentswap config`**, which shows where everything lives and every setting
+  in effect. Because every setting has a default, an absent config.json said
+  nothing about the values behind it. `--write` saves them as a file to edit.
 - **`agentswap login`**, which pools an account or replaces a rejected
   credential. It works out which CLI you mean rather than asking — an unpooled
   credential sitting there is someone who just signed in — and only asks when

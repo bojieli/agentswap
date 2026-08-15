@@ -3,6 +3,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -147,6 +148,14 @@ func Load(dir string) (Config, error) {
 	}
 	if err != nil {
 		return cfg, fmt.Errorf("read config: %w", err)
+	}
+	// An empty file says the same thing as no file, and is easy to create by
+	// accident: `agentswap config --json > config.json` truncates the file
+	// before agentswap runs and reads it. Refusing to start over zero bytes
+	// would leave every command failing until the user worked out that
+	// deleting the file was the cure.
+	if len(bytes.TrimSpace(b)) == 0 {
+		return cfg, nil
 	}
 	// Unmarshalling onto the defaults means an absent key keeps its default
 	// rather than becoming a zero value.
