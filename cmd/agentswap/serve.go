@@ -32,6 +32,10 @@ func cmdServe(args []string) error {
 	if *addr != "" {
 		cfg.Addr = *addr
 	}
+	dir, err := config.Dir()
+	if err != nil {
+		return err
+	}
 
 	log := newLogger(*verbose)
 	client := upstreamClient()
@@ -42,6 +46,7 @@ func cmdServe(args []string) error {
 		Config:    cfg,
 		Keepalive: proxy.KeepaliveMode(orDefault(cfg.Park.Keepalive, string(proxy.KeepaliveSilent))),
 		Log:       log,
+		ConfigDir: dir,
 	}
 
 	// No write timeout: a parked request holds the connection open on purpose,

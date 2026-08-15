@@ -8,7 +8,8 @@ small local proxy that makes three failures invisible to the agent:
 1. **One account runs out of quota** → rotate to another, mid-session, without
    losing context or logging in again.
 2. **Everything runs out** → park the request, wait for the earliest reset, and
-   carry on.
+   carry on. Past a configurable ceiling, hand off to `agentswap run`, which
+   waits and resumes the session for you.
 3. **The server is overloaded (429 / 529)** → retry until it answers, instead of
    stranding the agent mid-task.
 
@@ -109,7 +110,27 @@ be taken back. `agentswap install` raises the client's own timeout accordingly.
 
 Past `park.max_hold` (30 minutes by default) it gives up and returns an
 actionable 503 with `Retry-After`, on the theory that holding a socket for five
-hours is worse than telling you when to come back.
+hours is worse than telling you when to come back. It also drops a resume
+ticket, which is what makes the next section work.
+
+## Surviving a five-hour wait
+
+Holding a connection is fine for minutes and wrong for hours. For waits that
+long, run your CLI under the supervisor:
+
+```sh
+agentswap run -- claude "refactor the parser"
+agentswap run -- codex exec "fix the failing tests"
+```
+
+If the pool runs dry for longer than `park.max_hold`, `agentswap run` waits for
+the reset and then restarts the CLI with `claude --continue` or
+`codex resume --last`, so the agent picks up where it stopped instead of
+repeating the original instruction. Ctrl-C during the wait cancels it.
+
+It also sets the environment itself, so a supervised run works even on a
+machine you never ran `agentswap install` on — and it adds `--profile agentswap`
+to Codex invocations, since without it Codex silently bypasses the proxy.
 
 There is a `park.keepalive = "ping"` mode that emits SSE pings while waiting.
 It is off by default and strictly riskier: once the status line is sent it
@@ -173,8 +194,10 @@ usage is permitted is your call about your own accounts.
 - Predictive rotation is Anthropic-only (see above).
 - Codex needs `--profile agentswap`; it has no equivalent of Claude Code's
   automatic settings pickup.
-- Waits longer than `park.max_hold` return a 503 rather than resuming for you.
-  Automatic session resume is not built yet.
+- Automatic resume needs `agentswap run`. A bare `claude` gets the 503 and
+  stops, because nothing is supervising it.
+- Adding an account means logging in with the CLI itself and running
+  `agentswap import` again; there is no built-in OAuth flow yet.
 
 ## Prior art
 

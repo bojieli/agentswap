@@ -15,6 +15,7 @@ import (
 	"github.com/bojieli/agentswap/internal/config"
 	"github.com/bojieli/agentswap/internal/engine"
 	"github.com/bojieli/agentswap/internal/store"
+	"github.com/bojieli/agentswap/internal/supervisor"
 )
 
 // maxBodyBytes caps a buffered request. The body has to be held in memory to
@@ -37,6 +38,10 @@ type Server struct {
 	Config    config.Config
 	Keepalive KeepaliveMode
 	Log       *slog.Logger
+
+	// ConfigDir is where handoff tickets are written so `agentswap run` can
+	// resume the session once quota returns. Empty disables ticket writing.
+	ConfigDir string
 }
 
 // Handler builds the routing mux.
@@ -183,6 +188,7 @@ func (s *Server) writeExecuteError(w http.ResponseWriter, waiter *streamWaiter, 
 	switch {
 	case errors.As(err, &tooLong):
 		s.Log.Warn("pool exhausted beyond max hold", "lane", laneID, "until", tooLong.Until)
+		s.writeTicket(laneID, tooLong.Until)
 		retryAfter := int(time.Until(tooLong.Until).Seconds())
 		if retryAfter < 1 {
 			retryAfter = 1
@@ -217,6 +223,21 @@ func (s *Server) fail(w http.ResponseWriter, waiter *streamWaiter, status int, c
 	})
 	_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", payload)
 	_ = http.NewResponseController(w).Flush()
+}
+
+// writeTicket records the handoff for `agentswap run` to act on. A failure
+// here must not change what the client is told: they still get their 503, and
+// an error about failing to record an error helps nobody.
+func (s *Server) writeTicket(laneID store.LaneID, until time.Time) {
+	if s.ConfigDir == "" {
+		return
+	}
+	err := supervisor.WriteTicket(s.ConfigDir, supervisor.Ticket{
+		Lane: laneID, Until: until, WrittenAt: time.Now(),
+	})
+	if err != nil {
+		s.Log.Warn("could not write resume ticket", "lane", laneID, "err", err)
+	}
 }
 
 func writeJSONError(w http.ResponseWriter, status int, code, msg string) {
