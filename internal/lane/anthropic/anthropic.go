@@ -35,15 +35,13 @@ const oauthBeta = "oauth-2025-04-20"
 // Rate-limit headers, as emitted by Claude Code's upstream. These arrive on
 // successful responses too, which is what makes rotating before a 429 possible.
 const (
-	hdrStatus         = "Anthropic-Ratelimit-Unified-Status"
-	hdrReset          = "Anthropic-Ratelimit-Unified-Reset"
-	hdr5hReset        = "Anthropic-Ratelimit-Unified-5h-Reset"
-	hdr5hUtilization  = "Anthropic-Ratelimit-Unified-5h-Utilization"
-	hdr7dReset        = "Anthropic-Ratelimit-Unified-7d-Reset"
-	hdr7dUtilization  = "Anthropic-Ratelimit-Unified-7d-Utilization"
-	hdrFallback       = "Anthropic-Ratelimit-Unified-Fallback"
-	statusRejected    = "rejected"
-	statusAllowedWarn = "allowed_warning"
+	hdrStatus        = "Anthropic-Ratelimit-Unified-Status"
+	hdrReset         = "Anthropic-Ratelimit-Unified-Reset"
+	hdr5hReset       = "Anthropic-Ratelimit-Unified-5h-Reset"
+	hdr5hUtilization = "Anthropic-Ratelimit-Unified-5h-Utilization"
+	hdr7dReset       = "Anthropic-Ratelimit-Unified-7d-Reset"
+	hdr7dUtilization = "Anthropic-Ratelimit-Unified-7d-Utilization"
+	statusRejected   = "rejected"
 )
 
 // timeNow is swappable in tests.
