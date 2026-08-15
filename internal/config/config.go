@@ -73,6 +73,16 @@ type Park struct {
 
 	// KeepaliveInterval is the gap between SSE pings sent while parked.
 	KeepaliveInterval Duration `json:"keepalive_interval"`
+
+	// Keepalive is "silent" or "ping".
+	//
+	// Silent holds the connection with no bytes written and is the default:
+	// the client is on loopback, so nothing between us can time out an idle
+	// socket, and writing nothing means we never commit to a status code we
+	// might need to take back. Ping commits to a 200 event-stream and sends
+	// SSE pings, which is only worth its extra risk if a client refuses to
+	// wait without seeing bytes.
+	Keepalive string `json:"keepalive"`
 }
 
 // Default returns the configuration used when no file exists.
@@ -96,6 +106,7 @@ func Default() Config {
 			Buffer:            Duration(60 * time.Second),
 			MaxHold:           Duration(30 * time.Minute),
 			KeepaliveInterval: Duration(15 * time.Second),
+			Keepalive:         "silent",
 		},
 	}
 }
@@ -151,6 +162,11 @@ func (c Config) Validate() error {
 	}
 	if c.Park.Enabled && c.Park.KeepaliveInterval <= 0 {
 		return errors.New("park.keepalive_interval must be > 0 when parking is enabled")
+	}
+	switch c.Park.Keepalive {
+	case "", "silent", "ping":
+	default:
+		return fmt.Errorf("park.keepalive must be \"silent\" or \"ping\", got %q", c.Park.Keepalive)
 	}
 	return nil
 }
