@@ -92,7 +92,9 @@ should not need to open it.
 
 agentswap has no login of its own. Only `claude` and `codex` can mint a
 credential, so pooling an account is always: sign in with the CLI, then adopt
-what it stored. `agentswap login` removes every part of that except the signing
+what it stored — from `~/.claude/.credentials.json` or, on macOS, from the
+Keychain where Claude Code puts it instead; and from `~/.codex/auth.json`,
+which holds either a ChatGPT token set or a plain API key. `agentswap login` removes every part of that except the signing
 in.
 
 ```sh

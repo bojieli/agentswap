@@ -105,6 +105,18 @@ and every deadline it acts on comes from that one source. Waiting goes through a
 implement as "advance the clock". That is why a test covering a five-hour park
 runs in microseconds.
 
+## The two test suites
+
+`internal/...` and `cmd/...` cover decisions, with a fake clock and a fake
+upstream, so a five-hour park is a fast test.
+
+`e2e/` compiles the binary and drives it as a subprocess — argv, exit codes,
+files on disk, HTTP. It imports no internal package on purpose, so a refactor
+that breaks the product cannot be hidden by a refactor of the tests. Several
+bugs here were only ever visible from there: health lost on shutdown, a
+four-second quota window waited out for a minute, a beta header silently
+dropped.
+
 ## What is deliberately absent
 
 **No request translation.** A lane is a wire protocol, and any account in a

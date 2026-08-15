@@ -7,6 +7,18 @@ the others.
 Durations are written the way people say them: `"30m"`, `"90s"`, `"1h30m"`. A
 bare number means seconds.
 
+Because every field has a default, an absent file tells you nothing about the
+values in effect. To see them, and to start editing from a complete file rather
+than a blank one:
+
+```sh
+agentswap config           # the values in effect, and where every file lives
+agentswap config --write   # save them to config.json, ready to edit
+```
+
+Do not redirect `agentswap config --json` into `config.json` yourself: the
+shell truncates the file before agentswap reads it.
+
 ```json
 {
   "addr": "127.0.0.1:8420",

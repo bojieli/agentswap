@@ -273,6 +273,7 @@ keeping conversations pinned for cache affinity.
 
 ## Documentation
 
+- [Commands](docs/commands.md) — every command and flag, in one place
 - [Accounts and keys](docs/accounts.md) — pooling logins, re-signing in, where
   keys live and why it is not one file
 - [Configuration](docs/configuration.md) — every field, and what getting it

@@ -1,6 +1,7 @@
 # Troubleshooting
 
-Start with `agentswap doctor`. It walks the chain in the order a request
+Start with `agentswap doctor`, and `agentswap config` when the question is
+"where is it even reading that from". It walks the chain in the order a request
 travels it, so the first failure it reports is the first thing to fix.
 
 ```
@@ -47,12 +48,36 @@ with — usually because it was started with `serve --addr`. Either start it
 without the override, or set `addr` in `config.json` and re-run
 `agentswap install` so both ends agree.
 
+## An account was rejected, and says it needs a new sign-in
+
+The upstream revoked the login. This is the one failure that does not fix
+itself: waiting does nothing, and rotating only spends the next account.
+
+```
+work was rejected: refresh failed with 401 Unauthorized
+  sign in again:  agentswap login --id work
+```
+
+Sign in as that account, then run exactly that. The credential is replaced in
+place — same id, same priority, same label — and the account goes straight back
+into rotation.
+
+`agentswap import` is *not* the fix. It re-reads the credential the upstream
+just refused, so it looks like the fix did nothing.
+
+Why it happened, usually:
+
+- **You used that account outside agentswap.** Both upstreams rotate the
+  refresh token when it is used, so whichever side refreshes second is holding
+  one the server has retired. Running your CLIs through agentswap avoids it.
+- You signed out, in the CLI or on the web.
+- The upstream expired the session, which it may do whenever it likes.
+
 ## Requests fail with `no_accounts`
 
 The lane has no usable account. `agentswap status` says which:
 
-- **`needs login`** — the credential was rejected. Log in with the CLI again
-  and re-run `agentswap import --id <the same id>` to refresh it in place.
+- **`needs login`** — the credential was rejected; see the section above.
 - **`disabled`** — `agentswap enable <id>`.
 - **all `exhausted`** — everything is genuinely spent. The summary line says
   when the first one comes back.
@@ -81,6 +106,19 @@ The `Host` header named something agentswap does not recognise. If that was
 you — reaching it through a tunnel or from a container — add the name to
 `allowed_hosts` in `config.json`. If it was not you, a page in your browser
 tried to use your subscription, and the refusal is the feature working.
+
+## An account is talking to the wrong upstream
+
+`agentswap list` shows each account's provider. To move one, or to put it back
+on the vendor's own API:
+
+```sh
+agentswap set corp --base-url https://llm.corp.example.com/v1
+agentswap set corp --base-url ""
+```
+
+The same command changes a priority or a label. The account keeps its id, so
+its observed quota and pinned conversations survive the change.
 
 ## Rotation happens too often and responses cost more
 
