@@ -3,6 +3,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,7 +53,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc(prefixAnthropic+"/", s.laneHandler(store.LaneAnthropic, prefixAnthropic))
 	mux.HandleFunc(prefixOpenAI+"/", s.laneHandler(store.LaneOpenAI, prefixOpenAI))
 	mux.HandleFunc("/", s.handleUnrouted)
-	return mux
+	return s.guardHost(mux)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -99,8 +100,18 @@ func (s *Server) laneHandler(laneID store.LaneID, prefix string) http.HandlerFun
 
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 		if err != nil {
-			writeJSONError(w, http.StatusRequestEntityTooLarge, "request_too_large",
-				fmt.Sprintf("request body exceeds %d bytes", maxBodyBytes))
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				writeJSONError(w, http.StatusRequestEntityTooLarge, "request_too_large",
+					fmt.Sprintf("request body exceeds %d bytes", maxBodyBytes))
+				return
+			}
+			// The client went away mid-upload. Reporting that back as an
+			// oversized body sends whoever reads the log hunting for a limit
+			// that was never reached.
+			s.Log.Debug("could not read request body", "err", err)
+			writeJSONError(w, http.StatusBadRequest, "bad_request",
+				"could not read the request body: "+err.Error())
 			return
 		}
 
@@ -181,6 +192,13 @@ func (s *Server) pump(w http.ResponseWriter, rc *http.ResponseController, body i
 // on, respecting whether we have already committed to a status line.
 func (s *Server) writeExecuteError(w http.ResponseWriter, waiter *streamWaiter, laneID store.LaneID, err error) {
 	if errors.Is(err, io.EOF) {
+		return
+	}
+	// The client hung up, or its own timeout fired. There is nobody left to
+	// write to, and logging it as a failure buries the real ones — a user who
+	// presses Ctrl-C mid-request has not hit a bug.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		s.Log.Debug("client went away before a response was ready", "lane", laneID, "err", err)
 		return
 	}
 

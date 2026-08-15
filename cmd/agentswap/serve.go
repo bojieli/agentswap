@@ -5,9 +5,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -87,6 +89,10 @@ func cmdServe(args []string) error {
 // summarize warns at startup about the states that make the daemon useless,
 // rather than letting the first request discover them.
 func summarize(log logger, st *store.Store, cfg config.Config) {
+	if !isLoopback(cfg.Addr) {
+		log.Warn("listening beyond loopback: anyone who can reach this port can spend your subscriptions",
+			"addr", cfg.Addr, "fix", "set addr to 127.0.0.1:8420 unless you have a reason not to")
+	}
 	for _, l := range []store.LaneID{store.LaneAnthropic, store.LaneOpenAI} {
 		n := len(st.Accounts(l))
 		if n == 0 {
@@ -113,4 +119,23 @@ func orDefault(v, def string) string {
 		return def
 	}
 	return v
+}
+
+// isLoopback reports whether addr keeps the daemon reachable only from this
+// machine. An unparseable or hostname-based address is treated as not
+// loopback: warning about an address that turns out to be safe is cheaper than
+// staying quiet about one that is not.
+func isLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	// A bare ":8420" binds every interface, so an empty host is the least
+	// loopback address there is.
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

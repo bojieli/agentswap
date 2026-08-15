@@ -36,9 +36,14 @@ func DetectKind(argv0 string) Kind {
 
 // Options configures a supervised run.
 type Options struct {
-	ConfigDir  string
-	Addr       string
-	Args       []string
+	ConfigDir string
+	Addr      string
+	Args      []string
+
+	// MaxHold mirrors park.max_hold, so the CLI's own request timeout is set
+	// to outlast the longest wait the daemon may impose on it.
+	MaxHold time.Duration
+
 	MaxResumes int
 	Out        io.Writer
 }
@@ -192,16 +197,16 @@ func indexOf(hay []string, needle string) int {
 func runChild(ctx context.Context, args []string, opts Options) error {
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	cmd.Env = append(os.Environ(), envPairs(opts.Addr)...)
+	cmd.Env = append(os.Environ(), envPairs(opts.Addr, opts.MaxHold)...)
 	return cmd.Run()
 }
 
 // envPairs is the environment that points Claude Code at the proxy. It is
 // applied even when `agentswap install` has already written the same values,
 // so a supervised run works on a machine that was never installed to.
-func envPairs(addr string) []string {
+func envPairs(addr string, maxHold time.Duration) []string {
 	var out []string
-	for k, v := range install.ClaudeEnv(addr) {
+	for k, v := range install.ClaudeEnv(addr, maxHold) {
 		out = append(out, k+"="+v)
 	}
 	return out

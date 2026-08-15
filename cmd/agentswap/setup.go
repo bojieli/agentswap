@@ -27,7 +27,7 @@ func cmdEnv(args []string) error {
 	if err != nil {
 		return err
 	}
-	for k, v := range install.ClaudeEnv(cfg.Addr) {
+	for k, v := range install.ClaudeEnv(cfg.Addr, cfg.Park.MaxHold.D()) {
 		fmt.Printf("export %s=%q\n", k, v)
 	}
 	fmt.Printf("# Codex reads config.toml, not the environment. Run `agentswap install`,\n")
@@ -49,7 +49,7 @@ func cmdInstall(args []string) error {
 	}
 
 	if *only == "" || *only == "claude" {
-		plan, err := install.InstallClaude(cfg.Addr, *dryRun)
+		plan, err := install.InstallClaude(cfg.Addr, cfg.Park.MaxHold.D(), *dryRun)
 		if err != nil {
 			return err
 		}

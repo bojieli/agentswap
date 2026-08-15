@@ -47,10 +47,19 @@ func printStatus() error {
 	// Prefer the daemon's live view. Health is only flushed to disk every few
 	// seconds, so reading the file alone reports quota that is seconds to
 	// minutes stale — and stale quota is the one number nobody can act on.
+	//
+	// The daemon loaded its pool at startup, so an account added since is
+	// missing from its answer. Falling back per account keeps that row honest
+	// instead of printing it blank.
 	health := func(id string) store.Health { return st.Health(id) }
 	live, err := fetchLiveStatus(cfg.Addr)
 	if err == nil {
-		health = func(id string) store.Health { return live[id] }
+		health = func(id string) store.Health {
+			if h, ok := live[id]; ok {
+				return h
+			}
+			return st.Health(id)
+		}
 	} else {
 		fmt.Println("(daemon not running — showing last saved state)")
 		fmt.Println()
@@ -69,11 +78,15 @@ func printStatus() error {
 		h := health(a.ID)
 
 		state := string(h.State)
-		if !a.Enabled {
+		switch {
+		case !a.Enabled:
 			state = "disabled"
-		} else if h.Available(now) && h.State != store.StateAvailable {
+		case h.State == "":
+			// An account nothing has used yet has no recorded state.
+			state = string(store.StateAvailable)
+		case h.Available(now) && h.State != store.StateAvailable:
 			// The stored state is stale: its deadline has already passed.
-			state = "available"
+			state = string(store.StateAvailable)
 		}
 
 		primary, secondary := "-", "-"

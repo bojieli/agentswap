@@ -30,10 +30,27 @@ const (
 // still needs a non-empty value to consider itself configured.
 const AuthTokenPlaceholder = "agentswap-managed"
 
-// clientTimeout is how long the CLI is told to wait for a response. It has to
-// exceed park.max_hold, because a parked request deliberately sends nothing
-// until quota returns.
-const clientTimeout = 2 * time.Hour
+// minClientTimeout is the floor for how long the CLI is told to wait. Two
+// hours comfortably covers a long streaming answer on a pool that is not
+// parked at all.
+const minClientTimeout = 2 * time.Hour
+
+// clientTimeoutMargin keeps the client's deadline clear of the daemon's, so a
+// park that ends in an answer is not cut off a moment before it arrives.
+const clientTimeoutMargin = 5 * time.Minute
+
+// clientTimeout is how long the CLI is told to wait for a response.
+//
+// It has to outlast park.max_hold: a parked request deliberately sends nothing
+// until quota returns, so a client that gives up first converts a wait that was
+// about to succeed into a failure — and does it without the daemon ever
+// learning why.
+func clientTimeout(maxHold time.Duration) time.Duration {
+	if d := maxHold + clientTimeoutMargin; d > minClientTimeout {
+		return d
+	}
+	return minClientTimeout
+}
 
 // Plan describes an edit without performing it, so `install --dry-run` can
 // show the user exactly what will change.
@@ -65,17 +82,26 @@ func CodexConfigPath() (string, error) {
 }
 
 // ClaudeEnv is the environment block agentswap manages inside settings.json.
-func ClaudeEnv(addr string) map[string]string {
+func ClaudeEnv(addr string, maxHold time.Duration) map[string]string {
 	return map[string]string{
-		"ANTHROPIC_BASE_URL":   "http://" + addr + "/anthropic",
-		"ANTHROPIC_AUTH_TOKEN": AuthTokenPlaceholder,
-		"API_TIMEOUT_MS":       fmt.Sprint(clientTimeout.Milliseconds()),
+		envBaseURL:   baseURLFor(addr),
+		envAuthToken: AuthTokenPlaceholder,
+		envTimeout:   fmt.Sprint(clientTimeout(maxHold).Milliseconds()),
 	}
 }
 
+// The keys agentswap owns inside the user's env block.
+const (
+	envBaseURL   = "ANTHROPIC_BASE_URL"
+	envAuthToken = "ANTHROPIC_AUTH_TOKEN"
+	envTimeout   = "API_TIMEOUT_MS"
+)
+
+func baseURLFor(addr string) string { return "http://" + addr + "/anthropic" }
+
 // InstallClaude merges agentswap's environment into Claude Code's settings,
 // leaving every other key untouched.
-func InstallClaude(addr string, dryRun bool) (*Plan, error) {
+func InstallClaude(addr string, maxHold time.Duration, dryRun bool) (*Plan, error) {
 	path, err := ClaudeSettingsPath()
 	if err != nil {
 		return nil, err
@@ -96,7 +122,7 @@ func InstallClaude(addr string, dryRun bool) (*Plan, error) {
 	if env == nil {
 		env = map[string]any{}
 	}
-	for k, v := range ClaudeEnv(addr) {
+	for k, v := range ClaudeEnv(addr, maxHold) {
 		env[k] = v
 	}
 	settings["env"] = env
@@ -141,13 +167,19 @@ func UninstallClaude(addr string) error {
 	if env == nil {
 		return nil
 	}
-	// Only remove a value we recognise as our own. A user who has since
-	// pointed the CLI somewhere else deliberately should keep their setting.
-	managed := ClaudeEnv(addr)
-	for k, want := range managed {
-		if got, ok := env[k].(string); ok && got == want {
-			delete(env, k)
-		}
+	// Only touch a block we recognise as our own. A user who has since pointed
+	// the CLI somewhere else deliberately should keep their setting.
+	//
+	// The base URL is what identifies the block: it names our address and
+	// nothing else would. Once it matches, the other two keys are ours by
+	// association — matching those on value as well would strand API_TIMEOUT_MS
+	// whenever park.max_hold changed between install and uninstall, since the
+	// timeout is derived from it.
+	if got, ok := env[envBaseURL].(string); !ok || got != baseURLFor(addr) {
+		return nil
+	}
+	for _, k := range []string{envBaseURL, envAuthToken, envTimeout} {
+		delete(env, k)
 	}
 	if len(env) == 0 {
 		delete(settings, "env")

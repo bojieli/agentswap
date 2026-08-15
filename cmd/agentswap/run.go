@@ -60,6 +60,7 @@ func cmdRun(args []string) error {
 		ConfigDir:  dir,
 		Addr:       cfg.Addr,
 		Args:       childArgs,
+		MaxHold:    cfg.Park.MaxHold.D(),
 		MaxResumes: *maxResumes,
 		Out:        os.Stderr,
 	})

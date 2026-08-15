@@ -18,6 +18,17 @@ type Config struct {
 	// port and answers it with real credentials.
 	Addr string `json:"addr"`
 
+	// AllowedHosts extends the set of Host header values the proxy will answer
+	// to, beyond loopback names and Addr's own host.
+	//
+	// The check exists to stop DNS rebinding: a web page the user visits cannot
+	// otherwise be prevented from making requests to 127.0.0.1, and those
+	// requests would be served with real credentials. Rebinding needs the
+	// attacker's own hostname in the Host header, so refusing unknown names
+	// closes it. Set this when reaching agentswap by another name on purpose —
+	// from a container, or across a tunnel.
+	AllowedHosts []string `json:"allowed_hosts,omitempty"`
+
 	Rotation Rotation `json:"rotation"`
 	Retry    Retry    `json:"retry"`
 	Park     Park     `json:"park"`

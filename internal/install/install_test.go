@@ -4,11 +4,17 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 const addr = "127.0.0.1:8420"
+
+// testMaxHold is the default park.max_hold; the client timeout is derived
+// from it.
+const testMaxHold = 30 * time.Minute
 
 func TestInstallClaudePreservesUnrelatedSettings(t *testing.T) {
 	home := t.TempDir()
@@ -27,7 +33,7 @@ func TestInstallClaudePreservesUnrelatedSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := InstallClaude(addr, false); err != nil {
+	if _, err := InstallClaude(addr, testMaxHold, false); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
@@ -68,7 +74,7 @@ func TestUninstallClaudeRestoresTheUsersEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := InstallClaude(addr, false); err != nil {
+	if _, err := InstallClaude(addr, testMaxHold, false); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	if err := UninstallClaude(addr); err != nil {
@@ -181,7 +187,7 @@ func TestDryRunWritesNothing(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", codexHome)
 
-	if _, err := InstallClaude(addr, true); err != nil {
+	if _, err := InstallClaude(addr, testMaxHold, true); err != nil {
 		t.Fatalf("claude dry run: %v", err)
 	}
 	if _, err := InstallCodex(addr, true); err != nil {
@@ -205,7 +211,7 @@ func TestInstallBacksUpBeforeModifying(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"theme":"light"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := InstallClaude(addr, false); err != nil {
+	if _, err := InstallClaude(addr, testMaxHold, false); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	matches, _ := filepath.Glob(path + ".agentswap-backup-*")
@@ -215,5 +221,55 @@ func TestInstallBacksUpBeforeModifying(t *testing.T) {
 	b, _ := os.ReadFile(matches[0])
 	if string(b) != `{"theme":"light"}` {
 		t.Errorf("backup content = %q", b)
+	}
+}
+
+// The client's own timeout has to outlast the daemon's longest park. If it
+// does not, a wait that was about to succeed is cut off by the CLI instead —
+// and the daemon never learns why.
+func TestClientTimeoutOutlastsTheLongestPark(t *testing.T) {
+	cases := []time.Duration{
+		30 * time.Minute, // the default
+		2 * time.Hour,
+		5 * time.Hour, // a full Anthropic window
+	}
+	for _, maxHold := range cases {
+		env := ClaudeEnv(addr, maxHold)
+		ms, err := strconv.ParseInt(env["API_TIMEOUT_MS"], 10, 64)
+		if err != nil {
+			t.Fatalf("API_TIMEOUT_MS = %q: %v", env["API_TIMEOUT_MS"], err)
+		}
+		got := time.Duration(ms) * time.Millisecond
+		if got <= maxHold {
+			t.Errorf("max_hold %v: client timeout %v does not outlast it", maxHold, got)
+		}
+	}
+}
+
+// park.max_hold can change between install and uninstall, which changes the
+// derived timeout. Uninstall still has to recognise the block as its own.
+func TestUninstallRemovesTheBlockAfterMaxHoldChanged(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := InstallClaude(addr, 30*time.Minute, false); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	// The user raised max_hold, then uninstalled.
+	if _, err := InstallClaude(addr, 4*time.Hour, false); err != nil {
+		t.Fatalf("reinstall: %v", err)
+	}
+	if err := UninstallClaude(addr); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+
+	b, _ := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	for _, k := range []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "API_TIMEOUT_MS"} {
+		if strings.Contains(string(b), k) {
+			t.Errorf("%s survived uninstall: %s", k, b)
+		}
 	}
 }
