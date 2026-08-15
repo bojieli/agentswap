@@ -1,8 +1,20 @@
 # Configuration
 
-`~/.config/agentswap/config.json`. Every field has a working default, so the
-file is optional — and a file that sets one field keeps the defaults for all
-the others.
+**Most people never open this file.** Every field has a working default, and
+the defaults are chosen for a laptop with two or three pooled accounts.
+
+The three settings that people do change, and why:
+
+| Setting | Change it when |
+| --- | --- |
+| `park.max_hold` | you would rather wait longer than be handed a 503. Re-run `agentswap install` afterwards, so your CLI's own timeout follows. |
+| `rotation.drain_above` | requests still hit a 429 before rotating — lower it |
+| `retry.burst_cutoff` | short throttles are rotating away your prompt cache — raise it |
+
+Everything else is below, in the order it appears in the file.
+
+`~/.config/agentswap/config.json`. A file that sets one field keeps the
+defaults for all the others.
 
 Durations are written the way people say them: `"30m"`, `"90s"`, `"1h30m"`. A
 bare number means seconds.
