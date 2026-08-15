@@ -80,20 +80,33 @@ func (*Lane) Authorize(req *http.Request, a *store.Account) {
 	req.Header.Del("Authorization")
 	req.Header.Del("X-Api-Key")
 
+	betas := betaFlags(req.Header)
+
 	switch a.Kind {
 	case store.KindOAuth:
 		req.Header.Set("Authorization", "Bearer "+a.AccessToken)
-		req.Header.Set("Anthropic-Beta", withBeta(req.Header.Get("Anthropic-Beta"), oauthBeta))
+		req.Header.Set("Anthropic-Beta", withBeta(betas, oauthBeta))
 	default:
 		req.Header.Set("X-Api-Key", a.APIKey)
 		// A subscription beta flag on an API-key request is at best ignored and
 		// at worst rejected, so drop it when we are not using a bearer token.
-		if b := removeBeta(req.Header.Get("Anthropic-Beta"), oauthBeta); b != "" {
+		if b := removeBeta(betas, oauthBeta); b != "" {
 			req.Header.Set("Anthropic-Beta", b)
 		} else {
 			req.Header.Del("Anthropic-Beta")
 		}
 	}
+}
+
+// betaFlags collects every beta the client asked for.
+//
+// The header is legal in both forms — repeated lines, or one comma-joined
+// value — and clients use both. Reading only the first line and then Set-ting
+// over it would silently drop whichever features the client requested in the
+// rest, which surfaces later as a capability mysteriously not working through
+// the proxy.
+func betaFlags(h http.Header) string {
+	return strings.Join(h.Values("Anthropic-Beta"), ",")
 }
 
 func withBeta(existing, want string) string {

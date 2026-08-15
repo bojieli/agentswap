@@ -305,3 +305,48 @@ func TestRefreshKeepsOldRefreshTokenWhenServerOmitsIt(t *testing.T) {
 		t.Errorf("refresh token = %q, want it preserved", a.RefreshToken)
 	}
 }
+
+// The beta header is legal repeated as well as comma-joined, and clients use
+// both. Dropping the extra lines silently disables whichever features the
+// client asked for there.
+func TestAuthorizeKeepsEveryBetaFlag(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req.Header.Add("Anthropic-Beta", "context-1m-2025-08-07")
+	req.Header.Add("Anthropic-Beta", "fine-grained-tool-streaming-2025-05-14")
+
+	(&Lane{}).Authorize(req, &store.Account{Kind: store.KindOAuth, AccessToken: "t"})
+
+	got := req.Header.Get("Anthropic-Beta")
+	for _, want := range []string{
+		"context-1m-2025-08-07",
+		"fine-grained-tool-streaming-2025-05-14",
+		oauthBeta,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Anthropic-Beta = %q, want it to include %q", got, want)
+		}
+	}
+}
+
+func TestAuthorizeAPIKeyKeepsEveryBetaFlagButOurs(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req.Header.Add("Anthropic-Beta", "context-1m-2025-08-07")
+	req.Header.Add("Anthropic-Beta", oauthBeta)
+	req.Header.Add("Anthropic-Beta", "fine-grained-tool-streaming-2025-05-14")
+
+	(&Lane{}).Authorize(req, &store.Account{Kind: store.KindAPIKey, APIKey: "sk-ant"})
+
+	got := req.Header.Get("Anthropic-Beta")
+	if strings.Contains(got, oauthBeta) {
+		t.Errorf("Anthropic-Beta = %q, want the subscription flag dropped", got)
+	}
+	for _, want := range []string{"context-1m-2025-08-07", "fine-grained-tool-streaming-2025-05-14"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Anthropic-Beta = %q, want it to include %q", got, want)
+		}
+	}
+	// One header, not three, is what the upstream sees.
+	if n := len(req.Header.Values("Anthropic-Beta")); n != 1 {
+		t.Errorf("Anthropic-Beta has %d values, want them merged into one", n)
+	}
+}
