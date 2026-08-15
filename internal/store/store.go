@@ -89,6 +89,10 @@ func (s *Store) loadHealth() error {
 // Accounts returns the enabled accounts in lane, ordered by selection
 // preference: subscriptions before API keys, then by ascending Priority, then
 // by id so the order is stable across restarts.
+//
+// The accounts are clones. Callers hold one for the length of a request while
+// another goroutine may be refreshing its token, so handing out the pool's own
+// pointers would be a data race.
 func (s *Store) Accounts(lane LaneID) []*Account {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -96,7 +100,7 @@ func (s *Store) Accounts(lane LaneID) []*Account {
 	var out []*Account
 	for _, a := range s.accounts {
 		if a.Lane == lane && a.Enabled {
-			out = append(out, a)
+			out = append(out, a.Clone())
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -112,50 +116,98 @@ func (s *Store) Accounts(lane LaneID) []*Account {
 	return out
 }
 
-// All returns every account, enabled or not, for `agentswap status`.
+// All returns a clone of every account, enabled or not, for `agentswap status`.
 func (s *Store) All() []*Account {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return append([]*Account(nil), s.accounts...)
+	out := make([]*Account, 0, len(s.accounts))
+	for _, a := range s.accounts {
+		out = append(out, a.Clone())
+	}
+	return out
 }
 
-// Get returns the account with the given id.
+// Get returns a clone of the account with the given id.
 func (s *Store) Get(id string) (*Account, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, a := range s.accounts {
 		if a.ID == id {
-			return a, nil
+			return a.Clone(), nil
 		}
 	}
 	return nil, fmt.Errorf("%q: %w", id, ErrNotFound)
 }
 
 // Upsert adds an account or replaces the one with a matching id, then persists
-// accounts.json.
+// accounts.json. The account is cloned on the way in, so a caller that keeps
+// mutating its copy afterwards cannot reach into the pool.
 func (s *Store) Upsert(a *Account) error {
+	if a == nil {
+		return errors.New("account required")
+	}
 	if a.ID == "" {
 		return errors.New("account id required")
 	}
 	if !a.Lane.Valid() {
 		return fmt.Errorf("unknown lane %q", a.Lane)
 	}
+	stored := a.Clone()
+
 	s.mu.Lock()
 	replaced := false
 	for i, existing := range s.accounts {
 		if existing.ID == a.ID {
-			s.accounts[i] = a
+			s.accounts[i] = stored
 			replaced = true
 			break
 		}
 	}
 	if !replaced {
-		s.accounts = append(s.accounts, a)
+		s.accounts = append(s.accounts, stored)
 	}
-	snapshot := append([]*Account(nil), s.accounts...)
+	snapshot := s.snapshotLocked()
 	s.mu.Unlock()
 
 	return writeJSONAtomic(filepath.Join(s.dir, accountsFile), snapshot)
+}
+
+// UpdateAccount applies fn to the pool's own copy of an account under the
+// lock, then persists.
+//
+// Token refresh has to be a read-modify-write against the canonical record: a
+// caller that renews the token on a clone and Upserts it back would overwrite
+// whatever else changed meanwhile — an `agentswap disable` landing during a
+// long stream, say.
+func (s *Store) UpdateAccount(id string, fn func(*Account)) error {
+	s.mu.Lock()
+	var found *Account
+	for _, a := range s.accounts {
+		if a.ID == id {
+			found = a
+			break
+		}
+	}
+	if found == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("%q: %w", id, ErrNotFound)
+	}
+	fn(found)
+	snapshot := s.snapshotLocked()
+	s.mu.Unlock()
+
+	return writeJSONAtomic(filepath.Join(s.dir, accountsFile), snapshot)
+}
+
+// snapshotLocked clones the pool for serialization. Cloning matters as much as
+// copying the slice: the write happens outside the lock, and marshalling a
+// struct another goroutine may be writing to is a race.
+func (s *Store) snapshotLocked() []*Account {
+	out := make([]*Account, 0, len(s.accounts))
+	for _, a := range s.accounts {
+		out = append(out, a.Clone())
+	}
+	return out
 }
 
 // Remove deletes an account and its health entry.
@@ -174,7 +226,7 @@ func (s *Store) Remove(id string) error {
 	}
 	s.accounts = append(s.accounts[:idx], s.accounts[idx+1:]...)
 	delete(s.health, id)
-	snapshot := append([]*Account(nil), s.accounts...)
+	snapshot := s.snapshotLocked()
 	s.mu.Unlock()
 
 	return writeJSONAtomic(filepath.Join(s.dir, accountsFile), snapshot)

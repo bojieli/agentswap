@@ -59,10 +59,30 @@ type Account struct {
 // TokenExpired reports whether the access token is expired or close enough to
 // expiry that we should refresh before spending a request on it.
 func (a *Account) TokenExpired(skew time.Duration) bool {
+	return a.TokenExpiredAt(time.Now(), skew)
+}
+
+// TokenExpiredAt is TokenExpired against a caller-supplied clock, so the engine
+// judges expiry with the same time it uses for every other deadline.
+func (a *Account) TokenExpiredAt(now time.Time, skew time.Duration) bool {
 	if a.Kind != KindOAuth || a.ExpiresAt == 0 {
 		return false
 	}
-	return time.UnixMilli(a.ExpiresAt).Add(-skew).Before(time.Now())
+	return time.UnixMilli(a.ExpiresAt).Add(-skew).Before(now)
+}
+
+// Clone returns a deep copy. The store hands out clones rather than pointers
+// into the pool: an account is read on every request and written by token
+// refresh, and sharing one struct across those goroutines is a data race.
+func (a *Account) Clone() *Account {
+	if a == nil {
+		return nil
+	}
+	cp := *a
+	if a.Scopes != nil {
+		cp.Scopes = append([]string(nil), a.Scopes...)
+	}
+	return &cp
 }
 
 // Display returns the human-facing name used in logs and `agentswap status`.

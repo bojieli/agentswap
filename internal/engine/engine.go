@@ -63,12 +63,13 @@ func (SleepWaiter) Wait(ctx context.Context, d time.Duration, _ string) error {
 
 // Engine executes requests against the credential pool.
 type Engine struct {
-	cfg    config.Config
-	store  *store.Store
-	lanes  map[store.LaneID]lane.Lane
-	client *http.Client
-	log    *slog.Logger
-	sticky *stickyMap
+	cfg       config.Config
+	store     *store.Store
+	lanes     map[store.LaneID]lane.Lane
+	client    *http.Client
+	log       *slog.Logger
+	sticky    *stickyMap
+	refreshes *refreshGroup
 
 	now func() time.Time
 	// jitter returns a factor in [0.5, 1.5) used to spread retries. Swappable
@@ -86,14 +87,15 @@ func New(cfg config.Config, st *store.Store, lanes map[store.LaneID]lane.Lane, c
 		log = slog.Default()
 	}
 	return &Engine{
-		cfg:    cfg,
-		store:  st,
-		lanes:  lanes,
-		client: client,
-		log:    log,
-		sticky: newStickyMap(cfg.Rotation.StickyTTL.D()),
-		now:    time.Now,
-		jitter: func() float64 { return 0.5 + rand.Float64() },
+		cfg:       cfg,
+		store:     st,
+		lanes:     lanes,
+		client:    client,
+		log:       log,
+		sticky:    newStickyMap(cfg.Rotation.StickyTTL.D()),
+		refreshes: newRefreshGroup(),
+		now:       time.Now,
+		jitter:    func() float64 { return 0.5 + rand.Float64() },
 	}
 }
 
@@ -152,12 +154,17 @@ func (e *Engine) Execute(ctx context.Context, laneID store.LaneID, req *http.Req
 		}
 
 		attempts++
-		if err := e.ensureFresh(ctx, ln, acct); err != nil {
+		fresh, err := e.ensureFresh(ctx, ln, acct, now)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			e.log.Warn("token refresh failed", "account", acct.Display(), "err", err)
 			e.markInvalid(acct, err)
 			tried[acct.ID] = true
 			continue
 		}
+		acct = fresh
 
 		resp, err := e.send(ctx, ln, acct, req, body)
 		if err != nil {
@@ -208,14 +215,16 @@ func (e *Engine) Execute(ctx context.Context, laneID store.LaneID, req *http.Req
 				authAttempts = 0
 				continue
 			}
-			if err := ln.Refresh(ctx, acct); err != nil {
+			renewed, err := e.refresh(ctx, ln, acct.ID, acct.AccessToken)
+			if err != nil {
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
 				e.markInvalid(acct, err)
 				tried[acct.ID] = true
 				continue
 			}
-			if err := e.store.Upsert(acct); err != nil {
-				e.log.Warn("persist refreshed token", "account", acct.Display(), "err", err)
-			}
+			acct = renewed
 			continue
 
 		case lane.ActionRetrySame:
@@ -309,16 +318,19 @@ func (e *Engine) backoff(attempt int) time.Duration {
 	return time.Duration(float64(d) * e.jitter())
 }
 
+// refreshSkew is how far ahead of expiry a token is renewed. It has to exceed
+// the longest plausible request setup time, or a token that passes the check
+// expires while the request is in flight.
+const refreshSkew = 60 * time.Second
+
 // ensureFresh refreshes an OAuth token that is expired or nearly so, rather
-// than spending a request to discover it.
-func (e *Engine) ensureFresh(ctx context.Context, ln lane.Lane, a *store.Account) error {
-	if !a.TokenExpired(60 * time.Second) {
-		return nil
+// than spending a request to discover it. It returns the account to use, which
+// is a different value once a refresh has happened.
+func (e *Engine) ensureFresh(ctx context.Context, ln lane.Lane, a *store.Account, now time.Time) (*store.Account, error) {
+	if !a.TokenExpiredAt(now, refreshSkew) {
+		return a, nil
 	}
-	if err := ln.Refresh(ctx, a); err != nil {
-		return err
-	}
-	return e.store.Upsert(a)
+	return e.refresh(ctx, ln, a.ID, a.AccessToken)
 }
 
 // send builds and dispatches one upstream attempt.
