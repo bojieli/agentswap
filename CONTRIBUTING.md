@@ -62,8 +62,10 @@ safe by default.
   where each case is its own story.
 - No real network. Every upstream in the test suite is an `httptest.Server`.
 - No real clock for anything longer than milliseconds. The engine takes a
-  `now func() time.Time` and a `Waiter` precisely so that a five-hour park is
-  a fast test — see `fakeClock` in `internal/engine/engine_test.go`.
+  `now func() time.Time` and a `Waiter`, and the supervisor takes a `Wait`,
+  precisely so that a five-hour park is a fast test — see `fakeClock` in
+  `internal/engine/engine_test.go`. A test that really sleeps is a test nobody
+  runs, or one that races the deadline it is trying to observe.
 - No writes outside `t.TempDir()`. Tests that touch the config directory set
   `AGENTSWAP_HOME`, `CODEX_HOME` or `CLAUDE_CREDENTIALS_PATH` with `t.Setenv`.
 

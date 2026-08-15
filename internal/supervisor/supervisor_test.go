@@ -222,14 +222,13 @@ func TestRunResumesAfterATicket(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The ticket is written here rather than by the script, so its deadline
-	// cannot expire while a loaded machine gets around to starting a shell.
-	// PendingSince accepts a ticket from just before the run for exactly this
-	// reason. That the *proxy* writes one at all is covered end to end, with a
-	// real daemon, in e2e/run_test.go.
+	// A deadline far enough out that no amount of load can expire it before
+	// Run looks. The wait itself is substituted below, so the test does not
+	// spend it. That the *proxy* writes a ticket at all is covered end to end,
+	// with a real daemon, in e2e/run_test.go.
 	now := time.Now().UTC()
 	if err := WriteTicket(dir, Ticket{
-		Lane: store.LaneAnthropic, Until: now.Add(time.Second), WrittenAt: now,
+		Lane: store.LaneAnthropic, Until: now.Add(time.Hour), WrittenAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -238,9 +237,14 @@ func TestRunResumesAfterATicket(t *testing.T) {
 	defer cancel()
 
 	var out bytes.Buffer
+	var waited time.Duration
 	err := Run(ctx, Options{
 		ConfigDir: dir, Addr: "127.0.0.1:8420",
 		Args: []string{fake, "do the thing"}, MaxResumes: 3, Out: &out,
+		Wait: func(_ context.Context, d time.Duration) error {
+			waited = d
+			return nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("Run: %v (output: %s)", err, out.String())
@@ -256,5 +260,11 @@ func TestRunResumesAfterATicket(t *testing.T) {
 	}
 	if lines[1] != "--continue" {
 		t.Errorf("resume invocation = %q, want --continue", lines[1])
+	}
+
+	// Resuming before the quota is back would spend the request discovering
+	// that it is not.
+	if waited < 55*time.Minute {
+		t.Errorf("waited %v, want it to hold until the ticket's deadline", waited)
 	}
 }

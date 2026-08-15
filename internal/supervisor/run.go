@@ -46,6 +46,12 @@ type Options struct {
 
 	MaxResumes int
 	Out        io.Writer
+
+	// Wait blocks for d, or until ctx ends. The engine takes the same seam for
+	// the same reason: a wait measured in hours is the behaviour worth
+	// testing, and a test that really sleeps for it is a test nobody runs —
+	// or, worse, one that races the deadline it is trying to observe.
+	Wait func(ctx context.Context, d time.Duration) error
 }
 
 // Run executes the command, and after a handoff waits for the reset and
@@ -56,6 +62,9 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	if opts.Out == nil {
 		opts.Out = os.Stderr
+	}
+	if opts.Wait == nil {
+		opts.Wait = sleep
 	}
 
 	kind := DetectKind(opts.Args[0])
@@ -94,10 +103,8 @@ func Run(ctx context.Context, opts Options) error {
 			ticket.Lane, ticket.Until.Format(time.Kitchen), wait.Round(time.Minute))
 		fmt.Fprintf(opts.Out, "agentswap: press Ctrl-C to stop waiting.\n")
 
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(wait):
+		if err := opts.Wait(ctx, wait); err != nil {
+			return err
 		}
 		if err := ConsumeTicket(opts.ConfigDir, ticket.Lane); err != nil {
 			fmt.Fprintf(opts.Out, "agentswap: could not clear ticket: %v\n", err)
@@ -109,6 +116,21 @@ func Run(ctx context.Context, opts Options) error {
 		// second attempt on.
 		args = resumeArgs(kind, args)
 		fmt.Fprintf(opts.Out, "agentswap: resuming %s\n\n", strings.Join(args, " "))
+	}
+}
+
+// sleep is the real wait: until d has passed, or the user gives up.
+func sleep(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
 	}
 }
 
