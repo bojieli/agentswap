@@ -68,8 +68,8 @@ func cmdInstall(args []string) error {
 		return nil
 	}
 	fmt.Printf("\nDone. Start the daemon with `agentswap serve`, then:\n")
-	fmt.Printf("  claude                       # picks up the settings automatically\n")
-	fmt.Printf("  codex --profile %s     # Codex needs the profile flag\n", install.ProfileName)
+	fmt.Printf("  %-28s # picks up the settings automatically\n", "claude")
+	fmt.Printf("  %-28s # Codex needs the profile flag\n", "codex --profile "+install.ProfileName)
 	return nil
 }
 
