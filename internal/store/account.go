@@ -1,0 +1,74 @@
+// Package store holds agentswap's credential pool and its persisted health state.
+//
+// Credentials (accounts.json) and health (state.json) are deliberately separate
+// files: accounts.json is hand-editable and never rewritten by the hot path,
+// while state.json churns constantly as quota is observed.
+package store
+
+import "time"
+
+// LaneID names a wire protocol, not a vendor. A lane is the unit of
+// interchangeability: any account in a lane can serve any request in that lane
+// without translating the request body.
+type LaneID string
+
+const (
+	LaneAnthropic LaneID = "anthropic"
+	LaneOpenAI    LaneID = "openai"
+)
+
+func (l LaneID) Valid() bool { return l == LaneAnthropic || l == LaneOpenAI }
+
+// Kind distinguishes a subscription login from a metered API key. It decides
+// how the account is authorized upstream and how it is ordered during
+// selection: subscriptions are spent first because they are already paid for.
+type Kind string
+
+const (
+	KindOAuth  Kind = "oauth"
+	KindAPIKey Kind = "api_key"
+)
+
+// Account is one credential in the pool.
+type Account struct {
+	ID       string `json:"id"`
+	Lane     LaneID `json:"lane"`
+	Kind     Kind   `json:"kind"`
+	Label    string `json:"label"`
+	Priority int    `json:"priority"` // lower is preferred
+	Enabled  bool   `json:"enabled"`
+
+	// OAuth credentials. ExpiresAt is unix milliseconds to match the on-disk
+	// format both CLIs already use.
+	AccessToken      string   `json:"access_token,omitempty"`
+	RefreshToken     string   `json:"refresh_token,omitempty"`
+	ExpiresAt        int64    `json:"expires_at,omitempty"`
+	Scopes           []string `json:"scopes,omitempty"`
+	SubscriptionType string   `json:"subscription_type,omitempty"`
+
+	// ChatGPT-Account-Id, required by the Codex subscription backend. Dropping
+	// it yields 401/403 even with a valid bearer token.
+	ChatGPTAccountID string `json:"chatgpt_account_id,omitempty"`
+
+	// API key credentials. BaseURL overrides the lane default and is what
+	// makes same-protocol third-party providers work.
+	APIKey  string `json:"api_key,omitempty"`
+	BaseURL string `json:"base_url,omitempty"`
+}
+
+// TokenExpired reports whether the access token is expired or close enough to
+// expiry that we should refresh before spending a request on it.
+func (a *Account) TokenExpired(skew time.Duration) bool {
+	if a.Kind != KindOAuth || a.ExpiresAt == 0 {
+		return false
+	}
+	return time.UnixMilli(a.ExpiresAt).Add(-skew).Before(time.Now())
+}
+
+// Display returns the human-facing name used in logs and `agentswap status`.
+func (a *Account) Display() string {
+	if a.Label != "" {
+		return a.Label
+	}
+	return a.ID
+}
