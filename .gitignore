@@ -6,6 +6,7 @@
 # Test and coverage artifacts
 *.test
 *.out
+/.coverdata/
 
 # Editors and OS
 .DS_Store

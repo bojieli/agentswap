@@ -138,3 +138,91 @@ func TestCopyHeaderSkipsHopByHop(t *testing.T) {
 		t.Errorf("X-Multi = %v, want both values", got)
 	}
 }
+
+// A window that genuinely refills in seconds should be waited out for seconds.
+// Rounding every reset up to the livelock guard idles the account — and with
+// one account in the pool, idles the user.
+func TestShortResetIsWaitedOutNotRoundedUp(t *testing.T) {
+	var refused bool
+	h := newHarness(t, []string{"a"}, func(_ string, w http.ResponseWriter, _ *http.Request) {
+		if !refused {
+			refused = true
+			w.Header().Set("Anthropic-Ratelimit-Unified-Status", "rejected")
+			w.Header().Set("Retry-After", "4")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"error":{"type":"rate_limit_error"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	})
+
+	res, err := run(t, h, `{"model":"claude"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	defer res.Response.Body.Close()
+
+	// Four seconds of reset, plus a skew allowance capped at the wait itself.
+	if got := h.waiter.total(); got > 10*time.Second {
+		t.Errorf("waited %v for a four-second window, want it honoured", got)
+	}
+	if got := h.waiter.total(); got < 4*time.Second {
+		t.Errorf("waited %v, want at least the four seconds the upstream asked for", got)
+	}
+}
+
+// The guard still has to hold: a reset time that has already passed would
+// otherwise spin against an account that keeps refusing.
+func TestResetInThePastFallsBackToTheCooldown(t *testing.T) {
+	var calls int
+	h := newHarness(t, []string{"a"}, func(_ string, w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls > 3 {
+			_, _ = io.WriteString(w, `{"ok":true}`)
+			return
+		}
+		// A reset an hour in the past: a misread header, or a clock behind ours.
+		w.Header().Set("Anthropic-Ratelimit-Unified-Status", "rejected")
+		w.Header().Set("Anthropic-Ratelimit-Unified-Reset", base.Add(-time.Hour).Format(time.RFC3339))
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"type":"rate_limit_error"}}`)
+	})
+
+	res, err := run(t, h, `{"model":"claude"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	defer res.Response.Body.Close()
+
+	// Each refusal must cost a real pause rather than an immediate retry.
+	if got := h.waiter.total(); got < minCooldown {
+		t.Errorf("total wait %v, want at least one cooldown of %v", got, minCooldown)
+	}
+	if calls > 8 {
+		t.Errorf("made %d attempts: a past reset time is spinning", calls)
+	}
+}
+
+// The skew allowance is insurance against clock drift, not a tax on short
+// waits.
+func TestSkewAllowanceIsCappedByTheWait(t *testing.T) {
+	h := newHarness(t, []string{"a"}, func(_ string, w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	})
+	e := h.engine
+
+	cases := []struct {
+		wait time.Duration
+		want time.Duration
+	}{
+		{5 * time.Hour, e.cfg.Park.Buffer.D()}, // full allowance, negligible
+		{time.Second, time.Second},             // capped: never more than doubles
+		{0, 0},
+		{-time.Second, 0},
+	}
+	for _, c := range cases {
+		if got := e.skewAllowance(c.wait); got != c.want {
+			t.Errorf("skewAllowance(%v) = %v, want %v", c.wait, got, c.want)
+		}
+	}
+}

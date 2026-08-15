@@ -38,13 +38,53 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
-      - run: go test -coverprofile=coverage.out ./...
+
+      # The end-to-end suite drives a compiled binary, so its coverage arrives
+      # as counter files from a subprocess rather than a profile. Collecting
+      # both into one directory lets `covdata` merge them, which is the only
+      # way the CLI layer's real coverage shows up at all.
+      - name: test with coverage
+        run: |
+          set -euo pipefail
+          mkdir -p .coverdata
+          go test -cover ./internal/... ./cmd/... -args -test.gocoverdir="$PWD/.coverdata"
+          E2E_COVERDIR="$PWD/.coverdata" go test ./e2e/
+
       - name: report
-        run: go tool cover -func=coverage.out | tail -1
+        run: |
+          set -euo pipefail
+          go tool covdata percent -i=.coverdata
+          go tool covdata textfmt -i=.coverdata -o=coverage.out
+          go tool cover -func=coverage.out | tail -1
+
+      - name: enforce a floor
+        # Not a target to chase, just a ratchet against a large untested
+        # addition slipping in unnoticed.
+        run: |
+          set -euo pipefail
+          total=$(go tool cover -func=coverage.out | tail -1 | grep -oE '[0-9]+\.[0-9]+')
+          floor=75.0
+          echo "total coverage: $total% (floor $floor%)"
+          awk -v t="$total" -v f="$floor" 'BEGIN { exit (t+0 >= f+0) ? 0 : 1 }' || {
+            echo "coverage fell below the floor"; exit 1; }
+
       - uses: actions/upload-artifact@v4
         with:
           name: coverage
           path: coverage.out
+
+  vulncheck:
+    # CodeQL cannot upload findings from a private repository, so this is the
+    # security scan that actually runs. It checks the standard library and the
+    # toolchain against the Go vulnerability database.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
   lint:
     runs-on: ubuntu-latest

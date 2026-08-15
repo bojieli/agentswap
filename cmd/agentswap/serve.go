@@ -52,10 +52,20 @@ func cmdServe(args []string) error {
 		ConfigDir: dir,
 	}
 
+	// Bind before announcing anything. Taking the address from the listener
+	// rather than from the config is what makes port 0 usable: the kernel picks
+	// a free port, and everything downstream — the log line, the published
+	// address, the Host check — then talks about the port we actually got.
+	ln, err := net.Listen("tcp", cfg.Addr)
+	if err != nil {
+		return err
+	}
+	cfg.Addr = ln.Addr().String()
+	srv.Config = cfg
+
 	// No write timeout: a parked request holds the connection open on purpose,
 	// and a streaming answer can run for many minutes.
 	httpSrv := &http.Server{
-		Addr:              cfg.Addr,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 30 * time.Second,
 	}
@@ -70,8 +80,25 @@ func cmdServe(args []string) error {
 	}
 	defer func() { _ = daemon.Clear(dir) }()
 
-	done := make(chan struct{})
-	go st.RunHealthFlusher(done, 5*time.Second)
+	stopFlusher := make(chan struct{})
+	flusherDone := make(chan struct{})
+	go func() {
+		defer close(flusherDone)
+		st.RunHealthFlusher(stopFlusher, healthFlushInterval)
+	}()
+
+	// Stopping the flusher and waiting for it out is the last thing this
+	// function does, whichever way it exits. The flusher writes state.json
+	// outside the store's lock, so returning while that write is in flight
+	// loses the health just recorded — the next start then re-probes an account
+	// already known to be spent — and leaves the temp file behind.
+	defer func() {
+		close(stopFlusher)
+		<-flusherDone
+		if err := st.FlushHealth(); err != nil {
+			log.Warn("could not persist health on shutdown", "err", err)
+		}
+	}()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -79,7 +106,6 @@ func cmdServe(args []string) error {
 	go func() {
 		<-ctx.Done()
 		log.Info("shutting down")
-		close(done)
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = httpSrv.Shutdown(shutdownCtx)
@@ -90,12 +116,18 @@ func cmdServe(args []string) error {
 		"anthropic", "http://"+cfg.Addr+"/anthropic",
 		"openai", "http://"+cfg.Addr+"/openai")
 
-	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	// Serve returns once Shutdown has drained the in-flight requests, which is
+	// the moment the health we hold becomes final.
+	if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
-	<-ctx.Done()
-	return st.FlushHealth()
+	return nil
 }
+
+// healthFlushInterval is how often observed quota reaches disk while running.
+// The hot path never blocks on this: it mutates health under lock and lets the
+// flusher serialize it.
+const healthFlushInterval = 5 * time.Second
 
 // summarize warns at startup about the states that make the daemon useless,
 // rather than letting the first request discover them.

@@ -16,14 +16,31 @@ install: ## install agentswap into $(GOBIN)
 	go install -trimpath -ldflags "$(LDFLAGS)" ./cmd/agentswap
 
 .PHONY: test
-test: ## run the tests with the race detector
+test: ## run every test, including the end-to-end suite
 	go test -race -shuffle=on ./...
 
+.PHONY: unit
+unit: ## run only the fast tests, skipping the subprocess suite
+	go test -race -short ./...
+
+.PHONY: e2e
+e2e: ## run only the end-to-end suite, which drives the compiled binary
+	go test -v ./e2e/
+
 .PHONY: cover
-cover: ## report coverage per package and open the HTML view
-	go test -coverprofile=coverage.out ./...
-	go tool cover -func=coverage.out | tail -1
+cover: ## merge unit and end-to-end coverage, then open the HTML view
+	@rm -rf .coverdata coverage.out
+	@mkdir -p .coverdata
+	go test -cover ./internal/... ./cmd/... -args -test.gocoverdir="$(CURDIR)/.coverdata"
+	E2E_COVERDIR="$(CURDIR)/.coverdata" go test ./e2e/
+	go tool covdata percent -i=.coverdata
+	go tool covdata textfmt -i=.coverdata -o=coverage.out
+	@go tool cover -func=coverage.out | tail -1
 	go tool cover -html=coverage.out
+
+.PHONY: vulncheck
+vulncheck: ## check the standard library against the Go vulnerability database
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
 .PHONY: fmt
 fmt: ## rewrite everything with gofmt
@@ -78,7 +95,7 @@ dev: ## run a daemon against a scratch pool, never your real credentials
 
 .PHONY: clean
 clean:
-	rm -rf agentswap dist coverage.out
+	rm -rf agentswap dist coverage.out .coverdata
 
 .PHONY: help
 help: ## list the targets worth knowing about

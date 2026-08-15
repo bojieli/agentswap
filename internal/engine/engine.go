@@ -282,9 +282,7 @@ func (e *Engine) park(ctx context.Context, laneID store.LaneID, w Waiter, now ti
 		return false, nil
 	}
 
-	// The buffer absorbs clock skew between us and the upstream. Retrying one
-	// second early wastes the entire wait.
-	deadline := until.Add(e.cfg.Park.Buffer.D())
+	deadline := until.Add(e.skewAllowance(until.Sub(now)))
 	d := deadline.Sub(now)
 	if d <= 0 {
 		return true, nil
@@ -299,6 +297,26 @@ func (e *Engine) park(ctx context.Context, laneID store.LaneID, w Waiter, now ti
 		return false, err
 	}
 	return true, nil
+}
+
+// skewAllowance is how much to add to an observed reset time to absorb the
+// disagreement between our clock and the upstream's. Retrying one second early
+// can waste the entire wait, so the allowance is worth paying.
+//
+// It is capped at the length of the wait itself. A minute of insurance on a
+// five-hour window costs nothing; the same minute on a four-second window is
+// fifteen times the wait. Being early is self-correcting — the upstream
+// refuses again and tells us the new time, at the cost of one request — while
+// being late is pure loss.
+func (e *Engine) skewAllowance(wait time.Duration) time.Duration {
+	allowance := e.cfg.Park.Buffer.D()
+	if allowance > wait {
+		allowance = wait
+	}
+	if allowance < 0 {
+		allowance = 0
+	}
+	return allowance
 }
 
 // backoff returns exponential backoff with full jitter, capped by config.
@@ -399,15 +417,20 @@ func (e *Engine) markCooling(a *store.Account, until time.Time, reason string) {
 	})
 }
 
-// minCooldown is the shortest time an exhausted account is kept out of
-// rotation. An upstream whose clock runs behind ours — or a reset header we
-// misread — can otherwise name a reset time already in the past, which would
-// put the engine in a tight loop re-trying an account that keeps refusing.
+// minCooldown is how long an account is kept out of rotation when the upstream
+// did not give us a usable reset time. An upstream whose clock runs behind
+// ours — or a reset header we misread — can name a moment already past, and
+// retrying on that would put the engine in a tight loop against an account
+// that keeps refusing.
+//
+// It is a fallback, not a floor. A window that genuinely refills in four
+// seconds should be waited out for four seconds; rounding that up to a minute
+// idles an account, and with one account in the pool it idles the user.
 const minCooldown = 60 * time.Second
 
 func (e *Engine) markExhausted(a *store.Account, resetAt time.Time, reason string) {
-	if floor := e.now().Add(minCooldown); resetAt.Before(floor) {
-		resetAt = floor
+	if now := e.now(); !resetAt.After(now) {
+		resetAt = now.Add(minCooldown)
 	}
 	e.store.MutateHealth(a.ID, func(h *store.Health) {
 		h.State = store.StateExhausted

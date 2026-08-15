@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -17,6 +18,9 @@ var ErrNotFound = errors.New("account not found")
 const (
 	accountsFile = "accounts.json"
 	stateFile    = "state.json"
+
+	// tempPrefix marks the scratch file an atomic write renames into place.
+	tempPrefix = ".tmp-"
 )
 
 // Store is the credential pool plus its health state. It is safe for
@@ -45,6 +49,8 @@ func Open(dir string) (*Store, error) {
 	if info, err := os.Stat(dir); err == nil && info.Mode().Perm()&0o077 != 0 {
 		_ = os.Chmod(dir, 0o700) //nolint:gosec // 0700 is correct for a directory; the rule is about files
 	}
+	sweepStaleTemps(dir)
+
 	s := &Store{dir: dir, health: map[string]*Health{}}
 	if err := s.loadAccounts(); err != nil {
 		return nil, err
@@ -53,6 +59,33 @@ func Open(dir string) (*Store, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// tempStaleAfter is how old a temp file must be before it is assumed abandoned.
+// Another agentswap may be mid-write in this directory right now, and deleting
+// its temp file would fail its rename; nothing legitimate takes an hour.
+const tempStaleAfter = time.Hour
+
+// sweepStaleTemps removes leftovers from a write that was killed between
+// creating the temp file and renaming it. Best effort throughout: a config
+// directory slowly filling with debris is untidy, but not a reason to refuse
+// to start.
+func sweepStaleTemps(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-tempStaleAfter)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), tempPrefix) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, e.Name()))
+	}
 }
 
 func (s *Store) loadAccounts() error {
@@ -309,7 +342,7 @@ func writeJSONAtomic(path string, v any) error {
 	b = append(b, '\n')
 
 	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, ".tmp-*")
+	f, err := os.CreateTemp(dir, tempPrefix+"*")
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
 	}
