@@ -8,6 +8,13 @@ version moves for anything that changes behaviour.
 
 ### Fixed
 
+- **Concurrent writes to the same file could fail on Windows.** The data lock
+  is released before writing so readers are never blocked on disk I/O, which
+  means two goroutines can reach the write at once; on Windows a replace of a
+  path another handle has open fails with a sharing violation, so a busy daemon
+  would intermittently fail to persist health or a token it had just refreshed.
+  Writes are serialized now, and the rename retries briefly for what a lock
+  cannot cover.
 - **Health was lost on every clean shutdown.** The final flush runs in the
   flusher goroutine while the main path returned as soon as the server did, so
   the process could exit between writing the temp file and renaming it. The
