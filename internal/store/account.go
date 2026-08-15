@@ -5,7 +5,10 @@
 // while state.json churns constantly as quota is observed.
 package store
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // LaneID names a wire protocol, not a vendor. A lane is the unit of
 // interchangeability: any account in a lane can serve any request in that lane
@@ -54,6 +57,29 @@ type Account struct {
 	// makes same-protocol third-party providers work.
 	APIKey  string `json:"api_key,omitempty"`
 	BaseURL string `json:"base_url,omitempty"`
+}
+
+// UnmarshalJSON reads an account, defaulting enabled to true when the key is
+// absent.
+//
+// accounts.json is documented as hand-editable, and JSON's zero value for a
+// bool would make an entry someone typed by hand silently inert: `list` shows
+// it as disabled, `doctor` reports the lane as empty, and nothing says why.
+// Disabling is the deliberate, unusual act, so it is the one that has to be
+// spelled out.
+func (a *Account) UnmarshalJSON(b []byte) error {
+	// The alias sheds the method set, so unmarshalling does not recurse.
+	type alias Account
+	aux := struct {
+		Enabled *bool `json:"enabled"`
+		*alias
+	}{alias: (*alias)(a)}
+
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	a.Enabled = aux.Enabled == nil || *aux.Enabled
+	return nil
 }
 
 // TokenExpired reports whether the access token is expired or close enough to

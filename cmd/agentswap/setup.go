@@ -148,8 +148,16 @@ func cmdDoctor(args []string) error {
 		total += counts[l]
 	}
 	if total == 0 {
-		check(false, "the pool has accounts (0)",
-			"run `agentswap import`, or `agentswap add-key anthropic --key ...`")
+		// "No usable accounts" and "no accounts at all" want opposite advice,
+		// and being told to import when the pool is full of disabled accounts
+		// is a dead end.
+		if disabled := st.All(); len(disabled) > 0 {
+			check(false, fmt.Sprintf("the pool has no enabled accounts (%d disabled)", len(disabled)),
+				fmt.Sprintf("run `agentswap enable %s`", disabled[0].ID))
+		} else {
+			check(false, "the pool has accounts (0)",
+				"run `agentswap import`, or `agentswap add-key anthropic --key ...`")
+		}
 	}
 	for _, l := range lanes {
 		switch {

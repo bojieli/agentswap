@@ -279,3 +279,42 @@ func accountRows(listOutput string) int {
 	}
 	return n
 }
+
+// accounts.json is documented as hand-editable. A minimal entry someone typed
+// has to work, rather than being silently inert because JSON's zero value for
+// a bool is false.
+func TestHandWrittenAccountWorks(t *testing.T) {
+	e := newEnv(t)
+	writeFile(t, filepath.Join(e.home, "accounts.json"), `[
+	  {"id": "mine", "lane": "anthropic", "kind": "api_key", "api_key": "sk-ant-hand-written",
+	   "base_url": "`+e.upstream.url()+`"}
+	]`)
+
+	mustContain(t, e.mustRun("list").out(), "available", "list")
+
+	d := e.serve()
+	resp, body := d.post(t, "/anthropic/v1/messages", `{}`)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d: %s", resp.StatusCode, body)
+	}
+	if got := e.upstream.keys(); len(got) != 1 || got[0] != "sk-ant-hand-written" {
+		t.Errorf("upstream saw %v, want the hand-written account used", got)
+	}
+}
+
+// Disabling must still be honoured — it is the deliberate act.
+func TestExplicitlyDisabledStaysDisabled(t *testing.T) {
+	e := newEnv(t)
+	writeFile(t, filepath.Join(e.home, "accounts.json"), `[
+	  {"id": "off", "lane": "anthropic", "kind": "api_key", "api_key": "k", "enabled": false}
+	]`)
+	mustContain(t, e.mustRun("list").out(), "disabled", "list")
+
+	// And the advice has to be about enabling it, not importing another.
+	r := e.run("doctor")
+	if r.code == 0 {
+		t.Error("doctor passed with nothing usable")
+	}
+	mustContain(t, r.out(), "agentswap enable off", "doctor")
+	mustNotContain(t, r.out(), "agentswap import", "doctor")
+}

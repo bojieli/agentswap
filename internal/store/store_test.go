@@ -371,3 +371,93 @@ func TestLaneIDValid(t *testing.T) {
 		}
 	}
 }
+
+// accounts.json is documented as hand-editable, so an entry that omits the
+// optional keys has to behave the way someone writing it would expect.
+func TestHandWrittenAccountDefaultsToEnabled(t *testing.T) {
+	_, dir := openTemp(t)
+	body := `[{"id":"mine","lane":"anthropic","kind":"api_key","api_key":"sk-ant"}]`
+	if err := os.WriteFile(filepath.Join(dir, accountsFile), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if n := len(st.Accounts(LaneAnthropic)); n != 1 {
+		t.Errorf("the lane has %d usable accounts, want 1: an absent \"enabled\" made it inert", n)
+	}
+}
+
+// Disabling is the deliberate act and has to survive a round trip.
+func TestExplicitlyDisabledSurvives(t *testing.T) {
+	st, dir := openTemp(t)
+	seed(t, st, &Account{ID: "off", Lane: LaneAnthropic, Kind: KindAPIKey, Enabled: false, APIKey: "k"})
+
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if n := len(reopened.Accounts(LaneAnthropic)); n != 0 {
+		t.Errorf("the lane has %d usable accounts, want 0", n)
+	}
+	got, err := reopened.Get("off")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Enabled {
+		t.Error("a disabled account came back enabled")
+	}
+}
+
+// A state file from a newer version must not stop an older one starting.
+func TestUnknownFieldsAreTolerated(t *testing.T) {
+	_, dir := openTemp(t)
+	accounts := `[{"id":"a","lane":"anthropic","kind":"api_key","api_key":"k","future_field":42}]`
+	if err := os.WriteFile(filepath.Join(dir, accountsFile), []byte(accounts), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := `{"a":{"state":"available","future_field":"whatever"}}`
+	if err := os.WriteFile(filepath.Join(dir, stateFile), []byte(state), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if n := len(st.Accounts(LaneAnthropic)); n != 1 {
+		t.Errorf("the lane has %d accounts, want 1", n)
+	}
+}
+
+func TestSweepStaleTemps(t *testing.T) {
+	_, dir := openTemp(t)
+
+	stale := filepath.Join(dir, tempPrefix+"abandoned")
+	if err := os.WriteFile(stale, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	// Another agentswap could be mid-write in this directory right now, and
+	// removing its temp file would fail its rename.
+	fresh := filepath.Join(dir, tempPrefix+"inflight")
+	if err := os.WriteFile(fresh, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Open(dir); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("an abandoned temp file survived: %v", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Errorf("a temp file that may still be in use was removed: %v", err)
+	}
+}
