@@ -37,6 +37,14 @@ func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create config dir: %w", err)
 	}
+	// MkdirAll leaves an existing directory's mode alone, so a config dir
+	// created by hand or by an older version can still be world-readable. The
+	// files inside are 0600, but the listing is a map of which accounts exist
+	// and the directory being writable is worse than that. Best effort: on
+	// Windows, or a directory we do not own, there is nothing to do.
+	if info, err := os.Stat(dir); err == nil && info.Mode().Perm()&0o077 != 0 {
+		_ = os.Chmod(dir, 0o700)
+	}
 	s := &Store{dir: dir, health: map[string]*Health{}}
 	if err := s.loadAccounts(); err != nil {
 		return nil, err
