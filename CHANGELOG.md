@@ -8,6 +8,30 @@ version moves for anything that changes behaviour.
 
 ### Fixed
 
+- **Health was lost on every clean shutdown.** The final flush runs in the
+  flusher goroutine while the main path returned as soon as the server did, so
+  the process could exit between writing the temp file and renaming it. The
+  next start re-probed an account already known to be spent, burning a request
+  to rediscover the limit, and left the temp file behind for good. A stale temp
+  file from a hard kill is now swept at startup.
+- **A quota window that refills in seconds was waited out for a full minute.**
+  The livelock guard exists for reset times that have already passed, but it
+  was applied as a floor under every reset. It is a fallback now, not a floor.
+  The clock-skew allowance had the same shape and is capped at the length of
+  the wait, since being early is self-correcting and being late is pure loss.
+- **Beta flags the client asked for were silently dropped.** The
+  `anthropic-beta` header is legal repeated as well as comma-joined; reading
+  only the first line and overwriting the rest discarded whichever features
+  were requested in the others.
+- **A hand-written `accounts.json` entry was silently inert.** The file is
+  documented as hand-editable, but JSON's zero value for a bool meant an entry
+  without `"enabled": true` never entered rotation, showing as disabled in
+  `list` while `doctor` reported the lane as empty. An absent key now means
+  enabled.
+- **`serve --addr 127.0.0.1:0`** bound a random port and published the literal
+  `:0`, which is useless to every other command.
+- **`doctor` told anyone whose accounts were all disabled to run `import`**,
+  which would not have helped.
 - **Concurrent token refresh could retire an account.** Both upstreams rotate
   the refresh token when it is used, so several in-flight requests noticing the
   same expired token all posted it — and every exchange after the first
@@ -63,6 +87,13 @@ version moves for anything that changes behaviour.
 - Release binaries for seven platforms with published checksums, an install
   script that verifies them, and `docs/` covering configuration, architecture
   and troubleshooting.
+- An end-to-end suite that compiles the binary and drives it as a subprocess —
+  argv, exit codes, files on disk and HTTP — covering the CLI, the proxy,
+  install and uninstall, doctor and the supervisor. Coverage from it is merged
+  with the unit tests, which is the only way the CLI layer's real coverage
+  shows at all.
+- `govulncheck` in CI, which is the security scan that can run on a private
+  repository.
 
 ### Changed
 

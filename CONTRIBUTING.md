@@ -67,6 +67,27 @@ safe by default.
 - No writes outside `t.TempDir()`. Tests that touch the config directory set
   `AGENTSWAP_HOME`, `CODEX_HOME` or `CLAUDE_CREDENTIALS_PATH` with `t.Setenv`.
 
+## The two suites
+
+`internal/...` and `cmd/...` are unit tests: they cover decisions, with a fake
+clock and a fake upstream, so a five-hour park is a fast test.
+
+`e2e/` compiles the binary and drives it as a subprocess — argv, exit codes,
+files on disk, HTTP. It imports no internal package on purpose, so a refactor
+that breaks the product cannot be hidden by a refactor of the tests. Several
+of the bugs fixed in this repository were only visible from there.
+
+```sh
+make unit     # fast; skips the subprocess suite
+make e2e      # just the end-to-end suite, verbosely
+make test     # both, with the race detector
+make cover    # both, merged into one coverage number
+```
+
+Coverage is merged across the two because the CLI layer reads 9% from the unit
+tests alone and 88% once the binary's own run is counted. CI fails below a 75%
+floor — a ratchet, not a target.
+
 Run `go test -race -shuffle=on ./...` before sending; CI runs it on Linux,
 macOS and Windows, against the oldest supported Go and the current stable one.
 

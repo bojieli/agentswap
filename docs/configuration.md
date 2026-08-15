@@ -177,3 +177,7 @@ rather than edited by hand.
 
 Subscriptions are always tried before API keys regardless of priority, because
 they are already paid for.
+
+The file is safe to edit by hand. Only `id`, `lane`, `kind` and the credential
+are required; an absent `enabled` means enabled, since disabling is the
+deliberate act.
