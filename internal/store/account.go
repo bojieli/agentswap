@@ -7,6 +7,7 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -138,6 +139,29 @@ func (a *Account) SameCredentialAs(other *Account) bool {
 		}
 		return a.AccessToken != "" && a.AccessToken == other.AccessToken
 	}
+}
+
+// Problem describes why this account cannot serve a request, or "" when it
+// can. It covers what a hand-edited file can get wrong about one entry, as
+// opposed to what makes the whole file ambiguous.
+//
+// Reported rather than fatal: an account nobody can use is worth saying out
+// loud, but refusing to load the pool over it would take away the commands
+// needed to fix it.
+func (a *Account) Problem() string {
+	switch a.Kind {
+	case KindAPIKey:
+		if a.APIKey == "" {
+			return "no api_key"
+		}
+	case KindOAuth:
+		if a.AccessToken == "" && a.RefreshToken == "" {
+			return "no token"
+		}
+	default:
+		return fmt.Sprintf("unknown kind %q, want oauth or api_key", a.Kind)
+	}
+	return ""
 }
 
 // Display returns the human-facing name used in logs and `agentswap status`.

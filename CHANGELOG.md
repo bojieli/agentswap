@@ -8,6 +8,22 @@ version moves for anything that changes behaviour.
 
 ### Fixed
 
+- **A redirect from the upstream was followed, with the credential attached.**
+  Go strips `Authorization` across domains but knows nothing about `X-Api-Key`,
+  so a 3xx could hand a key to whatever host it named — and Go rewrites POST as
+  GET on a 302, which would have turned a message into a silent no-op.
+  Redirects are handed back to the client, which is what a proxy should do with
+  them.
+- **A hand-edited `accounts.json` could say two things at once.** Two accounts
+  sharing an id silently halved the pool, because every command and the health
+  record address an account by id and only ever reached the first. That is now
+  refused. An account with no credential, or an unknown `kind`, is reported by
+  `list` and `doctor` and skipped when routing — reported rather than fatal,
+  since refusing to load the pool would take away the commands needed to fix it.
+- **An anthropic base URL ending in `/v1` now warns.** Claude Code sends
+  `/v1/messages`, so the provider saw `/v1/v1/messages` and 404'd everything,
+  with nothing in the failure to suggest why. The documentation recommended
+  exactly that URL.
 - **An empty `config.json` stopped every command.** Zero bytes is what a
   redirect leaves behind, and refusing to start over it stranded the user until
   they worked out that deleting the file was the cure. An empty file now says
@@ -93,6 +109,13 @@ version moves for anything that changes behaviour.
 
 ### Added
 
+- **`agentswap service`**, which runs the daemon in the background and starts it
+  again at login — a LaunchAgent on macOS, a systemd user unit on Linux, and on
+  Windows the Task Scheduler and Startup-folder instructions. Everything
+  agentswap does assumes the daemon is up, and leaving that to a terminal the
+  user must not close was the difference between a tool that works and one that
+  works until they reboot. Per-user, never system-wide: the daemon holds one
+  person's credentials.
 - **`agentswap set`**, which changes an account already in the pool: its
   upstream, priority, label or key. Previously an account's base URL could only
   be set when it was added — and never at all for a subscription — so moving a

@@ -38,10 +38,13 @@ curl -fsSL https://raw.githubusercontent.com/bojieli/agentswap/main/install.sh |
 ## Quick start
 
 ```sh
-agentswap import      # adopt the login you already have
-agentswap install     # point Claude Code and Codex at agentswap
-agentswap serve       # run the daemon
+agentswap import           # adopt the login you already have
+agentswap install          # point Claude Code and Codex at agentswap
+agentswap service install  # run the daemon now, and again at every login
 ```
+
+(`agentswap serve` runs it in the foreground instead, if you would rather watch
+it.)
 
 Then use your CLIs exactly as before:
 
@@ -65,7 +68,7 @@ tried after every subscription is spent:
 ```sh
 agentswap add-key anthropic                     # prompts, with the echo off
 agentswap add-key anthropic --key - --id corp \
-  --base-url https://llm.corp.example.com/v1
+  --base-url https://llm.corp.example.com
 ```
 
 Then `agentswap status` to see the pool, and `agentswap doctor` if anything

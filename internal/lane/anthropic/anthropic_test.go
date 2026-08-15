@@ -350,3 +350,19 @@ func TestAuthorizeAPIKeyKeepsEveryBetaFlagButOurs(t *testing.T) {
 		t.Errorf("Anthropic-Beta has %d values, want them merged into one", n)
 	}
 }
+
+// A proxy that follows a redirect sends the pool's credential to a host nobody
+// configured — Go strips Authorization across domains but knows nothing about
+// X-Api-Key — and rewrites POST as GET on a 302, turning a message into a
+// silent no-op. The redirect goes back to the client instead.
+func TestRedirectsAreHandedBackNotFollowed(t *testing.T) {
+	for _, code := range []int{301, 302, 303, 307, 308} {
+		resp := &http.Response{StatusCode: code, Header: http.Header{}}
+		resp.Header.Set("Location", "https://elsewhere.example/v1/messages")
+
+		got := (&Lane{}).Classify(resp, nil, config.Default().Retry, testNow)
+		if got.Action != lane.ActionFatal {
+			t.Errorf("%d: action = %v, want it relayed to the client untouched", code, got.Action)
+		}
+	}
+}

@@ -37,6 +37,15 @@ func openStore() (*store.Store, config.Config, error) {
 // deadlines come from the request context instead.
 func upstreamClient() *http.Client {
 	return &http.Client{
+		// Never follow a redirect. A proxy has no business deciding to send
+		// somebody's credential to a host they did not configure — Go strips
+		// Authorization across domains but knows nothing about X-Api-Key, so
+		// an upstream redirect would hand the key to whoever it named. It also
+		// rewrites POST as GET on a 302, which would turn a message into a
+		// silent no-op. Relaying the 3xx lets the client decide.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 		Transport: &http.Transport{
 			Proxy:                 http.ProxyFromEnvironment,
 			MaxIdleConns:          100,

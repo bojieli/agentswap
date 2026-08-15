@@ -111,7 +111,7 @@ func TestUpsertRejectsIncompleteAccounts(t *testing.T) {
 
 func TestRemove(t *testing.T) {
 	st, _ := openTemp(t)
-	seed(t, st, &Account{ID: "a", Lane: LaneAnthropic, Kind: KindOAuth, Enabled: true})
+	seed(t, st, &Account{ID: "a", Lane: LaneAnthropic, Kind: KindOAuth, Enabled: true, AccessToken: "t"})
 	st.MutateHealth("a", func(h *Health) { h.State = StateExhausted })
 
 	if err := st.Remove("a"); err != nil {
@@ -133,12 +133,12 @@ func TestRemove(t *testing.T) {
 // spent before metered keys.
 func TestAccountsOrdering(t *testing.T) {
 	st, _ := openTemp(t)
-	seed(t, st, &Account{ID: "key-1", Lane: LaneAnthropic, Kind: KindAPIKey, Enabled: true, Priority: 0})
-	seed(t, st, &Account{ID: "sub-b", Lane: LaneAnthropic, Kind: KindOAuth, Enabled: true, Priority: 5})
-	seed(t, st, &Account{ID: "sub-a", Lane: LaneAnthropic, Kind: KindOAuth, Enabled: true, Priority: 5})
-	seed(t, st, &Account{ID: "sub-first", Lane: LaneAnthropic, Kind: KindOAuth, Enabled: true, Priority: 1})
-	seed(t, st, &Account{ID: "off", Lane: LaneAnthropic, Kind: KindOAuth, Enabled: false})
-	seed(t, st, &Account{ID: "other-lane", Lane: LaneOpenAI, Kind: KindOAuth, Enabled: true})
+	seed(t, st, &Account{ID: "key-1", Lane: LaneAnthropic, Kind: KindAPIKey, Enabled: true, Priority: 0, APIKey: "k"})
+	seed(t, st, &Account{ID: "sub-b", Lane: LaneAnthropic, Kind: KindOAuth, Enabled: true, Priority: 5, AccessToken: "t"})
+	seed(t, st, &Account{ID: "sub-a", Lane: LaneAnthropic, Kind: KindOAuth, Enabled: true, Priority: 5, AccessToken: "t"})
+	seed(t, st, &Account{ID: "sub-first", Lane: LaneAnthropic, Kind: KindOAuth, Enabled: true, Priority: 1, AccessToken: "t"})
+	seed(t, st, &Account{ID: "off", Lane: LaneAnthropic, Kind: KindOAuth, Enabled: false, AccessToken: "t"})
+	seed(t, st, &Account{ID: "other-lane", Lane: LaneOpenAI, Kind: KindOAuth, Enabled: true, AccessToken: "t"})
 
 	var got []string
 	for _, a := range st.Accounts(LaneAnthropic) {
@@ -162,7 +162,7 @@ func TestHealthDefaultsToAvailable(t *testing.T) {
 func TestHealthSurvivesRestart(t *testing.T) {
 	st, dir := openTemp(t)
 	reset := time.Now().Add(time.Hour).Round(time.Second)
-	seed(t, st, &Account{ID: "a", Lane: LaneAnthropic, Kind: KindOAuth, Enabled: true})
+	seed(t, st, &Account{ID: "a", Lane: LaneAnthropic, Kind: KindOAuth, Enabled: true, AccessToken: "t"})
 	st.MutateHealth("a", func(h *Health) {
 		h.State = StateExhausted
 		h.ResetAt = reset
@@ -187,7 +187,7 @@ func TestHealthSurvivesRestart(t *testing.T) {
 // start over a corrupt copy of it would be a bad trade.
 func TestCorruptHealthDoesNotBlockStartup(t *testing.T) {
 	st, dir := openTemp(t)
-	seed(t, st, &Account{ID: "a", Lane: LaneAnthropic, Kind: KindOAuth, Enabled: true})
+	seed(t, st, &Account{ID: "a", Lane: LaneAnthropic, Kind: KindOAuth, Enabled: true, AccessToken: "t"})
 	if err := os.WriteFile(filepath.Join(dir, stateFile), []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestFlushHealthSkipsCleanState(t *testing.T) {
 func TestConcurrentHealthMutationAndFlush(t *testing.T) {
 	st, _ := openTemp(t)
 	for _, id := range []string{"a", "b", "c"} {
-		seed(t, st, &Account{ID: id, Lane: LaneAnthropic, Kind: KindOAuth, Enabled: true})
+		seed(t, st, &Account{ID: id, Lane: LaneAnthropic, Kind: KindOAuth, Enabled: true, AccessToken: "t"})
 	}
 
 	var wg sync.WaitGroup

@@ -3,7 +3,6 @@ package supervisor
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -210,29 +209,28 @@ func TestRunResumesAfterATicket(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "invocations.log")
 
-	// A stand-in for `claude`: records how it was called, and on the first run
-	// drops a ticket the way the proxy would.
-	//
-	// The timestamps are computed here rather than by shelling out to `date`,
-	// whose -d flag is GNU-only — BSD date, and so every macOS runner, rejects
-	// it.
-	now := time.Now().UTC()
-	ticket := fmt.Sprintf(`{"lane":"anthropic","until":"%s","written_at":"%s"}`,
-		now.Add(3*time.Second).Format(time.RFC3339),
-		now.Format(time.RFC3339))
-
+	// A stand-in for `claude`: records how it was called, and fails the first
+	// time the way a CLI does when the pool has run dry.
 	fake := filepath.Join(dir, "claude")
 	script := "#!/bin/sh\n" +
 		"echo \"$@\" >> " + log + "\n" +
 		"if [ ! -f " + dir + "/fired ]; then\n" +
 		"  touch " + dir + "/fired\n" +
-		"  mkdir -p " + TicketDir(dir) + "\n" +
-		"  cat > " + TicketDir(dir) + "/anthropic.json <<'TICKET'\n" +
-		ticket + "\n" +
-		"TICKET\n" +
 		"  exit 1\n" +
 		"fi\n"
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// The ticket is written here rather than by the script, so its deadline
+	// cannot expire while a loaded machine gets around to starting a shell.
+	// PendingSince accepts a ticket from just before the run for exactly this
+	// reason. That the *proxy* writes one at all is covered end to end, with a
+	// real daemon, in e2e/run_test.go.
+	now := time.Now().UTC()
+	if err := WriteTicket(dir, Ticket{
+		Lane: store.LaneAnthropic, Until: now.Add(time.Second), WrittenAt: now,
+	}); err != nil {
 		t.Fatal(err)
 	}
 

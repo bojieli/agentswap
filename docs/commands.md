@@ -119,6 +119,24 @@ address it actually bound so the other commands can find it.
 
 Ctrl-C or SIGTERM shuts it down, flushing observed quota first.
 
+### `agentswap service <install|uninstall|status>`
+Runs the daemon in the background and starts it again at login, so nothing
+depends on a terminal staying open. Per-user, never system-wide: the daemon
+holds one person's credentials.
+
+| Platform | What it writes |
+| --- | --- |
+| macOS | a LaunchAgent at `~/Library/LaunchAgents/com.github.bojieli.agentswap.plist` |
+| Linux | a systemd user unit at `~/.config/systemd/user/agentswap.service` |
+| Windows | nothing — it prints the Task Scheduler and Startup-folder options |
+
+`install --dry-run` prints the file instead of writing it. The config
+directory is written into the service, so it reads the same pool the CLI
+edits — a service manager's environment is not your shell's.
+
+On Linux a user unit stops when you log out unless lingering is on:
+`sudo loginctl enable-linger $USER`.
+
 ### `agentswap run -- <command> [args...]`
 Runs a CLI against agentswap and, if the whole pool runs dry for longer than
 `park.max_hold`, waits for the reset and resumes the session rather than

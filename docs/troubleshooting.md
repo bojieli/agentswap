@@ -142,6 +142,34 @@ Cannot be retried transparently, and agentswap does not pretend otherwise. Once
 bytes have reached the client, replaying the request would duplicate output.
 Those errors reach the CLI, which will usually offer to continue.
 
+## The daemon stops when I close the terminal
+
+That is what a foreground process does. To keep it running, and start it again
+at login:
+
+```sh
+agentswap service install
+agentswap service status
+```
+
+On Linux a systemd user unit also stops at logout unless lingering is enabled:
+`sudo loginctl enable-linger $USER`. On Windows there is no per-user service
+manager agentswap writes for; `agentswap service install` prints the Task
+Scheduler and Startup-folder options.
+
+## A third-party provider returns 404 for everything
+
+Check the base URL for a doubled path. Claude Code sends `/v1/messages`, so an
+anthropic-lane base URL ending in `/v1` reaches the provider as
+`/v1/v1/messages`:
+
+```sh
+agentswap set corp --base-url https://llm.corp.example.com     # not .../v1
+```
+
+The openai lane is the other way round: its own default ends in `/v1`, because
+Codex sends a bare `/responses`.
+
 ## The daemon will not start
 
 **`address already in use`** — an older daemon is still running. Find it with

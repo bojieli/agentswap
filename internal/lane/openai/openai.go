@@ -222,6 +222,14 @@ func (*Lane) Classify(resp *http.Response, body []byte, cfg config.Retry, now ti
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		return lane.Outcome{Action: lane.ActionRelay}
 
+	case resp.StatusCode >= 300 && resp.StatusCode < 400:
+		// Handed straight back. Following it ourselves would send the pool's
+		// credential to a host nobody configured.
+		return lane.Outcome{
+			Action: lane.ActionFatal,
+			Reason: fmt.Sprintf("upstream redirect (%d)", resp.StatusCode),
+		}
+
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 		return lane.Outcome{
 			Action: lane.ActionRefreshAuth,

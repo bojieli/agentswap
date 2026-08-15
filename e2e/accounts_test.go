@@ -3,8 +3,10 @@ package e2e
 import (
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -372,4 +374,126 @@ func TestEmptyConfigFileIsTreatedAsAbsent(t *testing.T) {
 			t.Errorf("%s failed with an empty config.json:\n%s", cmd, r.out())
 		}
 	}
+}
+
+// A hand-edited file can say two things at once. An id is how everything
+// addresses an account, so two of them silently halve the pool.
+func TestDuplicateIDsAreRefused(t *testing.T) {
+	e := newEnv(t)
+	writeFile(t, filepath.Join(e.home, "accounts.json"), `[
+	  {"id":"same","lane":"anthropic","kind":"api_key","api_key":"a"},
+	  {"id":"same","lane":"anthropic","kind":"api_key","api_key":"b"}
+	]`)
+
+	r := e.run("list")
+	if r.code == 0 {
+		t.Error("two accounts with one id were accepted")
+	}
+	mustContain(t, r.out(), "two accounts with the id", "list")
+}
+
+// One unusable account must not take away the commands needed to fix it.
+func TestAnUnusableAccountIsReportedNotFatal(t *testing.T) {
+	e := newEnv(t)
+	writeFile(t, filepath.Join(e.home, "accounts.json"), `[
+	  {"id":"good","lane":"anthropic","kind":"api_key","api_key":"fine","base_url":"`+e.upstream.url()+`"},
+	  {"id":"broken","lane":"anthropic","kind":"api_key"}
+	]`)
+
+	list := e.mustRun("list").out()
+	mustContain(t, list, "unusable", "list")
+	mustContain(t, list, "no api_key", "list")
+
+	r := e.run("doctor")
+	if r.code == 0 {
+		t.Error("doctor passed with an unusable account")
+	}
+	mustContain(t, r.out(), "agentswap remove broken", "doctor")
+
+	// The good one still serves, and the broken one is never tried.
+	d := e.serve()
+	resp, _ := d.post(t, "/anthropic/v1/messages", `{}`)
+	if resp.StatusCode != 200 {
+		t.Errorf("status = %d, want the usable account to serve", resp.StatusCode)
+	}
+	if got := e.upstream.keys(); len(got) != 1 || got[0] != "fine" {
+		t.Errorf("upstream saw %v, want only the usable account", got)
+	}
+}
+
+// Following one would send the pool's credential to a host nobody configured,
+// and rewrite POST as GET on the way.
+func TestRedirectsAreNotFollowed(t *testing.T) {
+	e := newEnv(t)
+	var elsewhereSaw string
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		elsewhereSaw = r.Header.Get("X-Api-Key")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	defer elsewhere.Close()
+
+	e.pool("secret-key")
+	e.upstream.handle(func(w http.ResponseWriter, r *http.Request, _ recorded) {
+		http.Redirect(w, r, elsewhere.URL+"/v1/messages", http.StatusFound)
+	})
+	d := e.serve()
+
+	req, err := http.NewRequest(http.MethodPost,
+		"http://"+d.addr+"/anthropic/v1/messages", strings.NewReader(`{"model":"claude"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This client must not follow it either, or the test measures net/http
+	// rather than the proxy.
+	client := &http.Client{
+		Timeout:       30 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if elsewhereSaw != "" {
+		t.Errorf("the redirect target received our credential: %q", elsewhereSaw)
+	}
+	// The client gets the redirect and decides for itself.
+	if resp.StatusCode != http.StatusFound {
+		t.Errorf("status = %d, want the 302 handed back", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc == "" {
+		t.Error("Location was not relayed, so the client cannot act on it")
+	}
+}
+
+// The daemon has to keep running without a terminal held open for it.
+func TestServiceStatusAndDryRun(t *testing.T) {
+	e := newEnv(t)
+
+	status := e.run("service", "status")
+	if runtime.GOOS == "windows" {
+		if status.code == 0 {
+			t.Error("service status succeeded on a platform with no manager")
+		}
+		mustContain(t, status.out(), "Task Scheduler", "service status")
+		return
+	}
+	if status.code != 0 {
+		t.Fatalf("service status: %s", status.out())
+	}
+	mustContain(t, status.out(), "not installed", "service status")
+
+	// --dry-run has to show the file without touching the system.
+	dry := e.mustRun("service", "install", "--dry-run").out()
+	mustContain(t, dry, "agentswap", "service install --dry-run")
+	mustContain(t, dry, e.home, "service install --dry-run")
+	if runtime.GOOS == "darwin" {
+		mustContain(t, dry, "RunAtLoad", "the plist")
+	} else {
+		mustContain(t, dry, "ExecStart=", "the unit")
+	}
+
+	// And it must not have installed anything.
+	mustContain(t, e.mustRun("service", "status").out(), "not installed", "service status")
 }

@@ -109,6 +109,9 @@ func cmdSet(args []string) error {
 	for _, c := range changes {
 		fmt.Printf("  %s\n", c)
 	}
+	if given["base-url"] {
+		warnAboutBaseURLPath(account.Lane, *baseURL)
+	}
 	return nil
 }
 
@@ -126,4 +129,32 @@ func validateBaseURL(raw string) error {
 		return fmt.Errorf("base URL %q has no host", raw)
 	}
 	return nil
+}
+
+// warnAboutBaseURLPath flags an upstream that will produce a doubled path.
+//
+// Claude Code sends `/v1/messages`, and agentswap joins that onto the base
+// URL, so an anthropic base ending in `/v1` reaches the provider as
+// `/v1/v1/messages` and 404s. Gateways document their endpoint both ways, so
+// this is easy to get wrong and hard to diagnose — the request simply fails
+// with nothing in it about the extra segment.
+//
+// A warning rather than an error: a gateway is free to mount its API anywhere,
+// and refusing would make agentswap wrong about somebody else's URL scheme.
+func warnAboutBaseURLPath(lane store.LaneID, raw string) {
+	if raw == "" || lane != store.LaneAnthropic {
+		// The openai lane's own default ends in /v1, because Codex sends bare
+		// `/responses`. There it is right.
+		return
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return
+	}
+	if !strings.HasSuffix(strings.TrimSuffix(u.Path, "/"), "/v1") {
+		return
+	}
+	fmt.Printf("\n  note: this ends in /v1, and the client already sends /v1/messages,\n")
+	fmt.Printf("        so the provider will see /v1/v1/messages. If it 404s, try:\n")
+	fmt.Printf("          %s\n", strings.TrimSuffix(strings.TrimSuffix(raw, "/"), "/v1"))
 }

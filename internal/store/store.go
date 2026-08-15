@@ -107,12 +107,42 @@ func (s *Store) loadAccounts() error {
 	if err := json.Unmarshal(b, &accts); err != nil {
 		return fmt.Errorf("parse accounts.json: %w", err)
 	}
-	for _, a := range accts {
-		if !a.Lane.Valid() {
-			return fmt.Errorf("account %q: unknown lane %q", a.ID, a.Lane)
-		}
+	if err := validateAccounts(accts); err != nil {
+		return err
 	}
 	s.accounts = accts
+	return nil
+}
+
+// validateAccounts rejects a pool that cannot be addressed unambiguously.
+//
+// Only that. A single unusable account must not stop the pool loading, or the
+// commands needed to see and fix it — `list`, `set`, `remove` — would be the
+// ones that no longer run. Those problems are reported per account instead;
+// see Account.Problem.
+//
+// An id, by contrast, is how everything addresses an account: two accounts
+// sharing one silently halve the pool, because every command and the health
+// record would only ever reach the first.
+func validateAccounts(accts []*Account) error {
+	seen := map[string]bool{}
+	for i, a := range accts {
+		where := fmt.Sprintf("account %d in accounts.json", i+1)
+		if a.ID != "" {
+			where = fmt.Sprintf("account %q", a.ID)
+		}
+
+		switch {
+		case a.ID == "":
+			return fmt.Errorf("%s has no id", where)
+		case seen[a.ID]:
+			return fmt.Errorf("accounts.json has two accounts with the id %q; "+
+				"an id addresses one account, so they need different names", a.ID)
+		case !a.Lane.Valid():
+			return fmt.Errorf("%s: unknown lane %q; want anthropic or openai", where, a.Lane)
+		}
+		seen[a.ID] = true
+	}
 	return nil
 }
 
@@ -147,7 +177,11 @@ func (s *Store) Accounts(lane LaneID) []*Account {
 
 	var out []*Account
 	for _, a := range s.accounts {
-		if a.Lane == lane && a.Enabled {
+		// Problem() accounts are excluded here rather than at load: they are
+		// visible to `list` and `doctor`, which is where they can be fixed,
+		// but sending a request with a credential we know is missing only
+		// spends a round trip to be told so.
+		if a.Lane == lane && a.Enabled && a.Problem() == "" {
 			out = append(out, a.Clone())
 		}
 	}

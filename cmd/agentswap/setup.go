@@ -214,9 +214,15 @@ func cmdDoctor(args []string) error {
 
 	// 4. Report anything the pool already knows is broken.
 	for _, a := range st.All() {
+		if problem := a.Problem(); problem != "" {
+			check(false, fmt.Sprintf("account %q cannot be used (%s)", a.ID, problem),
+				fmt.Sprintf("fix it with `agentswap set %s`, `agentswap login --id %s`, "+
+					"or remove it with `agentswap remove %s`", a.ID, a.ID, a.ID))
+			continue
+		}
 		if h := st.Health(a.ID); h.State == store.StateInvalid {
 			check(false, fmt.Sprintf("account %q was rejected", a.Display()),
-				h.LastError+" — re-import or remove it")
+				fmt.Sprintf("%s — sign in again with `agentswap login --id %s`", h.LastError, a.ID))
 		}
 	}
 

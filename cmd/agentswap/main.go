@@ -21,6 +21,7 @@ type command struct {
 func main() {
 	commands := []command{
 		{"serve", "run the proxy daemon", cmdServe},
+		{"service", "run the daemon in the background, from login", cmdService},
 		{"run", "run a CLI, resuming it after a quota wait", cmdRun},
 		{"login", "add an account, or replace a rejected credential", cmdLogin},
 		{"import", "adopt the logins already on this machine", cmdImport},

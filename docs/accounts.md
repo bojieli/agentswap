@@ -39,7 +39,7 @@ agentswap add-key anthropic --id backup
 
 # 4. Add a company gateway that speaks the same protocol.
 agentswap add-key anthropic --id corp \
-  --base-url https://llm.corp.example.com/v1 --priority 150
+  --base-url https://llm.corp.example.com --priority 150
 
 # 5. Point your CLIs at agentswap, and run it.
 agentswap install
@@ -184,7 +184,7 @@ is otherwise an ordinary member of the pool:
 
 ```sh
 agentswap add-key anthropic --key - --id gateway \
-  --base-url https://llm.corp.example.com/v1
+  --base-url https://llm.corp.example.com
 ```
 
 That key is sent to the host you name, which is the point of the feature and
@@ -205,8 +205,8 @@ provider joins the pool, and it works for subscriptions as well as keys — a
 gateway in front of your own account is an ordinary member.
 
 ```sh
-agentswap add-key anthropic --key - --base-url https://llm.corp.example.com/v1
-agentswap set corp --base-url https://other.example.com/v1   # move it
+agentswap add-key anthropic --key - --base-url https://llm.corp.example.com
+agentswap set corp --base-url https://other.example.com   # move it
 agentswap set corp --base-url ""                             # back to the vendor
 ```
 

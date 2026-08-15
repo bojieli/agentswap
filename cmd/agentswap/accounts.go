@@ -264,6 +264,7 @@ func cmdAddKey(args []string) error {
 	fmt.Printf("%s %q (%s) in the %s lane\n", verb, accountID, maskKey(secret), laneID)
 	if *baseURL != "" {
 		fmt.Printf("  upstream: %s\n", *baseURL)
+		warnAboutBaseURLPath(laneID, *baseURL)
 	}
 	return nil
 }
@@ -339,6 +340,10 @@ func cmdList([]string) error {
 		if !a.Enabled {
 			state = "disabled"
 		}
+		if a.Problem() != "" {
+			// It cannot serve a request, whatever its health says.
+			state = "unusable"
+		}
 		fmt.Printf("%-18s %-10s %-14s %-4d %-10s %s\n",
 			truncate(a.ID, 18), a.Lane, kind, a.Priority, state, credentialSummary(a))
 	}
@@ -351,6 +356,9 @@ func cmdList([]string) error {
 // colleague — cannot otherwise tell which row is which, and "remove the wrong
 // one" is an unpleasant way to find out.
 func credentialSummary(a *store.Account) string {
+	if problem := a.Problem(); problem != "" {
+		return problem
+	}
 	var parts []string
 	if a.Kind == store.KindAPIKey && a.APIKey != "" {
 		parts = append(parts, maskKey(a.APIKey))
