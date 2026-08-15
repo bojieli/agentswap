@@ -105,6 +105,20 @@ func cmdSet(args []string) error {
 		return err
 	}
 
+	// A rejection is evidence about a credential and an upstream. Change
+	// either and the evidence is stale — without this, the fix that `status`
+	// and the client's error both recommend leaves the account exactly as
+	// unusable as it was, which is worse than no advice at all.
+	if given["key"] || given["base-url"] {
+		st.MutateHealth(id, func(h *store.Health) { *h = store.Health{State: store.StateAvailable} })
+		if err := st.FlushHealth(); err != nil {
+			fmt.Printf("  (could not clear the old health record: %v)\n", err)
+		}
+		changes = append(changes, "back in rotation")
+	}
+
+	notifyDaemon(id)
+
 	fmt.Printf("%s\n", id)
 	for _, c := range changes {
 		fmt.Printf("  %s\n", c)

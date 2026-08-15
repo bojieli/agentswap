@@ -88,6 +88,7 @@ func cmdImport(args []string) error {
 		fmt.Printf("  %-10s %s %q (%s)\n", a.Lane, verb, a.ID, kind)
 	}
 
+	notifyDaemon()
 	fmt.Printf("\n%d account(s) in the pool. Next: agentswap install && agentswap serve\n", len(st.All()))
 	reportEnvKeys(st)
 	return nil
@@ -257,6 +258,7 @@ func cmdAddKey(args []string) error {
 	if err := st.Upsert(a); err != nil {
 		return err
 	}
+	notifyDaemon()
 	verb := "added"
 	if replacing {
 		verb = "replaced the key for"
@@ -393,6 +395,7 @@ func cmdRemove(args []string) error {
 	if err := st.Remove(args[0]); err != nil {
 		return err
 	}
+	notifyDaemon()
 	fmt.Printf("removed %q\n", args[0])
 	return nil
 }
@@ -420,6 +423,7 @@ func setEnabled(args []string, enabled bool) error {
 	if err := st.Upsert(a); err != nil {
 		return err
 	}
+	notifyDaemon()
 	fmt.Printf("%sd %q\n", verb, a.ID)
 	return nil
 }

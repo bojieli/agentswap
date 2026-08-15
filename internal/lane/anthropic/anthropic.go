@@ -239,6 +239,33 @@ type errorBody struct {
 	} `json:"error"`
 }
 
+// errorMessage is what the upstream said, which is very often the whole
+// answer — "your token is not authorized for any channel serving this model"
+// cannot be inferred from a status code.
+func errorMessage(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var e errorBody
+	if err := json.Unmarshal(body, &e); err == nil {
+		if e.Error.Message != "" {
+			return e.Error.Message
+		}
+		// A type is not a sentence, but "authentication_error" still says more
+		// than a status code, and beats printing the raw envelope at somebody.
+		if e.Error.Type != "" {
+			return e.Error.Type
+		}
+		return ""
+	}
+	// Not every gateway answers with the vendor's envelope; a short plain body
+	// is still better than nothing.
+	if text := strings.TrimSpace(string(body)); len(text) <= 300 && !strings.HasPrefix(text, "<") {
+		return text
+	}
+	return ""
+}
+
 func errorType(body []byte) string {
 	if len(body) == 0 {
 		return ""
@@ -279,7 +306,7 @@ func (*Lane) Classify(resp *http.Response, body []byte, cfg config.Retry, now ti
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 		return lane.Outcome{
 			Action: lane.ActionRefreshAuth,
-			Reason: fmt.Sprintf("upstream returned %d", resp.StatusCode),
+			Reason: authReason(resp.StatusCode, errorMessage(body)),
 		}
 
 	case resp.StatusCode == http.StatusTooManyRequests:
@@ -314,6 +341,15 @@ func (*Lane) Classify(resp *http.Response, body []byte, cfg config.Retry, now ti
 			Reason: fmt.Sprintf("client error %d", resp.StatusCode),
 		}
 	}
+}
+
+// authReason describes a refused credential in the upstream's own words where
+// there are any.
+func authReason(status int, message string) string {
+	if message == "" {
+		return fmt.Sprintf("upstream returned %d", status)
+	}
+	return fmt.Sprintf("upstream returned %d: %s", status, message)
 }
 
 // classify429 separates a short throttle from a spent quota. Getting this

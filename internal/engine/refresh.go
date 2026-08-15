@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"github.com/bojieli/agentswap/internal/lane"
@@ -89,4 +90,27 @@ func (e *Engine) refresh(ctx context.Context, ln lane.Lane, id, staleToken strin
 		}
 		return current, nil
 	})
+}
+
+// redactSecrets removes an account's own credential from a message before it
+// is stored, logged, or shown to anyone.
+//
+// Relaying the upstream's words is what makes a refusal diagnosable, but the
+// upstream chooses those words: gateways do echo the key back — "Incorrect API
+// key provided: nb_…" — and some echo more of it than others. That text lands
+// in state.json, in the daemon's log, and in the client's error, so a proxy
+// whose whole point is that credentials do not leak has to take its own
+// credential back out of it.
+func redactSecrets(msg string, a *store.Account) string {
+	if msg == "" || a == nil {
+		return msg
+	}
+	for _, secret := range []string{a.APIKey, a.AccessToken, a.RefreshToken} {
+		// Short values are not credentials and would match half the message.
+		if len(secret) < 8 {
+			continue
+		}
+		msg = strings.ReplaceAll(msg, secret, "[redacted]")
+	}
+	return msg
 }

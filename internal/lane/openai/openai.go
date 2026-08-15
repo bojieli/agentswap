@@ -233,7 +233,7 @@ func (*Lane) Classify(resp *http.Response, body []byte, cfg config.Retry, now ti
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 		return lane.Outcome{
 			Action: lane.ActionRefreshAuth,
-			Reason: fmt.Sprintf("upstream returned %d", resp.StatusCode),
+			Reason: authReason(resp.StatusCode, errorMessage(body)),
 		}
 
 	case resp.StatusCode == http.StatusTooManyRequests:
@@ -306,6 +306,40 @@ func classify429(resp *http.Response, e errorBody, code string, now time.Time, c
 		ResetAt: now.Add(5 * time.Hour),
 		Reason:  "rate limited (no reset advertised)",
 	}
+}
+
+// errorMessage is what the upstream said. A status code cannot express "your
+// token is not authorized for any channel serving this model"; the body can,
+// and replacing it with our own guess throws away the diagnosis.
+func errorMessage(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var e errorBody
+	if err := json.Unmarshal(body, &e); err == nil {
+		if e.Error.Message != "" {
+			return e.Error.Message
+		}
+		// A type is not a sentence, but "authentication_error" still says more
+		// than a status code, and beats printing the raw envelope at somebody.
+		if e.Error.Type != "" {
+			return e.Error.Type
+		}
+		return ""
+	}
+	if text := strings.TrimSpace(string(body)); len(text) <= 300 && !strings.HasPrefix(text, "<") {
+		return text
+	}
+	return ""
+}
+
+// authReason describes a refused credential in the upstream's own words where
+// there are any.
+func authReason(status int, message string) string {
+	if message == "" {
+		return fmt.Sprintf("upstream returned %d", status)
+	}
+	return fmt.Sprintf("upstream returned %d: %s", status, message)
 }
 
 func firstNonEmpty(vals ...string) string {

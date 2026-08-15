@@ -8,6 +8,24 @@ version moves for anything that changes behaviour.
 
 ### Fixed
 
+Found by driving the real `claude` and `codex` against real upstreams:
+
+- **A refused API key was sent for a token refresh**, which cannot apply to a
+  key. The attempt failed with "not an oauth account", and *that* was recorded
+  as the reason and shown to the user — throwing away the upstream's actual
+  explanation and recommending a sign-in that does not exist for an API key.
+  The remedy now matches the credential, and the upstream's own words survive.
+- **A credential fixed from the CLI had no effect until the daemon restarted.**
+  The daemon reads the pool once, at startup, so replacing a rejected key or
+  signing in again — the fix that `status` and the client's own error both
+  recommend — changed nothing, with nothing anywhere saying why. Commands that
+  change the pool now tell a running daemon, which reloads and stops holding a
+  verdict about a credential that has been replaced.
+- **An upstream's error could carry the credential into agentswap's own
+  records.** Gateways do echo the key back ("Incorrect API key provided:
+  sk-…"), and that text was stored in state.json, logged, and returned to the
+  client. The account's own credential is now removed from any message before
+  it is kept or shown.
 - **A redirect from the upstream was followed, with the credential attached.**
   Go strips `Authorization` across domains but knows nothing about `X-Api-Key`,
   so a 3xx could hand a key to whatever host it named — and Go rewrites POST as

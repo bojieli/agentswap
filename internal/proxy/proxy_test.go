@@ -315,7 +315,16 @@ func TestRejectedPoolIsNotReportedAsAnEmptyOne(t *testing.T) {
 	if strings.Contains(got, "no accounts configured") {
 		t.Errorf("body = %s, want it to not claim the pool is empty", got)
 	}
-	if !strings.Contains(got, "agentswap login") {
+	// The pool here is API keys, and the remedy has to match the credential.
+	if !strings.Contains(got, "agentswap set") {
 		t.Errorf("body = %s, want the command that fixes it", got)
+	}
+	// The reason should be the upstream's words, not its serialized envelope
+	// escaped inside ours.
+	if strings.Contains(got, `\"error\"`) {
+		t.Errorf("body = %s, want the upstream's reason rather than its raw envelope", got)
+	}
+	if !strings.Contains(got, "authentication_error") {
+		t.Errorf("body = %s, want the upstream's reason carried through", got)
 	}
 }

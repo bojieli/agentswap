@@ -437,3 +437,58 @@ func renameWithRetry(tmp, path string) error {
 // far longer than a scanner holds a small file and short enough that a real
 // permissions problem still surfaces promptly.
 const renameAttempts = 10
+
+// Reload re-reads accounts.json and adopts it, reporting which accounts now
+// hold a different credential.
+//
+// The daemon reads the pool once at startup, so without this every fix made
+// from the CLI — a replaced key, a re-signed-in subscription, a newly pooled
+// account — has no effect until the daemon is restarted. That is the whole
+// recovery path silently not working, and the user has no way to tell.
+//
+// A credential that changed also invalidates what we concluded about it: an
+// account marked rejected was marked on the strength of a credential that is
+// no longer there.
+func (s *Store) Reload() (changed []string, err error) {
+	// Held for the whole operation so a reload cannot interleave with a write
+	// and revert a token this process has just refreshed.
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	b, err := os.ReadFile(filepath.Join(s.dir, accountsFile))
+	if errors.Is(err, os.ErrNotExist) {
+		b = []byte("[]")
+	} else if err != nil {
+		return nil, fmt.Errorf("read accounts: %w", err)
+	}
+
+	var accts []*Account
+	if err := json.Unmarshal(b, &accts); err != nil {
+		return nil, fmt.Errorf("parse accounts.json: %w", err)
+	}
+	if err := validateAccounts(accts); err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	previous := make(map[string]*Account, len(s.accounts))
+	for _, a := range s.accounts {
+		previous[a.ID] = a
+	}
+	for _, a := range accts {
+		old, existed := previous[a.ID]
+		if !existed || !old.SameCredentialAs(a) {
+			changed = append(changed, a.ID)
+		}
+	}
+	s.accounts = accts
+	s.mu.Unlock()
+
+	return changed, nil
+}
+
+// ResetHealth forgets what was concluded about an account, so a replaced
+// credential is tried rather than skipped on the strength of the old one.
+func (s *Store) ResetHealth(id string) {
+	s.MutateHealth(id, func(h *Health) { *h = Health{State: StateAvailable} })
+}

@@ -141,7 +141,11 @@ func printRejected(all []*store.Account, health func(string) store.Health) {
 		} else {
 			fmt.Printf("%s was rejected.\n", a.Display())
 		}
-		fmt.Printf("  sign in again:  agentswap login --id %s\n", a.ID)
+		if a.Kind == store.KindAPIKey {
+			fmt.Printf("  replace the key:  agentswap set %s --key -\n", a.ID)
+		} else {
+			fmt.Printf("  sign in again:    agentswap login --id %s\n", a.ID)
+		}
 	}
 }
 

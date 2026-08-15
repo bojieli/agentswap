@@ -32,6 +32,11 @@ type Rejected struct {
 	ID      string
 	Display string
 	Reason  string
+
+	// Kind decides the remedy: a subscription is signed into again, a key is
+	// replaced. Telling somebody to sign in to an API key wastes the one
+	// message they are going to read.
+	Kind store.Kind
 }
 
 // ErrCredentialsRejected means the lane has accounts but every one of them was
@@ -187,8 +192,9 @@ func (e *Engine) Execute(ctx context.Context, laneID store.LaneID, req *http.Req
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			e.log.Warn("token refresh failed", "account", acct.Display(), "err", err)
-			e.markInvalid(acct, err)
+			reason := redactSecrets(err.Error(), acct)
+			e.log.Warn("token refresh failed", "account", acct.Display(), "err", reason)
+			e.markInvalid(acct, errors.New(reason))
 			tried[acct.ID] = true
 			continue
 		}
@@ -235,9 +241,20 @@ func (e *Engine) Execute(ctx context.Context, laneID store.LaneID, req *http.Req
 			return &Result{Response: resp, Account: acct, Attempts: attempts}, nil
 
 		case lane.ActionRefreshAuth:
+			// A key is not a token: there is no exchange that turns a refused
+			// one into a working one. Attempting it produced an error about
+			// the account not being OAuth, which then replaced the upstream's
+			// actual explanation with an internal detail.
+			if acct.Kind != store.KindOAuth {
+				reason := redactSecrets(outcome.Reason, acct)
+				e.log.Warn("api key refused", "account", acct.Display(), "reason", reason)
+				e.markInvalid(acct, errors.New(reason))
+				tried[acct.ID] = true
+				continue
+			}
 			authAttempts++
 			if authAttempts > e.cfg.Retry.AuthRefreshAttempts {
-				e.markInvalid(acct, errors.New(outcome.Reason))
+				e.markInvalid(acct, errors.New(redactSecrets(outcome.Reason, acct)))
 				tried[acct.ID] = true
 				authAttempts = 0
 				continue
@@ -249,7 +266,12 @@ func (e *Engine) Execute(ctx context.Context, laneID store.LaneID, req *http.Req
 				if ctx.Err() != nil {
 					return nil, ctx.Err()
 				}
-				e.markInvalid(acct, err)
+				// Both halves matter: what the upstream said about the
+				// credential, and that renewing it did not work. Recording
+				// only the second buries "token revoked" under "400 Bad
+				// Request", which is true and useless.
+				e.markInvalid(acct, errors.New(redactSecrets(
+					fmt.Sprintf("%s; renewing it failed: %v", outcome.Reason, err), acct)))
 				tried[acct.ID] = true
 				continue
 			}
@@ -310,7 +332,7 @@ func (e *Engine) unusable(laneID store.LaneID, now time.Time) error {
 			continue
 		}
 		rejected = append(rejected, Rejected{
-			ID: a.ID, Display: a.Display(), Reason: h.LastError,
+			ID: a.ID, Display: a.Display(), Reason: h.LastError, Kind: a.Kind,
 		})
 	}
 	if len(rejected) > 0 {

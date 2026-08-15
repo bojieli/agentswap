@@ -65,11 +65,24 @@ into rotation.
 `agentswap import` is *not* the fix. It re-reads the credential the upstream
 just refused, so it looks like the fix did nothing.
 
-Why it happened, usually:
+The message is the upstream's own, so it usually says which of these it was:
 
-- **You used that account outside agentswap.** Both upstreams rotate the
-  refresh token when it is used, so whichever side refreshes second is holding
-  one the server has retired. Running your CLIs through agentswap avoids it.
+```
+upstream returned 401: OAuth access token has been revoked.
+upstream returned 401: Incorrect API key provided: sk-…
+upstream returned 403: your token is not authorized for any channel serving this model
+```
+
+The last one is not about the credential at all — that key is fine, it is not
+entitled to the model you asked for. Check the model name, or use a key that
+covers it.
+
+Why a login gets revoked, usually:
+
+- **The CLI refreshed its own token.** Both upstreams rotate the refresh token
+  when it is used, so once your CLI renews, the copy agentswap imported is the
+  retired one. Your CLI keeps working; agentswap's copy does not. This is the
+  common case, and `agentswap login --id <name>` adopts the current credential.
 - You signed out, in the CLI or on the web.
 - The upstream expired the session, which it may do whenever it likes.
 

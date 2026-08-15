@@ -50,6 +50,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(prefixAdmin+"/health", s.handleHealth)
 	mux.HandleFunc(prefixAdmin+"/status", s.handleStatus)
+	mux.HandleFunc(prefixAdmin+"/reload", s.handleReload)
 	mux.HandleFunc(prefixAnthropic+"/", s.laneHandler(store.LaneAnthropic, prefixAnthropic))
 	mux.HandleFunc(prefixOpenAI+"/", s.laneHandler(store.LaneOpenAI, prefixOpenAI))
 	mux.HandleFunc("/", s.handleUnrouted)
@@ -85,6 +86,43 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"accounts": out})
+}
+
+// handleReload adopts a pool the CLI has just changed.
+//
+// Without it the daemon serves whatever it read at startup, so replacing a
+// rejected credential appears to do nothing until someone restarts the daemon
+// — and nothing tells them to.
+func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "reload is a POST")
+		return
+	}
+	// The caller may name accounts to try again. Replacing a credential is an
+	// explicit "this one is worth another go", and that intent cannot be
+	// recovered by comparing before and after: someone re-entering a key they
+	// believe is fine leaves nothing to compare.
+	var body struct {
+		Retry []string `json:"retry"`
+	}
+	_ = json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&body)
+
+	changed, err := s.Store.Reload()
+	if err != nil {
+		s.Log.Warn("could not reload the pool", "err", err)
+		writeJSONError(w, http.StatusInternalServerError, "reload_failed", err.Error())
+		return
+	}
+	for _, id := range append(changed, body.Retry...) {
+		// Whatever was concluded was concluded about a credential that has
+		// since been replaced, or about an account the user has just fixed.
+		s.Store.ResetHealth(id)
+	}
+	if len(changed) > 0 {
+		s.Log.Info("pool reloaded", "credentials_changed", len(changed))
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"changed": changed})
 }
 
 func (s *Server) handleUnrouted(w http.ResponseWriter, r *http.Request) {
@@ -287,26 +325,38 @@ func rejectedMessage(laneID store.LaneID, rejected []engine.Rejected) string {
 		if rejected[0].Reason != "" {
 			fmt.Fprintf(&b, " (%s)", rejected[0].Reason)
 		}
-		fmt.Fprintf(&b, ". Sign in again with `agentswap login --id %s`.", rejected[0].ID)
+		fmt.Fprintf(&b, ". %s", remedy(rejected[0]))
 		return b.String()
 	}
 
 	fmt.Fprintf(&b, "every %s account was rejected: ", laneID)
 	for i, r := range rejected {
 		if i > 0 {
-			b.WriteString(", ")
+			b.WriteString("; ")
 		}
 		fmt.Fprintf(&b, "%q", r.Display)
+		if r.Reason != "" {
+			fmt.Fprintf(&b, " (%s)", r.Reason)
+		}
 	}
-	b.WriteString(". Sign in again with ")
+	b.WriteString(". ")
 	for i, r := range rejected {
 		if i > 0 {
-			b.WriteString(", ")
+			b.WriteString(" ")
 		}
-		fmt.Fprintf(&b, "`agentswap login --id %s`", r.ID)
+		b.WriteString(remedy(r))
 	}
-	b.WriteString(".")
 	return b.String()
+}
+
+// remedy is what to actually do about one refused account. A subscription is
+// signed into again; a key is replaced. Offering the wrong one wastes the only
+// message most people will read.
+func remedy(r engine.Rejected) string {
+	if r.Kind == store.KindAPIKey {
+		return fmt.Sprintf("Replace the key with `agentswap set %s --key -`.", r.ID)
+	}
+	return fmt.Sprintf("Sign in again with `agentswap login --id %s`.", r.ID)
 }
 
 func writeJSONError(w http.ResponseWriter, status int, code, msg string) {

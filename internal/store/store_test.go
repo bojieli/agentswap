@@ -590,3 +590,80 @@ func TestSameCredentialAs(t *testing.T) {
 		t.Error("nil matched")
 	}
 }
+
+// The daemon reads the pool once, at startup. Without a reload, every fix made
+// from the CLI is invisible to it until a restart — which is the whole
+// recovery path silently not working.
+func TestReloadAdoptsChangesFromDisk(t *testing.T) {
+	st, dir := openTemp(t)
+	seed(t, st, &Account{ID: "a", Lane: LaneAnthropic, Kind: KindAPIKey, Enabled: true, APIKey: "old"})
+
+	// Another process — the CLI — replaces the key and adds an account.
+	other, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed(t, other, &Account{ID: "a", Lane: LaneAnthropic, Kind: KindAPIKey, Enabled: true, APIKey: "new"})
+	seed(t, other, &Account{ID: "b", Lane: LaneAnthropic, Kind: KindAPIKey, Enabled: true, APIKey: "second"})
+
+	// Until it reloads, the daemon is still serving the old pool.
+	if got, _ := st.Get("a"); got.AccessToken == "new" {
+		t.Fatal("the test cannot observe the bug it is checking")
+	}
+
+	changed, err := st.Reload()
+	if err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if got, _ := st.Get("a"); got.APIKey != "new" {
+		t.Errorf("key = %q, want the replacement", got.APIKey)
+	}
+	if len(st.All()) != 2 {
+		t.Errorf("pool holds %d accounts, want the new one adopted", len(st.All()))
+	}
+	// Both are worth resetting: one credential was replaced, the other is new.
+	if len(changed) != 2 {
+		t.Errorf("changed = %v, want both accounts reported", changed)
+	}
+}
+
+// A credential that has not changed is not news, and resetting its health
+// would forget a quota window that is still true.
+func TestReloadReportsOnlyRealChanges(t *testing.T) {
+	st, dir := openTemp(t)
+	seed(t, st, &Account{ID: "a", Lane: LaneAnthropic, Kind: KindAPIKey, Enabled: true, APIKey: "same"})
+
+	other, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A label change touches the file without touching the credential.
+	if err := other.UpdateAccount("a", func(a *Account) { a.Label = "renamed" }); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := st.Reload()
+	if err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if len(changed) != 0 {
+		t.Errorf("changed = %v, want none: the credential is the same", changed)
+	}
+	if got, _ := st.Get("a"); got.Label != "renamed" {
+		t.Errorf("label = %q, want the change adopted anyway", got.Label)
+	}
+}
+
+func TestResetHealth(t *testing.T) {
+	st, _ := openTemp(t)
+	seed(t, st, &Account{ID: "a", Lane: LaneAnthropic, Kind: KindAPIKey, Enabled: true, APIKey: "k"})
+	st.MutateHealth("a", func(h *Health) {
+		h.State = StateInvalid
+		h.LastError = "refused"
+	})
+
+	st.ResetHealth("a")
+	if h := st.Health("a"); h.State != StateAvailable || h.LastError != "" {
+		t.Errorf("health = %+v, want a clean slate", h)
+	}
+}

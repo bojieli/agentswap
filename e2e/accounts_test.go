@@ -111,7 +111,9 @@ func TestRejectedCredentialsTellTheUserWhatToRun(t *testing.T) {
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503\n%s", resp.StatusCode, body)
 	}
-	for _, want := range []string{"rejected", "first", "second", "agentswap login --id"} {
+	// The remedy has to fit the credential: these are keys, and telling
+	// somebody to sign in to an API key wastes the one message they will read.
+	for _, want := range []string{"rejected", "first", "second", "agentswap set first --key -"} {
 		mustContain(t, body, want, "rejected-pool error")
 	}
 	// Re-importing re-reads the credential that was just refused.
@@ -120,7 +122,30 @@ func TestRejectedCredentialsTellTheUserWhatToRun(t *testing.T) {
 	// And the pull channel says the same thing.
 	status := e.mustRun("status").out()
 	mustContain(t, status, "was rejected", "status")
-	mustContain(t, status, "agentswap login --id first", "status")
+	mustContain(t, status, "agentswap set first --key -", "status")
+}
+
+// A subscription is signed into again; only a key is replaced.
+func TestARejectedSubscriptionSaysToSignIn(t *testing.T) {
+	e := newEnv(t)
+	// No refresh attempt: this is about the message, and renewing a fabricated
+	// token would mean a real call to the vendor's token endpoint.
+	writeFile(t, filepath.Join(e.home, "config.json"),
+		`{"retry":{"auth_refresh_attempts":0}}`)
+	claudeLogin(t, e, "stale-token")
+	e.mustRun("import", "--id", "personal")
+	// Point it at the fake upstream, which refuses it.
+	e.mustRun("set", "personal", "--base-url", e.upstream.url())
+	e.upstream.handle(func(w http.ResponseWriter, _ *http.Request, _ recorded) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":{"type":"authentication_error","message":"token revoked"}}`)
+	})
+	d := e.serve()
+
+	_, body := d.post(t, "/anthropic/v1/messages", `{}`)
+	mustContain(t, body, "token revoked", "the refusal")
+	mustContain(t, body, "agentswap login --id personal", "the refusal")
+	mustNotContain(t, body, "--key -", "the refusal")
 }
 
 // Signing in before reaching for agentswap is the common order, and there is
@@ -496,4 +521,70 @@ func TestServiceStatusAndDryRun(t *testing.T) {
 
 	// And it must not have installed anything.
 	mustContain(t, e.mustRun("service", "status").out(), "not installed", "service status")
+}
+
+// The daemon reads the pool at startup, so a credential replaced afterwards
+// was invisible to it: the fix that `status` and the client's own error both
+// recommend appeared to do nothing until somebody restarted the daemon.
+func TestFixingAnAccountTakesEffectWithoutARestart(t *testing.T) {
+	e := newEnv(t)
+	e.mustRun("add-key", "anthropic", "--key", "wrong-key", "--id", "gw",
+		"--base-url", e.upstream.url())
+
+	refuse := true
+	e.upstream.handle(func(w http.ResponseWriter, _ *http.Request, req recorded) {
+		if refuse && req.Key == "wrong-key" {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `{"error":{"message":"that key is not valid here"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	})
+	d := e.serve()
+
+	resp, body := d.post(t, "/anthropic/v1/messages", `{}`)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want the refusal surfaced\n%s", resp.StatusCode, body)
+	}
+	// The upstream's words, and a remedy that fits an API key.
+	mustContain(t, body, "that key is not valid here", "the refusal")
+	mustContain(t, body, "agentswap set gw --key -", "the refusal")
+
+	// Do exactly what it said, with the daemon still running.
+	refuse = false
+	cmd := exec.Command(binary, "set", "gw", "--key", "-")
+	cmd.Env = e.environ()
+	cmd.Stdin = strings.NewReader("right-key\n")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("set: %v\n%s", err, out)
+	}
+
+	resp, body = d.post(t, "/anthropic/v1/messages", `{}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d after the documented fix, want 200\n%s", resp.StatusCode, body)
+	}
+	if last := e.upstream.keys()[len(e.upstream.keys())-1]; last != "right-key" {
+		t.Errorf("upstream saw %q, want the replacement key", last)
+	}
+}
+
+// An account pooled while the daemon is up should be usable immediately.
+func TestAnAccountAddedLaterIsPickedUp(t *testing.T) {
+	e := newEnv(t)
+	e.pool("first")
+	d := e.serve()
+	d.post(t, "/anthropic/v1/messages", `{}`)
+
+	e.mustRun("add-key", "anthropic", "--key", "second", "--id", "second",
+		"--base-url", e.upstream.url(), "--priority", "0")
+	e.mustRun("disable", "first")
+
+	e.upstream.reset()
+	resp, body := d.post(t, "/anthropic/v1/messages", `{}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want the newly pooled account used\n%s", resp.StatusCode, body)
+	}
+	if got := e.upstream.keys(); len(got) != 1 || got[0] != "second" {
+		t.Errorf("upstream saw %v, want only the new account", got)
+	}
 }

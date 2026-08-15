@@ -243,6 +243,7 @@ func adopt(st *store.Store, acct *store.Account, lane store.LaneID, id, label, w
 		fmt.Printf("  (could not clear the old health record: %v)\n", err)
 	}
 
+	notifyDaemon(id)
 	fmt.Printf("%d account(s) in the pool.\n", len(st.All()))
 	if n := len(st.Accounts(lane)); n == 1 {
 		fmt.Printf("\nOne account is not failover. Run `agentswap login` again, signed in as another.\n")

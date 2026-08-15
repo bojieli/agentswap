@@ -2,8 +2,10 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -224,5 +226,39 @@ func TestSkewAllowanceIsCappedByTheWait(t *testing.T) {
 		if got := e.skewAllowance(c.wait); got != c.want {
 			t.Errorf("skewAllowance(%v) = %v, want %v", c.wait, got, c.want)
 		}
+	}
+}
+
+// A key is not a token: there is no exchange that turns a refused one into a
+// working one. Attempting it replaced the upstream's explanation with an
+// internal detail about the account not being OAuth, and recommended a sign-in
+// that cannot apply.
+func TestRefusedAPIKeyIsNotRefreshed(t *testing.T) {
+	var calls int
+	h := newHarness(t, []string{"a"}, func(_ string, w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"error":{"type":"forbidden","message":"your token is not authorized for any channel serving this model"}}`)
+	})
+
+	_, err := run(t, h, `{"model":"claude"}`)
+	if err == nil {
+		t.Fatal("want an error")
+	}
+
+	var rejected *ErrCredentialsRejected
+	if !errors.As(err, &rejected) {
+		t.Fatalf("err = %v, want ErrCredentialsRejected", err)
+	}
+	// The upstream's own words are the diagnosis; ours would be a guess.
+	if got := rejected.Rejected[0].Reason; !strings.Contains(got, "not authorized for any channel") {
+		t.Errorf("reason = %q, want the upstream's message", got)
+	}
+	if rejected.Rejected[0].Kind != store.KindAPIKey {
+		t.Errorf("kind = %q, want it carried so the remedy can match", rejected.Rejected[0].Kind)
+	}
+	// One attempt: no refresh, no retry of a credential that cannot change.
+	if calls != 1 {
+		t.Errorf("upstream saw %d requests, want 1", calls)
 	}
 }
