@@ -1,0 +1,13 @@
+version: 2
+
+updates:
+  # Only the Actions used by CI. The Go module set is deliberately empty and a
+  # PR proposing to change that is a bug report, not an update.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    labels:
+      - dependencies

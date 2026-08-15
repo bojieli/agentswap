@@ -86,7 +86,7 @@ func Run(ctx context.Context, opts Options) error {
 
 		ticket, err := PendingSince(opts.ConfigDir, started)
 		if err != nil || ticket == nil {
-			return nil // exited for some other reason; leave it alone
+			return nil //nolint:nilerr // no readable ticket means the CLI exited for its own reasons, which is not ours to retry
 		}
 
 		wait := time.Until(ticket.Until)

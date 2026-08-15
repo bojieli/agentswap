@@ -1,0 +1,70 @@
+version: "2"
+
+# The aim is a linter run that is clean, so that a new finding means something.
+# Every exclusion below is a rule that is either wrong for a local CLI or
+# already checked more precisely by a test.
+
+linters:
+  default: standard
+  enable:
+    - bodyclose      # a leaked response body leaks a connection, and this proxy holds many
+    - errorlint      # rotation decisions are made with errors.Is/As, which a type switch would miss
+    - gosec
+    - misspell
+    - nilerr
+    - unconvert
+
+  settings:
+    errcheck:
+      exclude-functions:
+        # Closing a body we are done reading, on a path that is already
+        # returning the interesting error.
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (io.ReadCloser).Close
+        # Progress messages to the user's terminal. If stderr is gone, the
+        # thing to do about it is nothing.
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint
+
+    gosec:
+      excludes:
+        # G101 reads any constant whose name contains "token" or "auth" as a
+        # secret. Here those are OAuth *endpoint URLs*, public client ids that
+        # both CLIs ship, and the name of an environment variable. Real
+        # credentials only ever arrive at runtime.
+        - G101
+        # G304/G703 flag reading and writing paths built from variables. Every
+        # such path here is derived from the user's own home directory or an
+        # environment variable they set, in a tool that runs as them.
+        - G304
+        - G703
+        # G306 checks file modes at the write call. The store's tests assert
+        # the resulting mode on disk instead, which is the property that
+        # matters.
+        - G306
+        # G704 flags requests to a URL from configuration. Forwarding requests
+        # to a URL from configuration is what this program is.
+        - G704
+        # G204 flags launching a subprocess from arguments. `agentswap run`
+        # exists to launch the command the user typed.
+        - G204
+
+  exclusions:
+    rules:
+      # Tests deliberately ignore errors from writes to a recorder and from
+      # fixtures whose failure surfaces as the test failing anyway.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - bodyclose
+
+formatters:
+  enable:
+    - gofmt
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

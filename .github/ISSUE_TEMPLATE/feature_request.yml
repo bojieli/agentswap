@@ -1,0 +1,36 @@
+name: Feature request
+description: Suggest something agentswap should do
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two things that will be declined, so you do not waste the writing:
+
+        - **Running accounts in parallel to multiply throughput.** agentswap is
+          failover-only on purpose; the README explains why.
+        - **Anything needing a third-party dependency.** This process holds
+          live OAuth tokens and `go.sum` stays empty.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What goes wrong today
+      description: |
+        Describe the situation you hit, not the feature. The best feature
+        requests here have been descriptions of a session that stalled.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like it to do
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: Including other tools, if they solved it.

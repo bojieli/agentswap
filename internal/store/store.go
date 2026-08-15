@@ -43,7 +43,7 @@ func Open(dir string) (*Store, error) {
 	// and the directory being writable is worse than that. Best effort: on
 	// Windows, or a directory we do not own, there is nothing to do.
 	if info, err := os.Stat(dir); err == nil && info.Mode().Perm()&0o077 != 0 {
-		_ = os.Chmod(dir, 0o700)
+		_ = os.Chmod(dir, 0o700) //nolint:gosec // 0700 is correct for a directory; the rule is about files
 	}
 	s := &Store{dir: dir, health: map[string]*Health{}}
 	if err := s.loadAccounts(); err != nil {
@@ -88,7 +88,7 @@ func (s *Store) loadHealth() error {
 	// and re-observing quota costs one request per account.
 	var h map[string]*Health
 	if err := json.Unmarshal(b, &h); err != nil {
-		return nil
+		return nil //nolint:nilerr // deliberate: health is derived data, and refusing to start over a corrupt copy of it would be a worse failure than rebuilding it
 	}
 	s.health = h
 	return nil
@@ -314,18 +314,19 @@ func writeJSONAtomic(path string, v any) error {
 		return fmt.Errorf("create temp: %w", err)
 	}
 	tmp := f.Name()
-	defer os.Remove(tmp) // no-op once the rename succeeds
+	// No-op once the rename succeeds; nothing useful to do if it fails.
+	defer func() { _ = os.Remove(tmp) }()
 
 	if err := f.Chmod(0o600); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	if _, err := f.Write(b); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	if err := f.Close(); err != nil {

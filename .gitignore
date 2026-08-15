@@ -1,5 +1,14 @@
+# Build output
 /agentswap
+/agentswap.exe
 /dist/
+
+# Test and coverage artifacts
 *.test
 *.out
+
+# Editors and OS
 .DS_Store
+.idea/
+.vscode/
+*~

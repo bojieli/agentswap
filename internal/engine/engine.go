@@ -95,7 +95,7 @@ func New(cfg config.Config, st *store.Store, lanes map[store.LaneID]lane.Lane, c
 		sticky:    newStickyMap(cfg.Rotation.StickyTTL.D()),
 		refreshes: newRefreshGroup(),
 		now:       time.Now,
-		jitter:    func() float64 { return 0.5 + rand.Float64() },
+		jitter:    func() float64 { return 0.5 + rand.Float64() }, //nolint:gosec // spreading retries, not generating a secret
 	}
 }
 
@@ -191,7 +191,7 @@ func (e *Engine) Execute(ctx context.Context, laneID store.LaneID, req *http.Req
 		var errBody []byte
 		if resp.StatusCode >= 300 {
 			errBody, _ = io.ReadAll(io.LimitReader(resp.Body, errorBodyLimit))
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 
 		outcome := ln.Classify(resp, errBody, e.cfg.Retry, now)
@@ -199,7 +199,6 @@ func (e *Engine) Execute(ctx context.Context, laneID store.LaneID, req *http.Req
 		switch outcome.Action {
 		case lane.ActionRelay:
 			e.markSuccess(acct, convKey)
-			overloadStreak = 0
 			return &Result{Response: resp, Account: acct, Attempts: attempts}, nil
 
 		case lane.ActionFatal:
@@ -215,8 +214,10 @@ func (e *Engine) Execute(ctx context.Context, laneID store.LaneID, req *http.Req
 				authAttempts = 0
 				continue
 			}
-			renewed, err := e.refresh(ctx, ln, acct.ID, acct.AccessToken)
-			if err != nil {
+			// The renewed credential goes into the pool, and the next pass
+			// through selection reads it back out — so there is nothing to
+			// carry across the loop by hand.
+			if _, err := e.refresh(ctx, ln, acct.ID, acct.AccessToken); err != nil {
 				if ctx.Err() != nil {
 					return nil, ctx.Err()
 				}
@@ -224,7 +225,6 @@ func (e *Engine) Execute(ctx context.Context, laneID store.LaneID, req *http.Req
 				tried[acct.ID] = true
 				continue
 			}
-			acct = renewed
 			continue
 
 		case lane.ActionRetrySame:

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/bojieli/agentswap/security/advisories/new
+    about: Report privately. Never in a public issue.
+  - name: Is my usage allowed by my provider's terms?
+    url: https://github.com/bojieli/agentswap#terms-of-service--read-this
+    about: Read this first — it is your call about your own accounts, and not something we can answer.
