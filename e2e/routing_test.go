@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -294,5 +295,137 @@ func TestPingKeepaliveHoldsTheConnection(t *testing.T) {
 	// Every SSE frame ends with a blank line, pings included.
 	if !strings.HasSuffix(body, "\n\n") {
 		t.Errorf("the stream does not end on a frame boundary:\n%q", body)
+	}
+}
+
+// Rotation only works because the body is replayed. If the second attempt sent
+// anything different, the model would answer a question nobody asked.
+func TestBodyIsReplayedIntactOnRotation(t *testing.T) {
+	e := newEnv(t)
+	e.pool("spent", "fresh")
+	e.upstream.handle(func(w http.ResponseWriter, _ *http.Request, req recorded) {
+		if req.Key == "spent" {
+			w.Header().Set("Anthropic-Ratelimit-Unified-Status", "rejected")
+			w.Header().Set("Retry-After", "3600")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	})
+	d := e.serve()
+
+	body := `{"model":"claude","messages":[{"role":"user","content":"héllo 世界"}],"max_tokens":1024}`
+	resp, out := d.post(t, "/anthropic/v1/messages", body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d: %s", resp.StatusCode, out)
+	}
+
+	seen := e.upstream.seen()
+	if len(seen) != 2 {
+		t.Fatalf("upstream saw %d requests, want 2", len(seen))
+	}
+	for i, r := range seen {
+		if r.Body != body {
+			t.Errorf("attempt %d body = %q, want it replayed byte for byte", i, r.Body)
+		}
+	}
+}
+
+// Overload is rarely account-specific, so a few are absorbed on one account
+// before another one's quota is spent on the same fault.
+func TestPersistentOverloadEventuallyRotates(t *testing.T) {
+	e := newEnv(t)
+	writeFile(t, filepath.Join(e.home, "config.json"),
+		`{"retry":{"overload_initial":"50ms","overload_max":"100ms","rotate_after":2}}`)
+	e.pool("first", "second")
+	e.upstream.handle(func(w http.ResponseWriter, _ *http.Request, req recorded) {
+		if req.Key == "first" {
+			w.WriteHeader(529)
+			_, _ = io.WriteString(w, `{"error":{"type":"overloaded_error"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	})
+	d := e.serve()
+
+	resp, out := d.post(t, "/anthropic/v1/messages", `{}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d: %s", resp.StatusCode, out)
+	}
+
+	keys := e.upstream.keys()
+	if keys[len(keys)-1] != "second" {
+		t.Errorf("calls = %v, want the last one on the other account", keys)
+	}
+	if keys[0] != "first" {
+		t.Errorf("calls = %v, want the first few absorbed on the same account", keys)
+	}
+}
+
+// Reaching agentswap by a name of your own is legitimate; the Host check is
+// there for names you did not choose.
+func TestAllowedHostsOpensANameYouChose(t *testing.T) {
+	e := newEnv(t)
+	writeFile(t, filepath.Join(e.home, "config.json"),
+		`{"allowed_hosts":["agentswap.internal"]}`)
+	e.pool("only")
+	d := e.serve()
+
+	resp, _ := d.postWith(t, "/anthropic/v1/messages", `{}`,
+		map[string]string{"Host": "agentswap.internal"}, 30*time.Second)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want the configured host accepted", resp.StatusCode)
+	}
+
+	// Everything else is still refused.
+	resp, _ = d.postWith(t, "/anthropic/v1/messages", `{}`,
+		map[string]string{"Host": "evil.example.com"}, 30*time.Second)
+	if resp.StatusCode != http.StatusMisdirectedRequest {
+		t.Errorf("status = %d, want 421 for a host nobody configured", resp.StatusCode)
+	}
+}
+
+// A Retry-After can be an HTTP date instead of a delay, and misreading it
+// either wastes a window or hammers a limit that has not lifted.
+func TestRetryAfterAsAnHTTPDate(t *testing.T) {
+	e := newEnv(t)
+	e.pool("spent", "fresh")
+	e.upstream.handle(func(w http.ResponseWriter, _ *http.Request, req recorded) {
+		if req.Key == "spent" {
+			w.Header().Set("Retry-After", time.Now().Add(time.Hour).UTC().Format(http.TimeFormat))
+			w.Header().Set("Anthropic-Ratelimit-Unified-Status", "rejected")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	})
+	d := e.serve()
+
+	resp, _ := d.post(t, "/anthropic/v1/messages", `{}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want the rotation to succeed", resp.StatusCode)
+	}
+
+	// An hour out, not a minute: the date has to be read as the reset time.
+	out := e.mustRun("status").out()
+	mustContain(t, out, "exhausted", "status")
+	if !strings.Contains(out, "59m") && !strings.Contains(out, "1h") {
+		t.Errorf("status does not show an hour of recovery time:\n%s", out)
+	}
+}
+
+func TestStatusWatchRefreshes(t *testing.T) {
+	e := newEnv(t)
+	e.pool("only")
+
+	// --watch never returns, so run it briefly and read what it printed.
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, "status", "--watch", "500ms")
+	cmd.Env = e.environ()
+	out, _ := cmd.CombinedOutput()
+
+	if n := strings.Count(string(out), "ACCOUNT"); n < 2 {
+		t.Errorf("the table was printed %d times in four seconds, want it refreshing:\n%s", n, out)
 	}
 }

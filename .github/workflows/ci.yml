@@ -47,8 +47,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p .coverdata
-          go test -cover ./internal/... ./cmd/... -args -test.gocoverdir="$PWD/.coverdata"
-          E2E_COVERDIR="$PWD/.coverdata" go test ./e2e/
+          # -count=1 defeats the test cache: a cached run executes nothing and
+          # so writes no coverage counters at all.
+          go test -count=1 -cover ./internal/... ./cmd/... -args -test.gocoverdir="$PWD/.coverdata"
+          E2E_COVERDIR="$PWD/.coverdata" go test -count=1 ./e2e/
 
       - name: report
         run: |

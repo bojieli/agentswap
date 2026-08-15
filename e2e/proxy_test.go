@@ -7,9 +7,12 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -549,4 +552,57 @@ func TestStaleDaemonAddressIsReplacedOnStartup(t *testing.T) {
 		t.Errorf("published address = %q, want the running daemon's %q", got, d.addr)
 	}
 	mustNotContain(t, e.mustRun("status").out(), "daemon not running", "status")
+}
+
+// A second daemon on a taken port must fail without disturbing the first: it
+// has to exit before publishing an address, or `status` would start chasing a
+// process that never started.
+func TestASecondDaemonFailsWithoutClobberingTheFirst(t *testing.T) {
+	e := newEnv(t)
+	e.pinAddr()
+	e.pool("only")
+	first := e.serve()
+
+	second := exec.Command(binary, "serve")
+	second.Env = e.environ()
+	out, err := second.CombinedOutput()
+	if err == nil {
+		t.Fatal("a second daemon bound a port that was already taken")
+	}
+	if !strings.Contains(string(out), "address already in use") &&
+		!strings.Contains(string(out), "Only one usage") {
+		t.Errorf("unhelpful error for a taken port:\n%s", out)
+	}
+
+	if got := e.publishedAddr(); got != first.addr {
+		t.Errorf("published address = %q, want the running daemon's %q", got, first.addr)
+	}
+	mustNotContain(t, e.mustRun("status").out(), "daemon not running", "status")
+}
+
+// systemd and launchd stop a service with SIGTERM, not Ctrl-C.
+func TestSigtermShutsDownCleanly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no SIGTERM here")
+	}
+	e := newEnv(t)
+	e.pool("only")
+	d := e.serve()
+	d.post(t, "/anthropic/v1/messages", `{}`)
+
+	if err := d.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- d.cmd.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the daemon ignored SIGTERM")
+	}
+
+	if _, err := os.Stat(filepath.Join(e.home, "daemon.json")); !os.IsNotExist(err) {
+		t.Error("daemon.json survived a SIGTERM shutdown")
+	}
+	mustContain(t, readFile(t, filepath.Join(e.home, "state.json")), "requests", "state after SIGTERM")
 }

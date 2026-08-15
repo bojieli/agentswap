@@ -31,8 +31,8 @@ e2e: ## run only the end-to-end suite, which drives the compiled binary
 cover: ## merge unit and end-to-end coverage, then open the HTML view
 	@rm -rf .coverdata coverage.out
 	@mkdir -p .coverdata
-	go test -cover ./internal/... ./cmd/... -args -test.gocoverdir="$(CURDIR)/.coverdata"
-	E2E_COVERDIR="$(CURDIR)/.coverdata" go test ./e2e/
+	go test -count=1 -cover ./internal/... ./cmd/... -args -test.gocoverdir="$(CURDIR)/.coverdata"
+	E2E_COVERDIR="$(CURDIR)/.coverdata" go test -count=1 ./e2e/
 	go tool covdata percent -i=.coverdata
 	go tool covdata textfmt -i=.coverdata -o=coverage.out
 	@go tool cover -func=coverage.out | tail -1
