@@ -59,9 +59,12 @@ jobs:
           if [ -n "$unformatted" ]; then
             echo "These files need gofmt:"; echo "$unformatted"; exit 1
           fi
-      - uses: golangci/golangci-lint-action@v6
+      # v9 of the action is what installs golangci-lint v2, which .golangci.yml
+      # is written for. The version is pinned so a linter release cannot turn a
+      # green pull request red without a commit that says so.
+      - uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: v2.12.2
 
   no-dependencies:
     runs-on: ubuntu-latest
