@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -27,7 +28,10 @@ func (launchd) Path() (string, error) {
 }
 
 func (launchd) Render(cfg Config) (string, error) {
-	logFile := filepath.Join(cfg.LogDir, "agentswap.log")
+	// path, not filepath: what goes inside a plist is a macOS path however
+	// this binary was compiled, and a cross-compiled render should say the
+	// same thing as a native one.
+	logFile := path.Join(cfg.LogDir, "agentswap.log")
 
 	var env strings.Builder
 	if cfg.ConfigDir != "" {
@@ -126,7 +130,7 @@ func (launchd) Running() (bool, error) {
 }
 
 func (launchd) Logs(cfg Config) string {
-	return "tail -f " + filepath.Join(cfg.LogDir, "agentswap.log")
+	return "tail -f " + path.Join(cfg.LogDir, "agentswap.log")
 }
 
 // escape makes a value safe inside a plist string element.
