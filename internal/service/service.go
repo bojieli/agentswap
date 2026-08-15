@@ -110,6 +110,14 @@ func IsTemporary(path string) bool {
 		strings.Contains(path, string(os.PathSeparator)+"go-build")
 }
 
+// runner executes a service-manager command.
+//
+// It is a variable so that tests can assert on the commands issued without
+// issuing them: installing a real service on the machine running the tests is
+// not something a test gets to do, and a typo in a launchctl invocation would
+// otherwise only surface for a user.
+var runner = run
+
 // run executes a service-manager command, folding its output into the error so
 // the user sees what the tool said rather than just an exit code.
 func run(name string, args ...string) error {

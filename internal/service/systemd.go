@@ -70,10 +70,10 @@ func (s systemd) Install(cfg Config) error {
 	if err := writeFile(path, body); err != nil {
 		return err
 	}
-	if err := run("systemctl", "--user", "daemon-reload"); err != nil {
+	if err := runner("systemctl", "--user", "daemon-reload"); err != nil {
 		return err
 	}
-	return run("systemctl", "--user", "enable", "--now", SystemdUnit)
+	return runner("systemctl", "--user", "enable", "--now", SystemdUnit)
 }
 
 func (s systemd) Uninstall() error {
@@ -81,11 +81,11 @@ func (s systemd) Uninstall() error {
 	if err != nil {
 		return err
 	}
-	_ = run("systemctl", "--user", "disable", "--now", SystemdUnit)
+	_ = runner("systemctl", "--user", "disable", "--now", SystemdUnit)
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	return run("systemctl", "--user", "daemon-reload")
+	return runner("systemctl", "--user", "daemon-reload")
 }
 
 func (systemd) Running() (bool, error) {

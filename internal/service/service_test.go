@@ -4,6 +4,7 @@ import (
 	"encoding/xml"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -160,6 +161,139 @@ func TestPathsAreUnderTheUsersHome(t *testing.T) {
 		}
 		if !strings.HasPrefix(path, home) {
 			t.Errorf("%s path = %q, want it under %q", mgr.Name(), path, home)
+		}
+	}
+}
+
+// recordCommands substitutes the command runner for the length of a test, so
+// the invocations can be checked without a service being installed on whatever
+// machine is running them.
+func recordCommands(t *testing.T) *[]string {
+	t.Helper()
+	var issued []string
+	saved := runner
+	runner = func(name string, args ...string) error {
+		issued = append(issued, name+" "+strings.Join(args, " "))
+		return nil
+	}
+	t.Cleanup(func() { runner = saved })
+	return &issued
+}
+
+// withHome points the managers at a scratch home, so an install writes there.
+func withHome(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("these managers are for macOS and Linux")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	return home
+}
+
+func TestLaunchdInstallWritesAndLoads(t *testing.T) {
+	withHome(t)
+	issued := recordCommands(t)
+
+	cfg := testConfig()
+	cfg.LogDir = t.TempDir()
+	if err := (launchd{}).Install(cfg); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	path, _ := launchd{}.Path()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the plist was not written: %v", err)
+	}
+
+	joined := strings.Join(*issued, "\n")
+	if !strings.Contains(joined, "launchctl bootstrap gui/") {
+		t.Errorf("commands were:\n%s\nwant a bootstrap", joined)
+	}
+	if !strings.Contains(joined, path) {
+		t.Errorf("commands were:\n%s\nwant the plist path", joined)
+	}
+	// Replacing a loaded agent means booting it out first, or bootstrap fails
+	// with "service already loaded".
+	if !strings.Contains(joined, "launchctl bootout") {
+		t.Errorf("commands were:\n%s\nwant the old one removed first", joined)
+	}
+}
+
+func TestLaunchdUninstallRemovesBoth(t *testing.T) {
+	withHome(t)
+	path, _ := launchd{}.Path()
+	if err := writeFile(path, "<plist/>"); err != nil {
+		t.Fatal(err)
+	}
+	issued := recordCommands(t)
+
+	if err := (launchd{}).Uninstall(); err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("the plist survived uninstall: %v", err)
+	}
+	if !strings.Contains(strings.Join(*issued, "\n"), "launchctl bootout gui/") {
+		t.Errorf("commands were %v, want a bootout", *issued)
+	}
+}
+
+func TestSystemdInstallEnablesTheUnit(t *testing.T) {
+	withHome(t)
+	issued := recordCommands(t)
+
+	if err := (systemd{}).Install(testConfig()); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	path, _ := systemd{}.Path()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the unit was not written: %v", err)
+	}
+
+	joined := strings.Join(*issued, "\n")
+	// daemon-reload has to come first, or systemd enables the version it had
+	// already read.
+	if !strings.HasPrefix(joined, "systemctl --user daemon-reload") {
+		t.Errorf("commands were:\n%s\nwant daemon-reload first", joined)
+	}
+	if !strings.Contains(joined, "systemctl --user enable --now "+SystemdUnit) {
+		t.Errorf("commands were:\n%s\nwant it enabled and started", joined)
+	}
+}
+
+func TestSystemdUninstallDisablesAndReloads(t *testing.T) {
+	withHome(t)
+	path, _ := systemd{}.Path()
+	if err := writeFile(path, "[Unit]\n"); err != nil {
+		t.Fatal(err)
+	}
+	issued := recordCommands(t)
+
+	if err := (systemd{}).Uninstall(); err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("the unit file survived uninstall: %v", err)
+	}
+	joined := strings.Join(*issued, "\n")
+	for _, want := range []string{"disable --now", "daemon-reload"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("commands were:\n%s\nwant %q", joined, want)
+		}
+	}
+}
+
+// Uninstalling something that was never installed is what a second uninstall
+// does, and it should not be an error.
+func TestUninstallIsIdempotent(t *testing.T) {
+	withHome(t)
+	recordCommands(t)
+	for _, mgr := range []Manager{launchd{}, systemd{}} {
+		if err := mgr.Uninstall(); err != nil {
+			t.Errorf("%s: uninstalling nothing failed: %v", mgr.Name(), err)
 		}
 	}
 }

@@ -90,10 +90,10 @@ func (l launchd) Install(cfg Config) error {
 	}
 
 	target := fmt.Sprintf("gui/%d", os.Getuid())
-	if err := run("launchctl", "bootstrap", target, path); err != nil {
+	if err := runner("launchctl", "bootstrap", target, path); err != nil {
 		// bootstrap is the modern spelling; load -w still works everywhere it
 		// does not, and on some versions is the only one that does.
-		if legacy := run("launchctl", "load", "-w", path); legacy != nil {
+		if legacy := runner("launchctl", "load", "-w", path); legacy != nil {
 			return fmt.Errorf("bootstrap failed (%w), and `load -w` also failed: %w", err, legacy)
 		}
 	}
@@ -106,8 +106,8 @@ func (l launchd) Uninstall() error {
 		return err
 	}
 	target := fmt.Sprintf("gui/%d/%s", os.Getuid(), LaunchdLabel)
-	if err := run("launchctl", "bootout", target); err != nil {
-		_ = run("launchctl", "unload", "-w", path)
+	if err := runner("launchctl", "bootout", target); err != nil {
+		_ = runner("launchctl", "unload", "-w", path)
 	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err
