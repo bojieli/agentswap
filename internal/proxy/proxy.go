@@ -203,6 +203,7 @@ func (s *Server) writeExecuteError(w http.ResponseWriter, waiter *streamWaiter, 
 	}
 
 	var tooLong *engine.ErrParkTooLong
+	var rejected *engine.ErrCredentialsRejected
 	switch {
 	case errors.As(err, &tooLong):
 		s.Log.Warn("pool exhausted beyond max hold", "lane", laneID, "until", tooLong.Until)
@@ -218,9 +219,23 @@ func (s *Server) writeExecuteError(w http.ResponseWriter, waiter *streamWaiter, 
 			"every %s account is out of quota until %s. Run `agentswap run -- <your command>` to have the session resumed automatically.",
 			laneID, tooLong.Until.Format(time.RFC3339)))
 
+	case errors.As(err, &rejected):
+		// The only failure that needs a person. Most people are inside a coding
+		// agent when they hit it, so this message is the whole notification:
+		// which account, why, and the one command that fixes it.
+		s.Log.Warn("every account was rejected", "lane", laneID, "accounts", len(rejected.Rejected))
+		s.fail(w, waiter, http.StatusServiceUnavailable, "credentials_rejected",
+			rejectedMessage(laneID, rejected.Rejected))
+
 	case errors.Is(err, engine.ErrNoAccounts):
+		// Two different situations reach this: a pool with nothing in it, and
+		// one whose accounts were all tried. Both are fixed by adding an
+		// account, and the three ways to do that suit different starting
+		// points — adopt a login you already have, sign in, or add a key.
 		s.fail(w, waiter, http.StatusServiceUnavailable, "no_accounts", fmt.Sprintf(
-			"no usable %s account: %v. Run `agentswap import`, or `agentswap add-key %s --key ...`.", laneID, err, laneID))
+			"no usable %s account: %v. Run `agentswap import` to adopt a login you already have, "+
+				"`agentswap login` to sign in, or `agentswap add-key %s` for an API key.",
+			laneID, err, laneID))
 
 	default:
 		s.Log.Error("request failed", "lane", laneID, "err", err)
@@ -256,6 +271,42 @@ func (s *Server) writeTicket(laneID store.LaneID, until time.Time) {
 	if err != nil {
 		s.Log.Warn("could not write resume ticket", "lane", laneID, "err", err)
 	}
+}
+
+// rejectedMessage explains a rejected pool to whoever is reading their agent's
+// output, which is where this lands.
+//
+// It names the accounts, because "one of your accounts" is not actionable, and
+// it recommends `login` rather than `import`: re-importing re-reads the same
+// credential the upstream just refused, so it would look like the fix did
+// nothing.
+func rejectedMessage(laneID store.LaneID, rejected []engine.Rejected) string {
+	var b strings.Builder
+	if len(rejected) == 1 {
+		fmt.Fprintf(&b, "your %s account %q was rejected", laneID, rejected[0].Display)
+		if rejected[0].Reason != "" {
+			fmt.Fprintf(&b, " (%s)", rejected[0].Reason)
+		}
+		fmt.Fprintf(&b, ". Sign in again with `agentswap login --id %s`.", rejected[0].ID)
+		return b.String()
+	}
+
+	fmt.Fprintf(&b, "every %s account was rejected: ", laneID)
+	for i, r := range rejected {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "%q", r.Display)
+	}
+	b.WriteString(". Sign in again with ")
+	for i, r := range rejected {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "`agentswap login --id %s`", r.ID)
+	}
+	b.WriteString(".")
+	return b.String()
 }
 
 func writeJSONError(w http.ResponseWriter, status int, code, msg string) {

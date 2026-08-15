@@ -8,6 +8,11 @@ version moves for anything that changes behaviour.
 
 ### Fixed
 
+- **The same login could be pooled twice.** Running `import` again without
+  switching accounts added a second entry holding the same credential: `status`
+  showed two accounts, and both were refused in the same instant. A login is
+  now recognised and updated in place, and identity survives a token refresh.
+  The same applies to adding one API key twice.
 - **Concurrent writes to the same file could fail on Windows.** The data lock
   is released before writing so readers are never blocked on disk I/O, which
   means two goroutines can reach the write at once; on Windows a replace of a
@@ -84,6 +89,25 @@ version moves for anything that changes behaviour.
 
 ### Added
 
+- **`agentswap login`**, which pools an account or replaces a rejected
+  credential. It works out which CLI you mean rather than asking — an unpooled
+  credential sitting there is someone who just signed in — and only asks when
+  both are equally plausible. agentswap has no OAuth flow of its own, so this guides the
+  sign-in and adopts the result — working out whether you need to sign in at
+  all, waiting for the credential to appear however you did it, and keeping the
+  account's id, label and priority when replacing.
+- **Rejected credentials now say what to do about them**, in the error your
+  agent shows and in `agentswap status`: which account, why, and the command
+  that fixes it. Previously this arrived as "no accounts configured for this
+  lane", which was both wrong and pointed at `import` — which re-reads the
+  credential the upstream just refused.
+- **Keys can be given without putting them in shell history**: `--key -` reads
+  a pipe, and a bare `agentswap add-key anthropic` prompts with the echo off.
+  `agentswap import` mentions API keys sitting in your environment without
+  adopting them.
+- **`agentswap list` shows which credential each row holds** — masked key,
+  plan, and the host for a third-party provider — so several keys can be told
+  apart.
 - **Host header checking**, which closes DNS rebinding: a page you visit can
   point its own domain at 127.0.0.1 and spend your subscription, but it cannot
   forge the `Host` header. Loopback names and the configured address are

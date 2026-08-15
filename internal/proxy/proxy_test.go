@@ -255,3 +255,67 @@ func TestClientDisconnectAbortsRetries(t *testing.T) {
 		t.Errorf("upstream kept being retried after the client left: %d -> %d", before, after)
 	}
 }
+
+// The client's error message is the whole notification: someone inside a
+// coding agent is not watching the daemon's log, and a rejected credential is
+// the one failure that will not fix itself.
+func TestRejectedMessageIsActionable(t *testing.T) {
+	one := rejectedMessage(store.LaneAnthropic, []engine.Rejected{
+		{ID: "work", Display: "work", Reason: "refresh failed with 401 Unauthorized"},
+	})
+	for _, want := range []string{
+		`"work"`,                    // which account
+		"refresh failed with 401",   // why
+		"agentswap login --id work", // the command that fixes it
+	} {
+		if !strings.Contains(one, want) {
+			t.Errorf("message %q does not mention %q", one, want)
+		}
+	}
+	// `import` re-reads the credential the upstream just refused, so it would
+	// look like the fix did nothing.
+	if strings.Contains(one, "agentswap import") {
+		t.Errorf("message recommends import, which cannot help: %q", one)
+	}
+
+	many := rejectedMessage(store.LaneAnthropic, []engine.Rejected{
+		{ID: "personal", Display: "personal"},
+		{ID: "work", Display: "work"},
+	})
+	for _, want := range []string{"personal", "work",
+		"agentswap login --id personal", "agentswap login --id work"} {
+		if !strings.Contains(many, want) {
+			t.Errorf("message %q does not mention %q", many, want)
+		}
+	}
+}
+
+// "Rejected" and "out of quota" need opposite responses from the user, so they
+// must not arrive as the same message.
+func TestRejectedPoolIsNotReportedAsAnEmptyOne(t *testing.T) {
+	px := newProxy(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":{"type":"authentication_error"}}`)
+	})
+
+	resp, err := http.Post(px.URL+"/anthropic/v1/messages", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", resp.StatusCode)
+	}
+	got := string(body)
+	if !strings.Contains(got, "rejected") {
+		t.Errorf("body = %s, want it to say the credential was rejected", got)
+	}
+	if strings.Contains(got, "no accounts configured") {
+		t.Errorf("body = %s, want it to not claim the pool is empty", got)
+	}
+	if !strings.Contains(got, "agentswap login") {
+		t.Errorf("body = %s, want the command that fixes it", got)
+	}
+}

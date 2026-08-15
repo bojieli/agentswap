@@ -111,6 +111,35 @@ func (a *Account) Clone() *Account {
 	return &cp
 }
 
+// SameCredentialAs reports whether two accounts are the same login.
+//
+// Pooling one account twice is worse than pooling it once: `status` shows two
+// entries, the user believes they have failover, and both are refused in the
+// same instant because they are the same account. Nothing else in the system
+// can detect that, so import has to.
+//
+// Identity is whatever the upstream gave us that names the account. Codex
+// supplies a workspace id. Anthropic supplies neither an id nor an email, so
+// the tokens themselves are the only handle — which is sound, because two
+// separate logins never share one.
+func (a *Account) SameCredentialAs(other *Account) bool {
+	if a == nil || other == nil || a.Lane != other.Lane || a.Kind != other.Kind {
+		return false
+	}
+	switch a.Kind {
+	case KindAPIKey:
+		return a.APIKey != "" && a.APIKey == other.APIKey
+	default:
+		if a.ChatGPTAccountID != "" || other.ChatGPTAccountID != "" {
+			return a.ChatGPTAccountID == other.ChatGPTAccountID
+		}
+		if a.RefreshToken != "" && a.RefreshToken == other.RefreshToken {
+			return true
+		}
+		return a.AccessToken != "" && a.AccessToken == other.AccessToken
+	}
+}
+
 // Display returns the human-facing name used in logs and `agentswap status`.
 func (a *Account) Display() string {
 	if a.Label != "" {

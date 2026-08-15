@@ -511,3 +511,82 @@ func TestConcurrentWritesToBothFiles(t *testing.T) {
 		t.Errorf("pool holds %d accounts after concurrent writes, want 3", n)
 	}
 }
+
+// Pooling one login twice is worse than pooling it once: the pool looks like
+// failover and both entries are refused in the same instant.
+func TestSameCredentialAs(t *testing.T) {
+	oauth := func(access, refresh, chatgpt string) *Account {
+		return &Account{
+			Lane: LaneAnthropic, Kind: KindOAuth,
+			AccessToken: access, RefreshToken: refresh, ChatGPTAccountID: chatgpt,
+		}
+	}
+
+	t.Run("same tokens are the same login", func(t *testing.T) {
+		if !oauth("a", "r", "").SameCredentialAs(oauth("a", "r", "")) {
+			t.Error("identical credentials read as different accounts")
+		}
+	})
+
+	t.Run("a refreshed access token is still the same login", func(t *testing.T) {
+		// Refresh rotates the access token constantly, so it cannot be the only
+		// handle on identity.
+		if !oauth("old", "shared-refresh", "").SameCredentialAs(oauth("new", "shared-refresh", "")) {
+			t.Error("a rotated access token made one account look like two")
+		}
+	})
+
+	t.Run("the workspace id decides when there is one", func(t *testing.T) {
+		a := &Account{Lane: LaneOpenAI, Kind: KindOAuth, AccessToken: "x", ChatGPTAccountID: "acct-1"}
+		b := &Account{Lane: LaneOpenAI, Kind: KindOAuth, AccessToken: "y", ChatGPTAccountID: "acct-1"}
+		if !a.SameCredentialAs(b) {
+			t.Error("the same workspace read as two accounts")
+		}
+		c := &Account{Lane: LaneOpenAI, Kind: KindOAuth, AccessToken: "x", ChatGPTAccountID: "acct-2"}
+		if a.SameCredentialAs(c) {
+			t.Error("two workspaces read as one account")
+		}
+	})
+
+	t.Run("different logins are different", func(t *testing.T) {
+		if oauth("a", "r1", "").SameCredentialAs(oauth("b", "r2", "")) {
+			t.Error("two separate logins read as one")
+		}
+	})
+
+	t.Run("api keys compare by key", func(t *testing.T) {
+		a := &Account{Lane: LaneAnthropic, Kind: KindAPIKey, APIKey: "sk-1"}
+		if !a.SameCredentialAs(&Account{Lane: LaneAnthropic, Kind: KindAPIKey, APIKey: "sk-1"}) {
+			t.Error("the same key read as two accounts")
+		}
+		if a.SameCredentialAs(&Account{Lane: LaneAnthropic, Kind: KindAPIKey, APIKey: "sk-2"}) {
+			t.Error("two keys read as one")
+		}
+	})
+
+	t.Run("lanes and kinds never mix", func(t *testing.T) {
+		a := &Account{Lane: LaneAnthropic, Kind: KindAPIKey, APIKey: "same"}
+		if a.SameCredentialAs(&Account{Lane: LaneOpenAI, Kind: KindAPIKey, APIKey: "same"}) {
+			t.Error("a key matched across lanes")
+		}
+		if a.SameCredentialAs(&Account{Lane: LaneAnthropic, Kind: KindOAuth, AccessToken: "same"}) {
+			t.Error("a key matched a subscription")
+		}
+	})
+
+	t.Run("empty credentials never match", func(t *testing.T) {
+		// Two half-written entries are not evidence of anything.
+		if (&Account{Lane: LaneAnthropic, Kind: KindAPIKey}).SameCredentialAs(
+			&Account{Lane: LaneAnthropic, Kind: KindAPIKey}) {
+			t.Error("two empty api keys matched")
+		}
+		if (&Account{Lane: LaneAnthropic, Kind: KindOAuth}).SameCredentialAs(
+			&Account{Lane: LaneAnthropic, Kind: KindOAuth}) {
+			t.Error("two empty token sets matched")
+		}
+	})
+
+	if (&Account{}).SameCredentialAs(nil) {
+		t.Error("nil matched")
+	}
+}

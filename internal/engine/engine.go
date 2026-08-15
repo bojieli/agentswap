@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/bojieli/agentswap/internal/config"
@@ -25,6 +26,33 @@ const errorBodyLimit = 64 << 10
 
 // ErrNoAccounts means the lane has no enabled accounts at all.
 var ErrNoAccounts = errors.New("no accounts configured for this lane")
+
+// Rejected is one account the upstream refused, and why.
+type Rejected struct {
+	ID      string
+	Display string
+	Reason  string
+}
+
+// ErrCredentialsRejected means the lane has accounts but every one of them was
+// refused. Waiting cannot fix a rejected credential, so this is distinct from
+// being out of quota — and it is the one failure that needs a human.
+//
+// It carries the accounts and their reasons because the client's error message
+// is the only channel most people will ever read: they are inside a coding
+// agent, not watching the daemon's log.
+type ErrCredentialsRejected struct {
+	Lane     store.LaneID
+	Rejected []Rejected
+}
+
+func (e *ErrCredentialsRejected) Error() string {
+	names := make([]string, 0, len(e.Rejected))
+	for _, r := range e.Rejected {
+		names = append(names, r.Display)
+	}
+	return fmt.Sprintf("every %s account was rejected: %s", e.Lane, strings.Join(names, ", "))
+}
 
 // ErrParkTooLong means every account is spent for longer than park.max_hold.
 // The caller should hand off to the supervisor, which can resume the session
@@ -145,7 +173,7 @@ func (e *Engine) Execute(ctx context.Context, laneID store.LaneID, req *http.Req
 				return nil, err
 			}
 			if !waited {
-				return nil, fmt.Errorf("%w: all accounts unavailable", ErrNoAccounts)
+				return nil, e.unusable(laneID, now)
 			}
 			// A fresh round: accounts that were skipped may have recovered.
 			tried = map[string]bool{}
@@ -267,6 +295,30 @@ func (e *Engine) Execute(ctx context.Context, laneID store.LaneID, req *http.Req
 			return nil, fmt.Errorf("unhandled outcome %v", outcome.Action)
 		}
 	}
+}
+
+// unusable explains why a lane that has accounts could not serve the request.
+//
+// "Rejected" and "spent" need opposite responses from the user — one needs a
+// new login, the other needs patience — so they must not arrive as the same
+// message.
+func (e *Engine) unusable(laneID store.LaneID, now time.Time) error {
+	var rejected []Rejected
+	for _, a := range e.store.Accounts(laneID) {
+		h := e.store.Health(a.ID)
+		if h.State != store.StateInvalid {
+			continue
+		}
+		rejected = append(rejected, Rejected{
+			ID: a.ID, Display: a.Display(), Reason: h.LastError,
+		})
+	}
+	if len(rejected) > 0 {
+		return &ErrCredentialsRejected{Lane: laneID, Rejected: rejected}
+	}
+	// Nothing was rejected, so the accounts were merely all tried this round —
+	// parking is off, or their deadlines are unknown.
+	return fmt.Errorf("%w: no %s account could serve this request", ErrNoAccounts, laneID)
 }
 
 // park waits until an account recovers. It reports whether it actually waited;

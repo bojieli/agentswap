@@ -22,6 +22,7 @@ func main() {
 	commands := []command{
 		{"serve", "run the proxy daemon", cmdServe},
 		{"run", "run a CLI, resuming it after a quota wait", cmdRun},
+		{"login", "add an account, or replace a rejected credential", cmdLogin},
 		{"import", "adopt the logins already on this machine", cmdImport},
 		{"add-key", "add an API key to a lane", cmdAddKey},
 		{"list", "list pooled accounts", cmdList},
@@ -71,6 +72,7 @@ func usage(commands []command) {
 	}
 	b.WriteString("\nGetting started:\n")
 	b.WriteString("  agentswap import          # adopt your current claude / codex logins\n")
+	b.WriteString("  agentswap login           # pool another account, or fix a rejected one\n")
 	b.WriteString("  agentswap install         # point both CLIs at agentswap\n")
 	b.WriteString("  agentswap serve           # run the daemon\n")
 	b.WriteString("\nRun `agentswap <command> -h` for the flags of a single command.\n")

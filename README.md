@@ -56,21 +56,27 @@ claude                          # picks up the settings automatically
 codex --profile agentswap       # Codex needs the profile flag
 ```
 
-To pool more accounts, log in as each one and import again:
+To pool more accounts:
 
 ```sh
-claude /login                   # log in as the second account
-agentswap import --id work
+agentswap login --id work       # tells you what to sign in to, then adopts it
 ```
+
+`login` waits for the sign-in and adopts whatever your CLI stored, however you
+did it. The same account is never pooled twice — two rows holding one
+credential would look like failover and be refused in the same instant.
 
 API keys, including same-protocol third-party providers, are tried after every
 subscription is spent:
 
 ```sh
-agentswap add-key anthropic --key sk-ant-...
-agentswap add-key anthropic --key ... --base-url https://your-gateway.example
-agentswap add-key openai    --key sk-proj-...
+agentswap add-key anthropic                                   # prompts, echo off
+echo "$ANTHROPIC_API_KEY" | agentswap add-key anthropic --key -
+agentswap add-key anthropic --key - --base-url https://your-gateway.example
 ```
+
+Avoid putting a key in the command line itself: it lands in your shell history
+and the process list. See [docs/accounts.md](docs/accounts.md).
 
 ## Watching it work
 
@@ -87,6 +93,18 @@ anthropic: 2/3 ready   openai: 1/1 ready
 
 `agentswap doctor` checks each link in the chain in the order a request travels
 it, so the first failure it reports is the first thing to fix.
+
+An upstream can revoke a login whenever it likes, and that is the one failure
+waiting cannot fix. When it happens, the error your agent shows names the
+account and the command:
+
+```
+your anthropic account "work" was rejected (refresh failed with 401
+Unauthorized). Sign in again with `agentswap login --id work`.
+```
+
+Sign in as that account, run that command, and the credential is replaced in
+place — same id, same priority, straight back into rotation.
 
 ## How it decides
 
@@ -226,8 +244,9 @@ usage is permitted is your call about your own accounts.
   automatic settings pickup.
 - Automatic resume needs `agentswap run`. A bare `claude` gets the 503 and
   stops, because nothing is supervising it.
-- Adding an account means logging in with the CLI itself and running
-  `agentswap import` again; there is no built-in OAuth flow yet.
+- Adding an account means signing in with the CLI itself; agentswap has no
+  OAuth flow of its own, so `agentswap login` guides and adopts rather than
+  signing you in.
 
 ## Prior art
 
@@ -244,6 +263,8 @@ keeping conversations pinned for cache affinity.
 
 ## Documentation
 
+- [Accounts and keys](docs/accounts.md) — pooling logins, re-signing in, where
+  keys live and why it is not one file
 - [Configuration](docs/configuration.md) — every field, and what getting it
   wrong costs
 - [Architecture](docs/architecture.md) — how a request flows, and how to add a

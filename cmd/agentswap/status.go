@@ -115,7 +115,34 @@ func printStatus(addrOverride string) error {
 	if line := poolSummary(st, health, now); line != "" {
 		fmt.Printf("\n%s\n", line)
 	}
+	printRejected(all, health)
 	return nil
+}
+
+// printRejected calls out the one state that will not fix itself.
+//
+// Everything else in this table recovers on its own given time, so a user can
+// reasonably read it and wait. A rejected credential never comes back, and the
+// table alone does not say what to do about it.
+func printRejected(all []*store.Account, health func(string) store.Health) {
+	var rejected []*store.Account
+	for _, a := range all {
+		if a.Enabled && health(a.ID).State == store.StateInvalid {
+			rejected = append(rejected, a)
+		}
+	}
+	if len(rejected) == 0 {
+		return
+	}
+	fmt.Println()
+	for _, a := range rejected {
+		if reason := health(a.ID).LastError; reason != "" {
+			fmt.Printf("%s was rejected: %s\n", a.Display(), reason)
+		} else {
+			fmt.Printf("%s was rejected.\n", a.Display())
+		}
+		fmt.Printf("  sign in again:  agentswap login --id %s\n", a.ID)
+	}
 }
 
 // poolSummary reports, per lane, whether anything is actually usable right
