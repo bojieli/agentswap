@@ -461,3 +461,53 @@ func TestSweepStaleTemps(t *testing.T) {
 		t.Errorf("a temp file that may still be in use was removed: %v", err)
 	}
 }
+
+// Concurrent writes to the same file must not collide. On Unix a rename simply
+// wins; on Windows two replaces of one path fail with a sharing violation, so
+// the store serializes its own writes rather than relying on the platform.
+func TestConcurrentWritesToBothFiles(t *testing.T) {
+	st, dir := openTemp(t)
+	for _, id := range []string{"a", "b", "c"} {
+		seed(t, st, &Account{ID: id, Lane: LaneAnthropic, Kind: KindAPIKey, Enabled: true, APIKey: "k"})
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 64)
+
+	// Health flushes, token refreshes and enable/disable all land on disk, and
+	// on a busy daemon they overlap.
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < 25; j++ {
+				id := string(rune('a' + j%3))
+				st.MutateHealth(id, func(h *Health) { h.Requests++ })
+				if err := st.FlushHealth(); err != nil {
+					errs <- err
+					return
+				}
+				if err := st.UpdateAccount(id, func(a *Account) {
+					a.AccessToken = "refreshed"
+				}); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("write failed under concurrency: %v", err)
+	}
+
+	// Whatever the interleaving, what landed has to be readable.
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatalf("reopen after concurrent writes: %v", err)
+	}
+	if n := len(reopened.Accounts(LaneAnthropic)); n != 3 {
+		t.Errorf("pool holds %d accounts after concurrent writes, want 3", n)
+	}
+}

@@ -34,6 +34,13 @@ type Store struct {
 	health   map[string]*Health
 
 	healthDirty bool
+
+	// writeMu serializes writes to the files. The data lock is deliberately
+	// released before writing, so readers are never blocked on disk I/O — which
+	// also means two goroutines can reach the write at once. On Windows two
+	// concurrent replaces of one path fail with a sharing violation instead of
+	// one simply winning.
+	writeMu sync.Mutex
 }
 
 // Open loads the pool from dir, creating it if absent.
@@ -210,7 +217,7 @@ func (s *Store) Upsert(a *Account) error {
 	snapshot := s.snapshotLocked()
 	s.mu.Unlock()
 
-	return writeJSONAtomic(filepath.Join(s.dir, accountsFile), snapshot)
+	return s.writeJSON(accountsFile, snapshot)
 }
 
 // UpdateAccount applies fn to the pool's own copy of an account under the
@@ -237,7 +244,7 @@ func (s *Store) UpdateAccount(id string, fn func(*Account)) error {
 	snapshot := s.snapshotLocked()
 	s.mu.Unlock()
 
-	return writeJSONAtomic(filepath.Join(s.dir, accountsFile), snapshot)
+	return s.writeJSON(accountsFile, snapshot)
 }
 
 // snapshotLocked clones the pool for serialization. Cloning matters as much as
@@ -270,7 +277,7 @@ func (s *Store) Remove(id string) error {
 	snapshot := s.snapshotLocked()
 	s.mu.Unlock()
 
-	return writeJSONAtomic(filepath.Join(s.dir, accountsFile), snapshot)
+	return s.writeJSON(accountsFile, snapshot)
 }
 
 // Health returns a copy of the account's health. A missing entry reads as a
@@ -313,7 +320,7 @@ func (s *Store) FlushHealth() error {
 	s.healthDirty = false
 	s.mu.Unlock()
 
-	return writeJSONAtomic(filepath.Join(s.dir, stateFile), snapshot)
+	return s.writeJSON(stateFile, snapshot)
 }
 
 // RunHealthFlusher periodically persists health until done is closed.
@@ -329,6 +336,13 @@ func (s *Store) RunHealthFlusher(done <-chan struct{}, every time.Duration) {
 			_ = s.FlushHealth()
 		}
 	}
+}
+
+// writeJSON persists one of the store's files, one write at a time.
+func (s *Store) writeJSON(name string, v any) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return writeJSONAtomic(filepath.Join(s.dir, name), v)
 }
 
 // writeJSONAtomic writes v as indented JSON to path via a temp file in the same
@@ -365,5 +379,27 @@ func writeJSONAtomic(path string, v any) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	return renameWithRetry(tmp, path)
 }
+
+// renameWithRetry replaces path, retrying briefly.
+//
+// A rename onto a path some other handle has open fails on Windows with a
+// sharing violation — another agentswap process writing the same file, or an
+// antivirus scanner that opened what we just wrote, is enough. Elsewhere the
+// first attempt always succeeds, so this costs nothing.
+func renameWithRetry(tmp, path string) error {
+	var err error
+	for attempt := 0; attempt < renameAttempts; attempt++ {
+		if err = os.Rename(tmp, path); err == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+	}
+	return err
+}
+
+// renameAttempts bounds the retry at roughly half a second in total, which is
+// far longer than a scanner holds a small file and short enough that a real
+// permissions problem still surfaces promptly.
+const renameAttempts = 10
