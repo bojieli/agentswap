@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="704" height="486" viewBox="0 0 704 486" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;DejaVu Sans Mono&quot;,monospace" font-size="13">
+<rect width="704" height="486" rx="10" fill="#12151c"/>
+<path d="M0 10a10 10 0 0 1 10-10h684a10 10 0 0 1 10 10v20H0z" fill="#1b1f28"/>
+<circle cx="20" cy="15" r="5.5" fill="#e06c62"/>
+<circle cx="38" cy="15" r="5.5" fill="#d9a04a"/>
+<circle cx="56" cy="15" r="5.5" fill="#5fb28a"/>
+<text x="352.0" y="19.5" fill="#6c7686" font-size="11" text-anchor="middle">agentswap</text>
+<text x="20" y="59" xml:space="preserve"><tspan fill="#5fb28a">$ </tspan><tspan fill="#e8edf4" font-weight="600">agentswap status</tspan></text>
+<text x="20" y="80" xml:space="preserve"><tspan fill="#6c7686">ACCOUNT            LANE       STATE       5H/PRI  7D/SEC  RECOVERS</tspan></text>
+<text x="20" y="101" xml:space="preserve"><tspan fill="#d5dae3">personal           anthropic  </tspan><tspan fill="#5fb28a">available</tspan><tspan fill="#d5dae3">   -       -       -</tspan></text>
+<text x="20" y="122" xml:space="preserve"><tspan fill="#d5dae3">work               anthropic  </tspan><tspan fill="#5fb28a">available</tspan><tspan fill="#d5dae3">   -       -       -</tspan></text>
+<text x="20" y="164" xml:space="preserve"><tspan fill="#d5dae3">anthropic: </tspan><tspan fill="#5fb28a">2/2 ready</tspan></text>
+<text x="20" y="206" xml:space="preserve"><tspan fill="#5fb28a">$ </tspan><tspan fill="#e8edf4" font-weight="600">claude &quot;refactor the parser&quot;</tspan></text>
+<text x="20" y="227" xml:space="preserve"><tspan fill="#d5dae3">Done. The parser now handles nested groups.</tspan></text>
+<text x="20" y="269" xml:space="preserve"><tspan fill="#6c7686"># personal ran out mid-request. agentswap moved to work and carried on:</tspan></text>
+<text x="20" y="290" xml:space="preserve"><tspan fill="#6c7686">account </tspan><tspan fill="#d9a04a">exhausted</tspan><tspan fill="#6c7686">, </tspan><tspan fill="#d9a04a">rotating</tspan><tspan fill="#6c7686"> account=personal reason=quota </tspan><tspan fill="#d9a04a">exhausted</tspan><tspan fill="#6c7686"> (status=rejected)</tspan></text>
+<text x="20" y="311" xml:space="preserve"><tspan fill="#6c7686">served lane=anthropic account=work </tspan><tspan fill="#5fb28a">status=200</tspan><tspan fill="#6c7686"> attempts=2 took=1ms</tspan></text>
+<text x="20" y="353" xml:space="preserve"><tspan fill="#5fb28a">$ </tspan><tspan fill="#e8edf4" font-weight="600">agentswap status</tspan></text>
+<text x="20" y="374" xml:space="preserve"><tspan fill="#6c7686">ACCOUNT            LANE       STATE       5H/PRI  7D/SEC  RECOVERS</tspan></text>
+<text x="20" y="395" xml:space="preserve"><tspan fill="#d5dae3">personal           anthropic  </tspan><tspan fill="#d9a04a">exhausted</tspan><tspan fill="#d5dae3">   -       -       </tspan><tspan fill="#d9a04a">1h 59m</tspan></text>
+<text x="20" y="416" xml:space="preserve"><tspan fill="#d5dae3">work               anthropic  </tspan><tspan fill="#5fb28a">available</tspan><tspan fill="#d5dae3">   </tspan><tspan fill="#7aa2d6">12%</tspan><tspan fill="#d5dae3">     </tspan><tspan fill="#7aa2d6">41%</tspan><tspan fill="#d5dae3">     -</tspan></text>
+<text x="20" y="458" xml:space="preserve"><tspan fill="#d5dae3">anthropic: </tspan><tspan fill="#5fb28a">1/2 ready</tspan></text>
+</svg>
