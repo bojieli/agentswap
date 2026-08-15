@@ -1,5 +1,10 @@
 # agentswap
 
+[![ci](https://github.com/bojieli/agentswap/actions/workflows/ci.yml/badge.svg)](https://github.com/bojieli/agentswap/actions/workflows/ci.yml)
+[![go reference](https://pkg.go.dev/badge/github.com/bojieli/agentswap.svg)](https://pkg.go.dev/github.com/bojieli/agentswap)
+[![dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen)](#security)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 **Gives your coding agent a second wind.**
 
 Claude Code and Codex both stop dead when the upstream says no. `agentswap` is a
@@ -25,6 +30,16 @@ working as they change.
 ```sh
 go install github.com/bojieli/agentswap/cmd/agentswap@latest
 ```
+
+Or take a binary — the script verifies its checksum and refuses to install
+without one:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/bojieli/agentswap/main/install.sh | sh
+```
+
+Binaries for Linux, macOS, Windows and FreeBSD are attached to each
+[release](https://github.com/bojieli/agentswap/releases), with `SHA256SUMS`.
 
 ## Quick start
 
@@ -154,6 +169,9 @@ cannot be retracted.
 `buffer` is added to every observed reset time, because server and client clocks
 disagree and retrying one second early wastes the whole wait.
 
+Every field, and what it costs to get it wrong, is in
+[docs/configuration.md](docs/configuration.md).
+
 ## Files it touches
 
 | Path | What |
@@ -169,11 +187,20 @@ Both CLI files are backed up before any change and restored exactly by
 ## Security
 
 `agentswap` holds live OAuth tokens, so it has **no third-party dependencies** —
-nothing in this process comes from outside the Go standard library. It listens
-on loopback only. Credential files are written 0600 via atomic replace.
+nothing in this process comes from outside the Go standard library, and CI fails
+if `go.sum` stops being empty. It listens on loopback only. Credential files are
+written 0600 via atomic replace.
 
 The proxy discards whatever credential the client sends and substitutes one from
 the pool, so a token cannot leak from one configured CLI into another lane.
+
+It also checks the `Host` header. A page you visit can point its own domain at
+127.0.0.1 and post to a local server — DNS rebinding — and agentswap would
+otherwise answer with real credentials. What rebinding cannot do is forge the
+`Host` header, so unrecognised names are refused. Set `allowed_hosts` if you
+reach agentswap by another name on purpose.
+
+Full threat model and how to report something: [SECURITY.md](SECURITY.md).
 
 ## Terms of service — read this
 
@@ -211,6 +238,16 @@ all do account rotation, and the last covers Codex and Gemini too. What is
 different here is waiting through a reset instead of surfacing it, retrying
 overload without a bound, reading quota before failure rather than after, and
 keeping conversations pinned for cache affinity.
+
+## Documentation
+
+- [Configuration](docs/configuration.md) — every field, and what getting it
+  wrong costs
+- [Architecture](docs/architecture.md) — how a request flows, and how to add a
+  third lane
+- [Troubleshooting](docs/troubleshooting.md) — symptoms, causes, fixes
+- [Contributing](CONTRIBUTING.md) — the one hard rule is no dependencies
+- [Security](SECURITY.md) — threat model, and how to report privately
 
 ## License
 
