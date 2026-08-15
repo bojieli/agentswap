@@ -62,6 +62,15 @@ agentswap login --id work
 `login` tells you what to sign in to, waits for you to do it, and adopts the
 result. The same account is never pooled twice.
 
+An imported credential is a copy of the one your CLI is using, and whichever of
+you renews first retires the other's. For the account you use every day, pool a
+token that is nobody's session:
+
+```sh
+claude setup-token                 # issue a long-lived token
+agentswap add-token anthropic      # pool it; it will not go stale
+```
+
 API keys — your own, or a company gateway that speaks the same protocol — are
 tried after every subscription is spent:
 

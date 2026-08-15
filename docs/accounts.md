@@ -157,12 +157,45 @@ upstream just refused, so it looks like the fix did nothing.
 
 Usually one of:
 
-- **You used the account outside agentswap.** Both upstreams rotate the refresh
-  token when it is used, so whichever side refreshes second is holding a token
-  the server has retired. Running your CLIs through agentswap avoids this;
-  running one of them directly, occasionally, will cost you a re-login.
+- **The CLI renewed its own session.** This is the common one, and it is worth
+  understanding — see below.
 - **You signed out**, in that CLI or on the web.
 - **The upstream expired the session**, which it may do whenever it likes.
+
+## An imported credential has a shelf life
+
+`agentswap import` copies the credential your CLI is *currently* using. You now
+have two holders of one credential, and OAuth refresh tokens rotate: renewing
+returns a new refresh token and retires the old one. Whichever side renews
+first keeps working, and the other is holding something the server has thrown
+away.
+
+Measured on Claude Code: the access token lasts **eight hours**, and the CLI
+renews it lazily — when it is expired or nearly so, not on every invocation. So
+an imported copy is good until roughly the next eight-hour boundary, and then
+one side loses. When it is agentswap that loses, you get the rejected-credential
+message above; your CLI is unaffected.
+
+Note that this only affects the account your CLI is *currently signed in as*.
+Every other account in the pool is agentswap's alone — nothing else renews
+them, so they keep working indefinitely.
+
+### The way out: a long-lived token
+
+A long-lived token is a separate credential. Your CLI never renews it, because
+it is not your CLI's session, so there is nothing to race:
+
+```sh
+claude setup-token                 # issue one (needs a Claude subscription)
+agentswap add-token anthropic      # paste it here; --token - reads a pipe
+```
+
+It is pooled as a subscription, so it is still spent before any metered key,
+and it shows in `list` as `long-lived`. This is the right way to pool the
+account you use day to day; `import` is the quick way to get started.
+
+For the openai lane the equivalent is an ordinary API key, which does not
+rotate either.
 
 ## API keys
 

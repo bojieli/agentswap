@@ -353,10 +353,16 @@ func rejectedMessage(laneID store.LaneID, rejected []engine.Rejected) string {
 // signed into again; a key is replaced. Offering the wrong one wastes the only
 // message most people will read.
 func remedy(r engine.Rejected) string {
-	if r.Kind == store.KindAPIKey {
+	switch {
+	case r.Kind == store.KindAPIKey:
 		return fmt.Sprintf("Replace the key with `agentswap set %s --key -`.", r.ID)
+	case !r.Renewable:
+		// A long-lived token: nothing to sign into, and no key to swap.
+		return fmt.Sprintf("Issue a new token with `claude setup-token` and add it with "+
+			"`agentswap add-token anthropic --id %s`.", r.ID)
+	default:
+		return fmt.Sprintf("Sign in again with `agentswap login --id %s`.", r.ID)
 	}
-	return fmt.Sprintf("Sign in again with `agentswap login --id %s`.", r.ID)
 }
 
 func writeJSONError(w http.ResponseWriter, status int, code, msg string) {

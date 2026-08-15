@@ -26,6 +26,7 @@ func main() {
 		{"login", "add an account, or replace a rejected credential", cmdLogin},
 		{"import", "adopt the logins already on this machine", cmdImport},
 		{"add-key", "add an API key to a lane", cmdAddKey},
+		{"add-token", "add a long-lived token, which does not go stale", cmdAddToken},
 		{"list", "list pooled accounts", cmdList},
 		{"set", "change an account's base url, priority or label", cmdSet},
 		{"remove", "remove an account from the pool", cmdRemove},

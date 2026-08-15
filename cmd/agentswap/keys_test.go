@@ -76,7 +76,7 @@ func TestCredentialSummary(t *testing.T) {
 // every other route has to work.
 func TestReadSecretPrefersTheSafeRoutes(t *testing.T) {
 	t.Run("flag value", func(t *testing.T) {
-		got, err := readSecret("sk-from-flag")
+		got, err := readSecretT("sk-from-flag")
 		if err != nil || got != "sk-from-flag" {
 			t.Errorf("= %q, %v", got, err)
 		}
@@ -84,7 +84,7 @@ func TestReadSecretPrefersTheSafeRoutes(t *testing.T) {
 
 	t.Run("environment", func(t *testing.T) {
 		t.Setenv("AGENTSWAP_API_KEY", "sk-from-env")
-		got, err := readSecret("")
+		got, err := readSecretT("")
 		if err != nil || got != "sk-from-env" {
 			t.Errorf("= %q, %v", got, err)
 		}
@@ -92,7 +92,7 @@ func TestReadSecretPrefersTheSafeRoutes(t *testing.T) {
 
 	t.Run("the flag wins over the environment", func(t *testing.T) {
 		t.Setenv("AGENTSWAP_API_KEY", "sk-from-env")
-		got, _ := readSecret("sk-from-flag")
+		got, _ := readSecretT("sk-from-flag")
 		if got != "sk-from-flag" {
 			t.Errorf("= %q, want the explicit value", got)
 		}
@@ -100,7 +100,7 @@ func TestReadSecretPrefersTheSafeRoutes(t *testing.T) {
 
 	t.Run("stdin", func(t *testing.T) {
 		withStdin(t, "sk-from-stdin\n")
-		got, err := readSecret("-")
+		got, err := readSecretT("-")
 		if err != nil || got != "sk-from-stdin" {
 			t.Errorf("= %q, %v", got, err)
 		}
@@ -108,7 +108,7 @@ func TestReadSecretPrefersTheSafeRoutes(t *testing.T) {
 
 	t.Run("empty stdin is an error, not an empty key", func(t *testing.T) {
 		withStdin(t, "   \n")
-		if _, err := readSecret("-"); err == nil {
+		if _, err := readSecretT("-"); err == nil {
 			t.Error("an empty pipe was accepted as a key")
 		}
 	})
@@ -116,7 +116,7 @@ func TestReadSecretPrefersTheSafeRoutes(t *testing.T) {
 	t.Run("nothing anywhere explains the options", func(t *testing.T) {
 		t.Setenv("AGENTSWAP_API_KEY", "")
 		withStdin(t, "") // a pipe, so there is nobody to prompt
-		_, err := readSecret("")
+		_, err := readSecretT("")
 		if err == nil {
 			t.Fatal("want an error")
 		}
@@ -170,3 +170,7 @@ func TestIsTerminalRejectsAPipe(t *testing.T) {
 		t.Error("/dev/null was taken for a terminal")
 	}
 }
+
+// readSecretT keeps the existing cases readable now that the flag name is a
+// parameter.
+func readSecretT(v string) (string, error) { return readSecret(v, "--key") }

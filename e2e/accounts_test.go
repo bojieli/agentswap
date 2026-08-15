@@ -588,3 +588,62 @@ func TestAnAccountAddedLaterIsPickedUp(t *testing.T) {
 		t.Errorf("upstream saw %v, want only the new account", got)
 	}
 }
+
+// An imported credential is the one the CLI is currently using, and both sides
+// rotate the refresh token when they renew — so whichever renews first retires
+// the other's copy. A long-lived token is a separate credential the CLI never
+// touches, which is the way out of that race.
+func TestLongLivedTokenIsPooledAsASubscription(t *testing.T) {
+	e := newEnv(t)
+
+	cmd := exec.Command(binary, "add-token", "anthropic", "--token", "-", "--id", "longlived",
+		"--base-url", e.upstream.url())
+	cmd.Env = e.environ()
+	cmd.Stdin = strings.NewReader("sk-ant-oat01-long-lived-value\n")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("add-token: %v\n%s", err, out)
+	}
+	mustContain(t, string(out), "not go stale", "add-token")
+
+	list := e.mustRun("list").out()
+	mustContain(t, list, "long-lived", "list")
+	mustContain(t, list, "subscription", "list") // spent before metered keys
+	mustNotContain(t, list, "long-lived-value", "list")
+
+	// It has to reach the upstream as a bearer token, not as an api key.
+	d := e.serve()
+	resp, body := d.post(t, "/anthropic/v1/messages", `{}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d: %s", resp.StatusCode, body)
+	}
+	seen := e.upstream.seen()
+	if got := seen[0].Header.Get("Authorization"); got != "Bearer sk-ant-oat01-long-lived-value" {
+		t.Errorf("Authorization = %q, want the token as a bearer", got)
+	}
+	if got := seen[0].Header.Get("X-Api-Key"); got != "" {
+		t.Errorf("X-Api-Key = %q, want a token sent as a bearer instead", got)
+	}
+}
+
+// Nothing to sign into and no key to swap: the remedy is a new token.
+func TestARejectedLongLivedTokenSaysToIssueANewOne(t *testing.T) {
+	e := newEnv(t)
+	cmd := exec.Command(binary, "add-token", "anthropic", "--token", "-", "--id", "longlived",
+		"--base-url", e.upstream.url())
+	cmd.Env = e.environ()
+	cmd.Stdin = strings.NewReader("sk-ant-oat01-revoked\n")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("add-token: %v\n%s", err, out)
+	}
+	e.upstream.handle(func(w http.ResponseWriter, _ *http.Request, _ recorded) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":{"message":"OAuth access token has been revoked."}}`)
+	})
+	d := e.serve()
+
+	_, body := d.post(t, "/anthropic/v1/messages", `{}`)
+	mustContain(t, body, "OAuth access token has been revoked", "the refusal")
+	mustContain(t, body, "claude setup-token", "the refusal")
+	mustContain(t, body, "agentswap add-token", "the refusal")
+}

@@ -79,10 +79,15 @@ covers it.
 
 Why a login gets revoked, usually:
 
-- **The CLI refreshed its own token.** Both upstreams rotate the refresh token
+- **The CLI renewed its own session.** Both upstreams rotate the refresh token
   when it is used, so once your CLI renews, the copy agentswap imported is the
-  retired one. Your CLI keeps working; agentswap's copy does not. This is the
-  common case, and `agentswap login --id <name>` adopts the current credential.
+  retired one. Your CLI keeps working; agentswap's copy does not. On Claude
+  Code the token lasts eight hours, so this is roughly a daily event for the
+  account you are signed in as.
+
+  `agentswap login --id <name>` adopts the current credential, and
+  `claude setup-token` plus `agentswap add-token` stops it recurring — a
+  long-lived token is not your CLI's session, so there is nothing to race.
 - You signed out, in the CLI or on the web.
 - The upstream expired the session, which it may do whenever it likes.
 

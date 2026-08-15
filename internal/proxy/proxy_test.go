@@ -261,7 +261,8 @@ func TestClientDisconnectAbortsRetries(t *testing.T) {
 // the one failure that will not fix itself.
 func TestRejectedMessageIsActionable(t *testing.T) {
 	one := rejectedMessage(store.LaneAnthropic, []engine.Rejected{
-		{ID: "work", Display: "work", Reason: "refresh failed with 401 Unauthorized"},
+		{ID: "work", Display: "work", Reason: "refresh failed with 401 Unauthorized",
+			Kind: store.KindOAuth, Renewable: true},
 	})
 	for _, want := range []string{
 		`"work"`,                    // which account
@@ -279,14 +280,43 @@ func TestRejectedMessageIsActionable(t *testing.T) {
 	}
 
 	many := rejectedMessage(store.LaneAnthropic, []engine.Rejected{
-		{ID: "personal", Display: "personal"},
-		{ID: "work", Display: "work"},
+		{ID: "personal", Display: "personal", Kind: store.KindOAuth, Renewable: true},
+		{ID: "work", Display: "work", Kind: store.KindOAuth, Renewable: true},
 	})
 	for _, want := range []string{"personal", "work",
 		"agentswap login --id personal", "agentswap login --id work"} {
 		if !strings.Contains(many, want) {
 			t.Errorf("message %q does not mention %q", many, want)
 		}
+	}
+}
+
+// Three kinds of credential, three different things to do about them. Offering
+// the wrong one wastes the only message most people will read.
+func TestRemedyFitsTheCredential(t *testing.T) {
+	cases := []struct {
+		name     string
+		rejected engine.Rejected
+		want     string
+	}{{
+		name:     "a session is signed into again",
+		rejected: engine.Rejected{ID: "work", Kind: store.KindOAuth, Renewable: true},
+		want:     "agentswap login --id work",
+	}, {
+		name:     "a key is replaced",
+		rejected: engine.Rejected{ID: "corp", Kind: store.KindAPIKey},
+		want:     "agentswap set corp --key -",
+	}, {
+		name:     "a long-lived token is reissued",
+		rejected: engine.Rejected{ID: "longlived", Kind: store.KindOAuth, Renewable: false},
+		want:     "claude setup-token",
+	}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := remedy(tc.rejected); !strings.Contains(got, tc.want) {
+				t.Errorf("remedy = %q, want it to mention %q", got, tc.want)
+			}
+		})
 	}
 }
 

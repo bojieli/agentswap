@@ -37,6 +37,10 @@ type Rejected struct {
 	// replaced. Telling somebody to sign in to an API key wastes the one
 	// message they are going to read.
 	Kind store.Kind
+
+	// Renewable is false for a long-lived token, which has no refresh token
+	// and so is replaced rather than re-signed-in.
+	Renewable bool
 }
 
 // ErrCredentialsRejected means the lane has accounts but every one of them was
@@ -333,6 +337,7 @@ func (e *Engine) unusable(laneID store.LaneID, now time.Time) error {
 		}
 		rejected = append(rejected, Rejected{
 			ID: a.ID, Display: a.Display(), Reason: h.LastError, Kind: a.Kind,
+			Renewable: a.RefreshToken != "",
 		})
 	}
 	if len(rejected) > 0 {

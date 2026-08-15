@@ -217,7 +217,7 @@ func cmdAddKey(args []string) error {
 		return fmt.Errorf("unknown lane %q; want anthropic or openai", laneID)
 	}
 
-	secret, err := readSecret(*key)
+	secret, err := readSecret(*key, "--key")
 	if err != nil {
 		return err
 	}
@@ -277,7 +277,7 @@ func cmdAddKey(args []string) error {
 // A secret on the command line ends up in ~/.zsh_history and in the process
 // list, so `--key -` reads it from a pipe, an unset key falls back to the
 // environment, and an interactive terminal is prompted with the echo off.
-func readSecret(flagValue string) (string, error) {
+func readSecret(flagValue, flagName string) (string, error) {
 	if flagValue == "-" {
 		b, err := io.ReadAll(os.Stdin)
 		if err != nil {
@@ -294,11 +294,13 @@ func readSecret(flagValue string) (string, error) {
 	if key := os.Getenv("AGENTSWAP_API_KEY"); key != "" {
 		return key, nil
 	}
-	if key, err := promptSecret("API key: "); err == nil && key != "" {
+	if key, err := promptSecret(strings.TrimPrefix(flagName, "--") + ": "); err == nil && key != "" {
 		return key, nil
 	}
-	return "", errors.New("no key given. Pipe it in with `--key -`, set AGENTSWAP_API_KEY, " +
-		"or run this from a terminal to be prompted")
+	// Naming the flag this command actually takes: being told to use --key by
+	// a command that has no --key is its own small maze.
+	return "", fmt.Errorf("nothing given. Pipe it in with `%s -`, set AGENTSWAP_API_KEY, "+
+		"or run this from a terminal to be prompted", flagName)
 }
 
 // maskKey renders a key as something a human can tell apart from another key
@@ -364,6 +366,12 @@ func credentialSummary(a *store.Account) string {
 	var parts []string
 	if a.Kind == store.KindAPIKey && a.APIKey != "" {
 		parts = append(parts, maskKey(a.APIKey))
+	}
+	if a.Kind == store.KindOAuth && a.RefreshToken == "" && a.AccessToken != "" {
+		// A credential with nothing to refresh is a long-lived token, and that
+		// is the useful thing to know about it: it does not go stale when the
+		// CLI renews its own session.
+		parts = append(parts, "long-lived "+maskKey(a.AccessToken))
 	}
 	if a.SubscriptionType != "" {
 		parts = append(parts, a.SubscriptionType)

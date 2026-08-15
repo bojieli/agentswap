@@ -74,7 +74,7 @@ func cmdSet(args []string) error {
 			return fmt.Errorf("%q is a subscription, not an API key; "+
 				"replace its credential with `agentswap login --id %s`", id, id)
 		}
-		if secret, err = readSecret(*key); err != nil {
+		if secret, err = readSecret(*key, "--key"); err != nil {
 			return err
 		}
 	}

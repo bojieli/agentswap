@@ -141,9 +141,13 @@ func printRejected(all []*store.Account, health func(string) store.Health) {
 		} else {
 			fmt.Printf("%s was rejected.\n", a.Display())
 		}
-		if a.Kind == store.KindAPIKey {
+		switch {
+		case a.Kind == store.KindAPIKey:
 			fmt.Printf("  replace the key:  agentswap set %s --key -\n", a.ID)
-		} else {
+		case a.RefreshToken == "":
+			fmt.Printf("  issue a new token:  claude setup-token, then agentswap add-token %s --id %s\n",
+				a.Lane, a.ID)
+		default:
 			fmt.Printf("  sign in again:    agentswap login --id %s\n", a.ID)
 		}
 	}

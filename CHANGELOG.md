@@ -127,6 +127,14 @@ Found by driving the real `claude` and `codex` against real upstreams:
 
 ### Added
 
+- **`agentswap add-token`**, for a long-lived token — the way out of an
+  imported credential going stale. `import` copies the credential your CLI is
+  currently using, and OAuth refresh tokens rotate, so whichever of you renews
+  first retires the other's copy. Measured on Claude Code, the access token
+  lasts eight hours and the CLI renews it lazily, which puts a ceiling on how
+  long an imported copy survives. A token from `claude setup-token` is nobody's
+  session, so there is nothing to race. It is pooled as a subscription and
+  spent before any metered key.
 - **`agentswap service`**, which runs the daemon in the background and starts it
   again at login — a LaunchAgent on macOS, a systemd user unit on Linux, and on
   Windows the Task Scheduler and Startup-folder instructions. Everything

@@ -52,6 +52,22 @@ With no `--key`, it reads `AGENTSWAP_API_KEY`, and failing that prompts with
 the echo off. Avoid putting the key in the command line: it lands in your shell
 history and the process list. The same key is never added twice.
 
+### `agentswap add-token <anthropic|openai>`
+Pools a long-lived bearer token — one that is not tied to your CLI's session,
+and so does not go stale when the CLI renews its own credential.
+
+| Flag | Meaning |
+| --- | --- |
+| `--token TOKEN` | the token; `-` reads it from stdin |
+| `--id NAME`, `--label TEXT` | naming |
+| `--base-url URL` | override the upstream |
+| `--priority N` | order within the lane |
+
+Get one with `claude setup-token`. It is stored as a subscription, so it is
+spent before any metered key. An imported credential, by contrast, is a copy of
+what your CLI is using and lasts only until one of you renews — see
+[accounts.md](accounts.md).
+
 ## Changing what is there
 
 ### `agentswap set <account-id>`
