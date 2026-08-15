@@ -14,6 +14,12 @@ permissions:
 
 jobs:
   analyze:
+    # Uploading results needs code scanning, which a private repository only has
+    # with GitHub Advanced Security. Without it the analysis runs perfectly and
+    # then fails at the upload, leaving a red check on every pull request that
+    # nothing in the code can fix. This turns itself on when the repository is
+    # published.
+    if: github.event.repository.private == false
     runs-on: ubuntu-latest
     permissions:
       # A job-level block replaces the workflow-level one rather than adding to

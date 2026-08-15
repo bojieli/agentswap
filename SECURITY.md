@@ -18,6 +18,11 @@ Supported: the latest release. Fixes are not backported.
 
 ## The design, and what it is defending
 
+**CodeQL** runs on every push and weekly, with the `security-and-quality`
+query set. It is skipped while the repository is private, because uploading
+results needs code scanning, and turns itself on when the repository is
+published.
+
 **No third-party dependencies.** `go.sum` is empty and CI fails if it stops
 being. A dependency in this process is code with access to your tokens,
 published by someone who could change it tomorrow.
