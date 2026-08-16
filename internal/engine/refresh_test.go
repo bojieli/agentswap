@@ -211,3 +211,88 @@ func TestAccountsAreCopies(t *testing.T) {
 		t.Errorf("scopes = %v, want the store to be unaffected by a caller's mutation", second.Scopes)
 	}
 }
+
+// TestAuthRefreshBudgetIsPerAccount covers the account that never gets its
+// turn.
+//
+// auth_refresh_attempts asks whether renewing *this* credential is still worth
+// trying, so spending it on the first account condemns the second one
+// unrefreshed — recorded as "rejected", which is the one verdict that does not
+// heal on its own and the one that sends the user to sign in again. An
+// imported credential the CLI stored without an expires_at is exactly this
+// case: nothing knows the token is stale until the 401 arrives, so every
+// account in the pool needs its own first refresh.
+func TestAuthRefreshBudgetIsPerAccount(t *testing.T) {
+	auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			RefreshToken string `json:"refresh_token"`
+		}
+		_ = json.Unmarshal(body, &req)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": strings.Replace(req.RefreshToken, "refresh-", "fresh-", 1),
+			"expires_in":   3600,
+		})
+	}))
+	defer auth.Close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") {
+		case "fresh-a":
+			// a renews fine and is then simply out of quota, which is what
+			// moves the request on to b.
+			w.Header().Set("Anthropic-Ratelimit-Unified-Status", "rejected")
+			w.Header().Set("Anthropic-Ratelimit-Unified-Reset",
+				time.Now().Add(10*time.Hour).Format(time.RFC3339))
+			w.WriteHeader(http.StatusTooManyRequests)
+		case "fresh-b":
+			_, _ = io.WriteString(w, `{"ok":true}`)
+		default:
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"error":{"type":"authentication_error"}}`)
+		}
+	}))
+	defer upstream.Close()
+
+	restore := anthropic.TokenURL
+	anthropic.TokenURL = auth.URL
+	defer func() { anthropic.TokenURL = restore }()
+
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	for i, id := range []string{"a", "b"} {
+		if err := st.Upsert(&store.Account{
+			ID: id, Lane: store.LaneAnthropic, Kind: store.KindOAuth, Label: id,
+			Priority: i, Enabled: true,
+			AccessToken: "stale-" + id, RefreshToken: "refresh-" + id,
+			BaseURL: upstream.URL,
+		}); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+
+	cfg := config.Default()
+	// Parking would only postpone the question; this test is about which
+	// account answers it.
+	cfg.Park.Enabled = false
+	lanes := map[store.LaneID]lane.Lane{store.LaneAnthropic: anthropic.New(auth.Client())}
+	e := New(cfg, st, lanes, upstream.Client(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	body := []byte(`{"model":"claude"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	res, err := e.Execute(context.Background(), store.LaneAnthropic, req, body, SleepWaiter{})
+	if err != nil {
+		t.Fatalf("Execute: %v (health of b: %+v)", err, st.Health("b"))
+	}
+	defer res.Response.Body.Close()
+
+	if res.Account.ID != "b" {
+		t.Errorf("served by %q, want b", res.Account.ID)
+	}
+	if h := st.Health("b"); h.State == store.StateInvalid {
+		t.Errorf("b was marked rejected without a refresh being tried: %q", h.LastError)
+	}
+}

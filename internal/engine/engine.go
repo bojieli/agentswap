@@ -166,7 +166,11 @@ func (e *Engine) Execute(ctx context.Context, laneID store.LaneID, req *http.Req
 	tried := map[string]bool{}
 	attempts := 0
 	overloadStreak := 0
-	authAttempts := 0
+	// Counted per account, not per request. The budget answers "has renewing
+	// this credential stopped helping?", which is a question about one account;
+	// spending it on the first account would have the second one condemned
+	// unrefreshed, on the strength of what happened to somebody else.
+	authAttempts := map[string]int{}
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -256,11 +260,10 @@ func (e *Engine) Execute(ctx context.Context, laneID store.LaneID, req *http.Req
 				tried[acct.ID] = true
 				continue
 			}
-			authAttempts++
-			if authAttempts > e.cfg.Retry.AuthRefreshAttempts {
+			authAttempts[acct.ID]++
+			if authAttempts[acct.ID] > e.cfg.Retry.AuthRefreshAttempts {
 				e.markInvalid(acct, errors.New(redactSecrets(outcome.Reason, acct)))
 				tried[acct.ID] = true
-				authAttempts = 0
 				continue
 			}
 			// The renewed credential goes into the pool, and the next pass

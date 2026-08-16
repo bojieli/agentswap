@@ -40,6 +40,11 @@ type Store struct {
 	// also means two goroutines can reach the write at once. On Windows two
 	// concurrent replaces of one path fail with a sharing violation instead of
 	// one simply winning.
+	//
+	// It is also the lock that makes a change to accounts.json atomic against
+	// Reload: anything that edits the pool holds it from before it touches
+	// memory until the file agrees, so a reload can never read the file
+	// mid-change and adopt it. Order is writeMu then mu, never the reverse.
 	writeMu sync.Mutex
 }
 
@@ -236,6 +241,9 @@ func (s *Store) Upsert(a *Account) error {
 	}
 	stored := a.Clone()
 
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
 	s.mu.Lock()
 	replaced := false
 	for i, existing := range s.accounts {
@@ -251,7 +259,7 @@ func (s *Store) Upsert(a *Account) error {
 	snapshot := s.snapshotLocked()
 	s.mu.Unlock()
 
-	return s.writeJSON(accountsFile, snapshot)
+	return s.writeAccountsLocked(snapshot)
 }
 
 // UpdateAccount applies fn to the pool's own copy of an account under the
@@ -261,7 +269,15 @@ func (s *Store) Upsert(a *Account) error {
 // caller that renews the token on a clone and Upserts it back would overwrite
 // whatever else changed meanwhile — an `agentswap disable` landing during a
 // long stream, say.
+//
+// Memory and file move together, under writeMu. Renewing a token is the one
+// write where they must: the upstream retires the old refresh token the moment
+// the new one is issued, so a daemon left holding the old copy has not lost a
+// write, it has lost the account.
 func (s *Store) UpdateAccount(id string, fn func(*Account)) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
 	s.mu.Lock()
 	var found *Account
 	for _, a := range s.accounts {
@@ -278,7 +294,7 @@ func (s *Store) UpdateAccount(id string, fn func(*Account)) error {
 	snapshot := s.snapshotLocked()
 	s.mu.Unlock()
 
-	return s.writeJSON(accountsFile, snapshot)
+	return s.writeAccountsLocked(snapshot)
 }
 
 // snapshotLocked clones the pool for serialization. Cloning matters as much as
@@ -294,6 +310,9 @@ func (s *Store) snapshotLocked() []*Account {
 
 // Remove deletes an account and its health entry.
 func (s *Store) Remove(id string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
 	s.mu.Lock()
 	idx := -1
 	for i, a := range s.accounts {
@@ -311,7 +330,7 @@ func (s *Store) Remove(id string) error {
 	snapshot := s.snapshotLocked()
 	s.mu.Unlock()
 
-	return s.writeJSON(accountsFile, snapshot)
+	return s.writeAccountsLocked(snapshot)
 }
 
 // Health returns a copy of the account's health. A missing entry reads as a
@@ -377,6 +396,12 @@ func (s *Store) writeJSON(name string, v any) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	return writeJSONAtomic(filepath.Join(s.dir, name), v)
+}
+
+// writeAccountsLocked persists the pool. The caller already holds writeMu,
+// because it also changed the pool in memory and the two have to move as one.
+func (s *Store) writeAccountsLocked(snapshot []*Account) error {
+	return writeJSONAtomic(filepath.Join(s.dir, accountsFile), snapshot)
 }
 
 // writeJSONAtomic writes v as indented JSON to path via a temp file in the same

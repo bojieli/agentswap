@@ -66,7 +66,9 @@ type Retry struct {
 	// account-scoped rather than global.
 	RotateAfter int `json:"rotate_after"`
 
-	// AuthRefreshAttempts caps 401-driven token refreshes per request.
+	// AuthRefreshAttempts caps 401-driven token refreshes per account, for one
+	// request. Per account rather than per request because it measures whether
+	// renewing *this* credential is still worth trying.
 	AuthRefreshAttempts int `json:"auth_refresh_attempts"`
 }
 
