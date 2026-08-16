@@ -654,6 +654,61 @@ func TestReloadReportsOnlyRealChanges(t *testing.T) {
 	}
 }
 
+// A reload arriving while a token is being renewed must not put the old
+// credential back.
+//
+// The two overlap in real use: everything that changes the pool tells the
+// daemon to reload, and the daemon renews tokens whenever one expires, so
+// `agentswap login` during a busy session is enough. Reverting is not a lost
+// write — the upstream retires the old refresh token the moment it issues the
+// new one, so a daemon left holding the old copy would present a retired
+// credential, be refused, and mark a healthy account rejected.
+func TestReloadDoesNotRevertATokenBeingRefreshed(t *testing.T) {
+	st, dir := openTemp(t)
+
+	for i := 0; i < 200; i++ {
+		seed(t, st, &Account{
+			ID: "a", Lane: LaneAnthropic, Kind: KindOAuth, Enabled: true,
+			AccessToken: "v0", RefreshToken: "r0",
+		})
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if err := st.UpdateAccount("a", func(a *Account) {
+				a.AccessToken, a.RefreshToken = "v1", "r1"
+			}); err != nil {
+				t.Errorf("UpdateAccount: %v", err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if _, err := st.Reload(); err != nil {
+				t.Errorf("Reload: %v", err)
+			}
+		}()
+		wg.Wait()
+
+		b, err := os.ReadFile(filepath.Join(dir, accountsFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var onDisk []*Account
+		if err := json.Unmarshal(b, &onDisk); err != nil {
+			t.Fatal(err)
+		}
+		mem, err := st.Get("a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(onDisk) != 1 || mem.RefreshToken != onDisk[0].RefreshToken {
+			t.Fatalf("run %d: the daemon holds refresh token %q while the file holds %q",
+				i, mem.RefreshToken, onDisk[0].RefreshToken)
+		}
+	}
+}
+
 func TestResetHealth(t *testing.T) {
 	st, _ := openTemp(t)
 	seed(t, st, &Account{ID: "a", Lane: LaneAnthropic, Kind: KindAPIKey, Enabled: true, APIKey: "k"})

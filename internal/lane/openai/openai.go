@@ -270,14 +270,14 @@ func classify429(resp *http.Response, e errorBody, code string, now time.Time, c
 	if planExhausted[code] || strings.Contains(reachedType, "usage") || strings.Contains(reachedType, "plan") {
 		at := now.Add(5 * time.Hour)
 		if resetIn > 0 {
-			at = now.Add(time.Duration(resetIn) * time.Second)
+			at = now.Add(seconds(resetIn))
 		} else if ra, ok := lane.RetryAfterHeader(resp.Header, now); ok {
 			at = now.Add(ra)
 		}
 		return lane.Outcome{Action: lane.ActionRotate, ResetAt: at, Reason: "plan quota exhausted"}
 	}
 
-	wait := time.Duration(resetIn) * time.Second
+	wait := seconds(resetIn)
 	if wait == 0 {
 		if ra, ok := lane.RetryAfterHeader(resp.Header, now); ok {
 			wait = ra
@@ -349,6 +349,18 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// seconds converts the upstream's figure to a duration without dropping its
+// fraction.
+//
+// The obvious spelling — time.Duration(v) * time.Second — truncates to whole
+// seconds first, so every value below one becomes zero. Zero then reads as "the
+// upstream said nothing about timing", and the answer to that is to write the
+// account off for five hours. A sub-second burst limit is the shortest wait
+// there is; it must not be the most expensive.
+func seconds(v float64) time.Duration {
+	return time.Duration(v * float64(time.Second))
 }
 
 func firstPositive(vals ...float64) float64 {

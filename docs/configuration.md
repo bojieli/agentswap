@@ -140,9 +140,14 @@ that is account-scoped should not pin the request forever.
 ### `auth_refresh_attempts`
 Default `1`.
 
-How many times a single request may renew a token in response to a 401 before
-the account is treated as genuinely rejected. More than one attempt almost
-never helps: if a freshly minted token is refused, the problem is the account.
+How many times a request may renew one account's token in response to a 401
+before that account is treated as genuinely rejected. More than one attempt
+almost never helps: if a freshly minted token is refused, the problem is the
+account.
+
+The budget is per account, not per request. A request that rotates through
+several accounts gives each one the same allowance, so an account is never
+condemned unrefreshed because an earlier one had already used the budget up.
 
 ## `park`
 

@@ -8,6 +8,34 @@ version moves for anything that changes behaviour.
 
 ### Fixed
 
+Found by reading the rotation path against the states a pool actually reaches,
+and reproduced as a failing test before each was touched:
+
+- **A reload arriving during a token refresh put the old credential back.**
+  Everything that changes the pool tells the daemon to reload, and the daemon
+  renews a token whenever one expires, so `agentswap login` during a busy
+  session was enough to overlap them. The reload read `accounts.json` while the
+  refresh was still writing it, then adopted what it read — leaving the daemon
+  holding a refresh token the upstream had already retired the moment it issued
+  the replacement. The next renewal presented it, was refused, and a healthy
+  account was recorded as rejected. This was not a narrow window: the reload's
+  read beat the refresh's fsync on the first attempt, every time. A change to
+  the pool now moves memory and file together.
+- **One account's 401 spent the refresh budget the next account needed.**
+  `auth_refresh_attempts` was counted per request rather than per account, so
+  once the first account had renewed its token, a second account answering 401
+  was marked *rejected* without its own refresh ever being attempted — the one
+  verdict that does not heal on its own, and the one that sends the user to
+  sign in again for nothing. An imported Codex subscription is stored without
+  an expiry, so nothing knows its token is stale until the 401 arrives: the
+  accounts most likely to need the budget were the ones being denied it.
+- **A sub-second Codex reset was treated as no reset at all.** The upstream's
+  `resets_in_seconds` was truncated to whole seconds before becoming a
+  duration, so anything under a second became zero — indistinguishable from the
+  upstream saying nothing about timing, whose answer is to write the account
+  off for five hours. A 0.4-second burst limit cost a five-hour rotation.
+  Fractional figures are now kept, in the plan-exhausted path too.
+
 Found by driving the real `claude` and `codex` against real upstreams:
 
 - **A refused API key was sent for a token refresh**, which cannot apply to a

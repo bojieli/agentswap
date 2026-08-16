@@ -83,6 +83,24 @@ func TestClassify(t *testing.T) {
 			want:        lane.ActionRotate,
 			wantResetIn: 5 * time.Hour,
 		},
+		{
+			// The shortest wait there is must not be the most expensive one.
+			// Truncating the fraction to zero would read as "the upstream said
+			// nothing about timing", whose answer is to write the account off
+			// for five hours.
+			name:      "a sub-second reset is a burst, not silence",
+			resp:      resp(429, nil),
+			body:      `{"error":{"code":"rate_limit_exceeded","resets_in_seconds":0.4}}`,
+			want:      lane.ActionRetrySame,
+			wantRetry: 400 * time.Millisecond,
+		},
+		{
+			name:        "a fractional plan reset keeps its fraction",
+			resp:        resp(429, nil),
+			body:        `{"error":{"code":"usage_limit_reached","resets_in_seconds":90.5}}`,
+			want:        lane.ActionRotate,
+			wantResetIn: 90500 * time.Millisecond,
+		},
 	}
 
 	var l Lane
