@@ -88,8 +88,9 @@ The script requires `claude`, `codex`, `kimi`, `opencode`, `go`, `jq`, `rg`,
 and `shasum`. It builds the current `agentswap` binary, isolates OpenCode's
 XDG state in a temporary directory, retains all sanitized logs for inspection,
 and prints the artifact directory and summary path. A failed assertion exits
-non-zero and retains the same artifacts. Do not publish those artifacts: native
-session logs can contain conversation content.
+non-zero and retains the same artifacts. The retained logs are intentionally
+raw for debugging; do not publish them because native session logs can contain
+conversation content.
 
 The test is an acceptance check for the currently installed CLI versions. It
 does not claim that an older Python-era Kimi CLI can perform a live continuation;
