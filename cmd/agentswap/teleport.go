@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -191,10 +192,14 @@ func freshTicketSource(target session.Agent) session.Agent {
 }
 
 func chooseSession(candidates []session.Candidate) (session.Candidate, error) {
+	return chooseSessionWithIO(candidates, os.Stdin, os.Stderr, stdinIsTerminal())
+}
+
+func chooseSessionWithIO(candidates []session.Candidate, in io.Reader, out io.Writer, terminal bool) (session.Candidate, error) {
 	if len(candidates) == 0 {
 		return session.Candidate{}, errors.New("no source sessions found")
 	}
-	fmt.Fprintln(os.Stderr, "Several sessions match this directory:")
+	fmt.Fprintln(out, "Several sessions match this directory:")
 	for i, candidate := range candidates {
 		title := strings.ReplaceAll(strings.TrimSpace(candidate.Title), "\n", " ")
 		if runes := []rune(title); len(runes) > 60 {
@@ -205,16 +210,16 @@ func chooseSession(candidates []session.Candidate) (session.Candidate, error) {
 			age = "unknown time"
 		}
 		if title != "" {
-			fmt.Fprintf(os.Stderr, "  %d) %-10s %s  %s  %q\n", i+1, candidate.Agent, candidate.ID, age, title)
+			fmt.Fprintf(out, "  %d) %-10s %s  %s  %q\n", i+1, candidate.Agent, candidate.ID, age, title)
 		} else {
-			fmt.Fprintf(os.Stderr, "  %d) %-10s %s  %s\n", i+1, candidate.Agent, candidate.ID, age)
+			fmt.Fprintf(out, "  %d) %-10s %s  %s\n", i+1, candidate.Agent, candidate.ID, age)
 		}
 	}
-	if !stdinIsTerminal() {
+	if !terminal {
 		return session.Candidate{}, errors.New("selection is ambiguous; rerun with --session <id>, --from <agent>, or --latest")
 	}
-	fmt.Fprintf(os.Stderr, "Choose [1-%d]: ", len(candidates))
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	fmt.Fprintf(out, "Choose [1-%d]: ", len(candidates))
+	line, err := bufio.NewReader(in).ReadString('\n')
 	if err != nil {
 		return session.Candidate{}, fmt.Errorf("read selection: %w", err)
 	}

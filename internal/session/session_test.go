@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -560,6 +561,293 @@ func TestReadersRejectCorruptJSONL(t *testing.T) {
 	}
 }
 
+func TestReadJSONLRejectsOversizedRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oversized.jsonl")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := strings.Repeat("x", 1<<20)
+	for written := 0; written <= maxJSONLRecord; written += len(chunk) {
+		if _, err := f.WriteString(chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = readJSONL(path, func(int, json.RawMessage) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "exceeds 64 MiB") {
+		t.Fatalf("oversized record error = %v", err)
+	}
+}
+
+func TestCodexReaderFailsClosedOnMedia(t *testing.T) {
+	isolate := isolatedHomes(t)
+	cwd := t.TempDir()
+	id := "77777777-7777-4777-8777-777777777777"
+	path := filepath.Join(isolate, "codex-media.jsonl")
+	records := []map[string]any{
+		{"timestamp": "2026-08-19T10:00:00Z", "type": "session_meta", "payload": map[string]any{"id": id, "cwd": cwd}},
+		{"timestamp": "2026-08-19T10:00:01Z", "type": "response_item", "payload": map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_image", "image_url": "data:image/png;base64,AA=="}}}},
+	}
+	var body strings.Builder
+	for _, record := range records {
+		b, _ := json.Marshal(record)
+		body.Write(b)
+		body.WriteByte('\n')
+	}
+	if err := os.WriteFile(path, []byte(body.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := (codexAdapter{}).Read(context.Background(), Candidate{Agent: Codex, ID: id, CWD: cwd, Path: path})
+	if err == nil || !strings.Contains(err.Error(), "unsupported Codex image content") {
+		t.Fatalf("media read error = %v", err)
+	}
+}
+
+func TestOpenCodeReaderFailsClosedOnAttachmentsAndDelegation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake OpenCode executable is a POSIX shell script")
+	}
+	for _, kind := range []string{"file", "agent", "subtask", "future-conversation-part"} {
+		t.Run(kind, func(t *testing.T) {
+			root := isolatedHomes(t)
+			cwd := t.TempDir()
+			exportPath := filepath.Join(root, "export.json")
+			exported := map[string]any{
+				"info": map[string]any{"id": "ses_source", "directory": cwd},
+				"messages": []any{map[string]any{
+					"info":  map[string]any{"id": "msg", "role": "user"},
+					"parts": []any{map[string]any{"id": "part", "type": kind}},
+				}},
+			}
+			b, _ := json.Marshal(exported)
+			if err := os.WriteFile(exportPath, b, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			script := filepath.Join(root, "opencode")
+			body := "#!/bin/sh\nset -eu\nif [ \"$1\" = export ]; then cat \"$FAKE_EXPORT\"; exit 0; fi\nexit 2\n"
+			if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("AGENTSWAP_OPENCODE_BIN", script)
+			t.Setenv("FAKE_EXPORT", exportPath)
+			_, err := (openCodeAdapter{}).Read(context.Background(), Candidate{Agent: OpenCode, ID: "ses_source", CWD: cwd, Format: "opencode-export"})
+			if err == nil || !strings.Contains(err.Error(), kind) {
+				t.Fatalf("OpenCode %s read error = %v", kind, err)
+			}
+		})
+	}
+}
+
+func TestKimiReadersFailClosedOnMedia(t *testing.T) {
+	root := isolatedHomes(t)
+	cwd := t.TempDir()
+	history := sampleHistory(t, cwd)
+	t.Run("modern", func(t *testing.T) {
+		t.Setenv("AGENTSWAP_KIMI_FORMAT", "modern")
+		result, err := (kimiAdapter{}).Write(context.Background(), history, WriteOptions{CWD: cwd})
+		if err != nil {
+			t.Fatal(err)
+		}
+		wire := filepath.Join(result.Path, "agents", "main", "wire.jsonl")
+		f, err := os.OpenFile(wire, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = writeJSONLine(f, map[string]any{"type": "context.append_message", "message": map[string]any{"role": "user", "content": []any{map[string]any{"type": "image", "url": "data:image/png;base64,AA=="}}}})
+		_ = f.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = (kimiAdapter{}).Read(context.Background(), Candidate{Agent: Kimi, ID: result.ID, CWD: cwd, Path: result.Path, Format: "kimi-code-wire"})
+		if err == nil || !strings.Contains(err.Error(), "unsupported Kimi context block") {
+			t.Fatalf("modern Kimi media error = %v", err)
+		}
+	})
+	t.Run("legacy", func(t *testing.T) {
+		t.Setenv("AGENTSWAP_KIMI_FORMAT", "legacy")
+		result, err := (kimiAdapter{}).Write(context.Background(), history, WriteOptions{CWD: cwd})
+		if err != nil {
+			t.Fatal(err)
+		}
+		contextPath := filepath.Join(result.Path, "context.jsonl")
+		f, err := os.OpenFile(contextPath, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = writeJSONLine(f, map[string]any{"role": "user", "content": []any{map[string]any{"type": "image", "url": "data:image/png;base64,AA=="}}})
+		_ = f.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = (kimiAdapter{}).Read(context.Background(), Candidate{Agent: Kimi, ID: result.ID, CWD: cwd, Path: result.Path, Format: "kimi-cli-v1"})
+		if err == nil || !strings.Contains(err.Error(), "unsupported legacy Kimi content block") {
+			t.Fatalf("legacy Kimi media error = %v", err)
+		}
+	})
+	if _, err := os.Stat(root); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLargeMixedHistoryRoundTripsFileTargets(t *testing.T) {
+	isolatedHomes(t)
+	cwd := t.TempDir()
+	history := largeMixedHistory(t, cwd, 250)
+	targets := []struct {
+		name    string
+		adapter Adapter
+		format  string
+		legacy  bool
+	}{
+		{name: "claude", adapter: claudeAdapter{}, format: "claude-jsonl"},
+		{name: "codex", adapter: codexAdapter{}, format: "codex-rollout"},
+		{name: "kimi-modern", adapter: kimiAdapter{}, format: "kimi-code-wire"},
+		{name: "kimi-legacy", adapter: kimiAdapter{}, format: "kimi-cli-v1", legacy: true},
+	}
+	for _, target := range targets {
+		t.Run(target.name, func(t *testing.T) {
+			if target.legacy {
+				t.Setenv("AGENTSWAP_KIMI_FORMAT", "legacy")
+			} else {
+				t.Setenv("AGENTSWAP_KIMI_FORMAT", "modern")
+			}
+			result, err := target.adapter.Write(context.Background(), history, WriteOptions{CWD: cwd})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := target.adapter.Read(context.Background(), Candidate{Agent: target.adapter.Agent(), ID: result.ID, CWD: cwd, Path: result.Path, Format: target.format})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := got.Validate(); err != nil {
+				t.Fatalf("round-trip validation: %v", err)
+			}
+			var calls, results, plans int
+			encoded, _ := json.Marshal(got.Events)
+			for _, event := range got.Events {
+				if event.Kind == Plan {
+					plans++
+				}
+				for _, part := range event.Parts {
+					switch part.Kind {
+					case ToolCall:
+						calls++
+					case ToolResult:
+						results++
+					}
+				}
+			}
+			if calls != 251 || results != 251 || plans != 5 {
+				t.Fatalf("round-trip counts: calls=%d results=%d plans=%d", calls, results, plans)
+			}
+			if !bytesContainAll(encoded, []string{"large-user-000-界", "large-user-249-界", "mcp__acceptance__tool", "result-249-λ", "dangling-large", "interrupted before teleport", "large plan revision 200"}) {
+				t.Fatalf("large round-trip lost boundary content; bytes=%d", len(encoded))
+			}
+		})
+	}
+}
+
+func largeMixedHistory(t *testing.T, cwd string, turns int) *Session {
+	t.Helper()
+	base := time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC)
+	history := &Session{Source: Claude, SourceID: "large-source", CWD: cwd, Title: "Large mixed acceptance", Model: "acceptance/model", CreatedAt: base}
+	for i := 0; i < turns; i++ {
+		callID := fmt.Sprintf("large-call-%03d", i)
+		ts := base.Add(time.Duration(i*5) * time.Second)
+		history.Events = append(history.Events,
+			Event{Kind: Message, ID: fmt.Sprintf("u-%03d", i), Role: "user", Timestamp: ts, Parts: []Part{{Kind: Text, Text: fmt.Sprintf("large-user-%03d-界\n%s", i, strings.Repeat("payload ", 12))}}},
+			Event{Kind: Message, ID: fmt.Sprintf("a-%03d", i), Role: "assistant", Timestamp: ts.Add(time.Second), Parts: []Part{
+				{Kind: Reasoning, Text: fmt.Sprintf("recorded reasoning %03d", i)},
+				{Kind: ToolCall, CallID: callID, ToolName: "mcp__acceptance__tool", Data: json.RawMessage(fmt.Sprintf(`{"turn":%d,"nested":{"unicode":"λ"}}`, i))},
+			}},
+			Event{Kind: Message, Role: "tool", Timestamp: ts.Add(2 * time.Second), Parts: []Part{{Kind: ToolResult, CallID: callID, Text: fmt.Sprintf("result-%03d-λ", i), Error: i%7 == 0}}},
+			Event{Kind: Message, Role: "assistant", Timestamp: ts.Add(3 * time.Second), Parts: []Part{{Kind: Text, Text: fmt.Sprintf("finished-%03d", i)}}},
+		)
+		if i%50 == 0 {
+			history.Events = append(history.Events, Event{Kind: Plan, Role: "assistant", Timestamp: ts.Add(4 * time.Second), PlanText: fmt.Sprintf("large plan revision %03d\n1. keep history\n2. continue", i)})
+		}
+	}
+	history.Events = append(history.Events, Event{Kind: Message, Role: "assistant", Timestamp: base.Add(time.Duration(turns*5) * time.Second), Parts: []Part{{Kind: ToolCall, CallID: "dangling-large", ToolName: "Bash", Data: json.RawMessage(`{"command":"sleep 100"}`)}}})
+	history.UpdatedAt = history.Events[len(history.Events)-1].Timestamp
+	if err := history.Validate(); err != nil {
+		t.Fatalf("large fixture validation: %v", err)
+	}
+	return history
+}
+
+func TestKimiLegacyRollsBackPublishedSessionWhenMetadataIsInvalid(t *testing.T) {
+	root := isolatedHomes(t)
+	cwd := t.TempDir()
+	t.Setenv("AGENTSWAP_KIMI_FORMAT", "legacy")
+	legacyRoot := filepath.Join(root, "kimi-legacy")
+	if err := os.MkdirAll(legacyRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	metadata := filepath.Join(legacyRoot, "kimi.json")
+	if err := os.WriteFile(metadata, []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (kimiAdapter{}).Write(context.Background(), sampleHistory(t, cwd), WriteOptions{CWD: cwd}); err == nil || !strings.Contains(err.Error(), "parse") {
+		t.Fatalf("invalid metadata write error = %v", err)
+	}
+	var partial []string
+	_ = filepath.WalkDir(filepath.Join(legacyRoot, "sessions"), func(path string, entry os.DirEntry, err error) error {
+		if err == nil && path != filepath.Join(legacyRoot, "sessions") && (entry.IsDir() && (strings.HasPrefix(entry.Name(), ".agentswap-") || strings.Count(entry.Name(), "-") == 4)) {
+			partial = append(partial, path)
+		}
+		return nil
+	})
+	if len(partial) != 0 {
+		t.Fatalf("failed legacy publish left target artifacts: %v", partial)
+	}
+	if got, err := os.ReadFile(metadata); err != nil || string(got) != "{broken" {
+		t.Fatalf("failed legacy publish changed metadata: %q, %v", got, err)
+	}
+}
+
+func TestFileTargetsLeaveNoArtifactsWhenTheirRootIsNotADirectory(t *testing.T) {
+	cwd := t.TempDir()
+	for _, target := range []struct {
+		name    string
+		envKey  string
+		adapter Adapter
+		legacy  bool
+	}{
+		{name: "claude", envKey: "CLAUDE_CONFIG_DIR", adapter: claudeAdapter{}},
+		{name: "codex", envKey: "CODEX_HOME", adapter: codexAdapter{}},
+		{name: "kimi-modern", envKey: "KIMI_CODE_HOME", adapter: kimiAdapter{}},
+		{name: "kimi-legacy", envKey: "KIMI_SHARE_DIR", adapter: kimiAdapter{}, legacy: true},
+	} {
+		t.Run(target.name, func(t *testing.T) {
+			root := t.TempDir()
+			blocked := filepath.Join(root, "blocked")
+			if err := os.WriteFile(blocked, []byte("not a directory"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv(target.envKey, blocked)
+			t.Setenv("AGENTSWAP_KIMI_MODEL", "test/kimi")
+			if target.legacy {
+				t.Setenv("AGENTSWAP_KIMI_FORMAT", "legacy")
+			} else {
+				t.Setenv("AGENTSWAP_KIMI_FORMAT", "modern")
+			}
+			if _, err := target.adapter.Write(context.Background(), sampleHistory(t, cwd), WriteOptions{CWD: cwd}); err == nil {
+				t.Fatal("write unexpectedly succeeded with a file as its data root")
+			}
+			entries, err := os.ReadDir(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 1 || entries[0].Name() != "blocked" || entries[0].IsDir() {
+				t.Fatalf("failed write left target artifacts: %v", entries)
+			}
+		})
+	}
+}
+
 func TestDryRunWritesNothing(t *testing.T) {
 	root := isolatedHomes(t)
 	cwd := t.TempDir()
@@ -690,6 +978,66 @@ func TestOpenCodeImportConfirmationRequiresExactID(t *testing.T) {
 		if containsExactID(text, "ses_abc") {
 			t.Fatalf("non-exact OpenCode confirmation was accepted: %q", text)
 		}
+	}
+}
+
+func TestOpenCodeLargeMixedImportPayload(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake OpenCode executable is a POSIX shell script")
+	}
+	root := isolatedHomes(t)
+	cwd := t.TempDir()
+	capture := filepath.Join(root, "large-import.json")
+	deleted := filepath.Join(root, "deleted.txt")
+	script := filepath.Join(root, "opencode")
+	body := "#!/bin/sh\nset -eu\n" +
+		"if [ \"$1\" = import ]; then cp \"$2\" \"$FAKE_CAPTURE\"; id=$(sed -n 's/.*\"id\": \"\\(ses_[^\"]*\\)\".*/\\1/p' \"$2\" | head -1); echo \"Imported session: $id\"; exit 0; fi\n" +
+		"if [ \"$1 $2\" = \"session delete\" ]; then echo \"$3\" > \"$FAKE_DELETED\"; exit 0; fi\n" +
+		"exit 2\n"
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENTSWAP_OPENCODE_BIN", script)
+	t.Setenv("FAKE_CAPTURE", capture)
+	t.Setenv("FAKE_DELETED", deleted)
+	history := largeMixedHistory(t, cwd, 250)
+	result, err := (openCodeAdapter{}).Write(context.Background(), history, WriteOptions{CWD: cwd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var exported struct {
+		Info     map[string]any `json:"info"`
+		Messages []struct {
+			Parts []map[string]any `json:"parts"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(b, &exported); err != nil {
+		t.Fatal(err)
+	}
+	if stringValue(exported.Info["id"]) != result.ID || len(exported.Messages) < 750 {
+		t.Fatalf("large OpenCode payload id/messages = %q/%d", exported.Info["id"], len(exported.Messages))
+	}
+	var calls, interrupted int
+	for _, message := range exported.Messages {
+		for _, part := range message.Parts {
+			if stringValue(part["type"]) != "tool" {
+				continue
+			}
+			calls++
+			if stringValue(part["callID"]) == "dangling-large" {
+				state, _ := part["state"].(map[string]any)
+				if stringValue(state["status"]) == "error" && strings.Contains(stringValue(state["error"]), "interrupted") {
+					interrupted++
+				}
+			}
+		}
+	}
+	if calls != 251 || interrupted != 1 || !bytesContainAll(b, []string{"large-user-000-界", "large-user-249-界", "result-249-λ", "large plan revision 200"}) {
+		t.Fatalf("large OpenCode payload calls/interrupted/bytes = %d/%d/%d", calls, interrupted, len(b))
 	}
 }
 
