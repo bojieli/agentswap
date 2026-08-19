@@ -92,10 +92,50 @@ non-zero and retains the same artifacts. The retained logs are intentionally
 raw for debugging; do not publish them because native session logs can contain
 conversation content.
 
-The test is an acceptance check for the currently installed CLI versions. It
-does not claim that an older Python-era Kimi CLI can perform a live continuation;
-the implementation still retains the separate legacy reader/writer and its
-offline regression coverage.
+The test is an acceptance check for the currently installed CLI versions.
+
+## Python-era Kimi round trip
+
+The separate opt-in
+[`teleport-legacy-kimi-acceptance.sh`](../scripts/teleport-legacy-kimi-acceptance.sh)
+completed a real bidirectional round trip with Claude Code 2.1.235 and
+Python-era `kimi-cli` 1.49.0:
+
+1. Claude created native plan state, read a unique marker, and retained an
+   intentional failed tool result.
+2. Agentswap wrote a legacy Kimi session and its cwd registry entry.
+3. Python Kimi resumed that exact id, recalled every expected field, and made a
+   fresh native `ReadFile` call.
+4. Agentswap read the now-natively-resumed legacy session and wrote a new
+   Claude session.
+5. Claude resumed it, recalled the complete history through Kimi, and made a
+   fresh native `Read` call.
+
+The run passed in both directions. Its source digests remained identical:
+
+| Native source | Before | After |
+| --- | --- | --- |
+| Claude JSONL | `c11ee75de57b4b7c474f0204bfec2fd0366e4ff6c6d51fcfe38f47f93fb32d36` | `c11ee75de57b4b7c474f0204bfec2fd0366e4ff6c6d51fcfe38f47f93fb32d36` |
+| Legacy Kimi session tree | `507275e9c7b773ac605443989f892ad6622e3a681c2cfcb5c1befdbcd2013507` | `507275e9c7b773ac605443989f892ad6622e3a681c2cfcb5c1befdbcd2013507` |
+
+This run also caught a format detail absent from newly generated fixtures:
+after a native resume, Python Kimi materializes `_system_prompt`, `_checkpoint`,
+and `_usage` records. They are runtime metadata, not conversation messages. The
+reader now ignores those three known roles while continuing to reject an
+unknown future role.
+
+The legacy run uses separate Anthropic and OpenAI-compatible chat-completions
+keys. Both are supplied only through the environment, and the script scans its
+isolated artifacts before declaring success:
+
+```sh
+AGENTSWAP_LIVE_ACCEPTANCE=1 \
+AGENTSWAP_KIMI_LEGACY_ANTHROPIC_KEY="$ANTHROPIC_API_KEY" \
+AGENTSWAP_KIMI_LEGACY_OPENAI_KEY="$KRILL_API_KEY" \
+AGENTSWAP_KIMI_LEGACY_OPENAI_BASE_URL='https://api.krill-ai.net/v1' \
+AGENTSWAP_KIMI_LEGACY_OPENAI_MODEL='kimi-k2.6' \
+scripts/teleport-legacy-kimi-acceptance.sh
+```
 
 During earlier parallel exploratory runs, Claude emitted transient provider HTTP
 500 retries and recovered using its normal retry behavior. The final serialized

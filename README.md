@@ -205,6 +205,8 @@ rather than creating a target that only looks resumable. See the exact command
 and format contract in [docs/commands.md](docs/commands.md#agentswap-teleport-target).
 For a real four-harness acceptance matrix, see
 [docs/teleport-live-acceptance.md](docs/teleport-live-acceptance.md).
+The complete credential, supervisor, platform, stress, fuzz, PTY, and legacy
+Kimi evidence is indexed in [docs/acceptance.md](docs/acceptance.md).
 
 ## Configuration
 
@@ -333,6 +335,8 @@ logs remain the authority for those formats.
 - [Troubleshooting](docs/troubleshooting.md) — symptoms, causes, fixes
 - [Architecture](docs/architecture.md) — how a request flows, and how to add a
   third lane
+- [Acceptance record](docs/acceptance.md) — deterministic, real-provider,
+  cross-platform, stress, and session-continuation evidence
 - [Contributing](CONTRIBUTING.md) — the one hard rule is no dependencies
 - [Security](SECURITY.md) — threat model, and how to report privately
 
