@@ -21,7 +21,45 @@ func isolatedHomes(t *testing.T) string {
 	t.Setenv("CODEX_HOME", filepath.Join(root, "codex"))
 	t.Setenv("KIMI_CODE_HOME", filepath.Join(root, "kimi-code"))
 	t.Setenv("KIMI_SHARE_DIR", filepath.Join(root, "kimi-legacy"))
+	t.Setenv("AGENTSWAP_KIMI_MODEL", "test/kimi")
 	return root
+}
+
+func TestKimiResumeModel(t *testing.T) {
+	t.Run("explicit override", func(t *testing.T) {
+		isolatedHomes(t)
+		t.Setenv("AGENTSWAP_KIMI_MODEL", " custom/model ")
+		if got, err := kimiResumeModel(); err != nil || got != "custom/model" {
+			t.Fatalf("kimiResumeModel = %q, %v", got, err)
+		}
+	})
+	t.Run("config default", func(t *testing.T) {
+		isolatedHomes(t)
+		t.Setenv("AGENTSWAP_KIMI_MODEL", "")
+		if err := os.MkdirAll(kimiCodeRoot(), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		config := "default_model = 'kimi-code/k3' # selected target model\n[models]\n"
+		if err := os.WriteFile(filepath.Join(kimiCodeRoot(), "config.toml"), []byte(config), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := kimiResumeModel(); err != nil || got != "kimi-code/k3" {
+			t.Fatalf("kimiResumeModel = %q, %v", got, err)
+		}
+	})
+	t.Run("missing default", func(t *testing.T) {
+		isolatedHomes(t)
+		t.Setenv("AGENTSWAP_KIMI_MODEL", "")
+		if err := os.MkdirAll(kimiCodeRoot(), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(kimiCodeRoot(), "config.toml"), []byte("[models]\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := kimiResumeModel(); err == nil || !strings.Contains(err.Error(), "AGENTSWAP_KIMI_MODEL") {
+			t.Fatalf("missing default error = %v", err)
+		}
+	})
 }
 
 func sampleHistory(t *testing.T, cwd string) *Session {
@@ -276,6 +314,9 @@ func TestKimiCodeRoundTrip(t *testing.T) {
 	}
 	if state["workDir"] == nil || state["cwd"] != nil || state["version"] != nil {
 		t.Fatalf("current Kimi state schema = %#v", state)
+	}
+	if got := strings.Join(result.Resume, " "); !strings.Contains(got, "--model test/kimi") {
+		t.Fatalf("current Kimi resume command = %v", result.Resume)
 	}
 	assertRoundTrip(t, adapter, candidates[0])
 }

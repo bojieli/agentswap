@@ -202,7 +202,8 @@ Resume: codex resume 019...
 ```
 
 The target commands are `claude --resume ID`, `codex resume ID`,
-`opencode --session ID`, current `kimi --session ID`, and legacy `kimi -r ID`.
+`opencode --session ID`, current `kimi --session ID --model MODEL`, and legacy
+`kimi -r ID`.
 `--launch` uses the exact id; it never races against another terminal through
 `--last` or `--continue`.
 
@@ -235,7 +236,12 @@ Kimi Code has two incompatible local formats. Current releases use
 Python-era CLI uses `$KIMI_SHARE_DIR` or `~/.kimi` with `context.jsonl` and
 `wire.jsonl`. Both are readable and writable. Set
 `AGENTSWAP_KIMI_FORMAT=legacy` only when deliberately targeting the older CLI;
-otherwise the current format is preferred.
+otherwise the current format is preferred. Current Kimi sessions bind a native
+agent profile, including its model and tool policy, at creation time. Imported
+history intentionally does not fabricate that provider-specific profile, so
+the generated resume command includes Kimi's configured `default_model` and
+lets Kimi perform the bind itself. `AGENTSWAP_KIMI_MODEL` overrides that target
+model when needed.
 
 ## Wiring your CLIs
 
@@ -285,5 +291,6 @@ Prints the version. Release builds carry the tag; a build from source says
 | `KIMI_CODE_HOME` | current Kimi Code data root (default `~/.kimi-code`) |
 | `KIMI_SHARE_DIR` | legacy Kimi CLI data root (default `~/.kimi`) |
 | `AGENTSWAP_KIMI_FORMAT` | `modern` or `legacy` target format override |
+| `AGENTSWAP_KIMI_MODEL` | target model alias in the generated current-Kimi resume command |
 | `AGENTSWAP_OPENCODE_BIN` | alternate `opencode` executable used for native import/export |
 | `AGENTSWAP_SESSION_ID` | explicit active source id for `teleport` |

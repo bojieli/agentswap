@@ -20,6 +20,73 @@ func (kimiAdapter) Agent() Agent { return Kimi }
 func kimiCodeRoot() string   { return envDir("KIMI_CODE_HOME", filepath.Join(homeDir(), ".kimi-code")) }
 func kimiLegacyRoot() string { return envDir("KIMI_SHARE_DIR", filepath.Join(homeDir(), ".kimi")) }
 
+func kimiResumeModel() (string, error) {
+	if model := strings.TrimSpace(os.Getenv("AGENTSWAP_KIMI_MODEL")); model != "" {
+		return model, nil
+	}
+	path := filepath.Join(kimiCodeRoot(), "config.toml")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read Kimi default model from %s: %w (or set AGENTSWAP_KIMI_MODEL)", path, err)
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") {
+			break
+		}
+		key, raw, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(key) != "default_model" {
+			continue
+		}
+		raw = strings.TrimSpace(trimKimiTOMLComment(raw))
+		var model string
+		switch {
+		case len(raw) >= 2 && raw[0] == '"' && raw[len(raw)-1] == '"':
+			if err := json.Unmarshal([]byte(raw), &model); err != nil {
+				return "", fmt.Errorf("parse Kimi default_model in %s: %w", path, err)
+			}
+		case len(raw) >= 2 && raw[0] == '\'' && raw[len(raw)-1] == '\'':
+			model = raw[1 : len(raw)-1]
+		default:
+			return "", fmt.Errorf("Kimi default_model in %s must be a quoted string", path)
+		}
+		if model = strings.TrimSpace(model); model != "" {
+			return model, nil
+		}
+		return "", fmt.Errorf("Kimi default_model in %s is empty (or set AGENTSWAP_KIMI_MODEL)", path)
+	}
+	return "", fmt.Errorf("Kimi default_model is not configured in %s (or set AGENTSWAP_KIMI_MODEL)", path)
+}
+
+func trimKimiTOMLComment(value string) string {
+	var quote byte
+	escaped := false
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if quote == 0 {
+			switch c {
+			case '#':
+				return value[:i]
+			case '\'', '"':
+				quote = c
+			}
+			continue
+		}
+		if quote == '"' && c == '\\' && !escaped {
+			escaped = true
+			continue
+		}
+		if c == quote && !escaped {
+			quote = 0
+		}
+		escaped = false
+	}
+	return value
+}
+
 func (kimiAdapter) Discover(_ context.Context, cwd string) ([]Candidate, error) {
 	canonical, err := canonicalPath(cwd)
 	if err != nil {
@@ -553,6 +620,10 @@ func (kimiAdapter) Write(_ context.Context, history *Session, opts WriteOptions)
 }
 
 func writeKimiCode(history *Session, opts WriteOptions) (result Result, err error) {
+	resumeModel, err := kimiResumeModel()
+	if err != nil {
+		return Result{}, err
+	}
 	uuid, err := newUUID()
 	if err != nil {
 		return Result{}, err
@@ -565,7 +636,7 @@ func writeKimiCode(history *Session, opts WriteOptions) (result Result, err erro
 	workdir := filepath.Join(kimiCodeRoot(), "sessions", kimiWorkdirKey(canonical))
 	final := filepath.Join(workdir, id)
 	agentHome := filepath.Join(final, "agents", "main")
-	result = Result{Agent: Kimi, ID: id, Path: final, Resume: []string{"kimi", "--session", id}, Files: []string{filepath.Join(final, "state.json"), filepath.Join(agentHome, "wire.jsonl")}}
+	result = Result{Agent: Kimi, ID: id, Path: final, Resume: []string{"kimi", "--session", id, "--model", resumeModel}, Files: []string{filepath.Join(final, "state.json"), filepath.Join(agentHome, "wire.jsonl")}}
 	if opts.DryRun {
 		return result, nil
 	}

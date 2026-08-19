@@ -190,6 +190,11 @@ the source. `--dry-run` performs that validation without writing anything.
 OpenCode database changes go through OpenCode's own `export` and `import`
 commands rather than writing its SQLite database directly.
 
+Current Kimi Code restores the agent profile bound to a session instead of
+silently applying a new global default. For imported history, the exact resume
+command therefore includes `--model` using Kimi's configured `default_model`;
+set `AGENTSWAP_KIMI_MODEL` to choose another target alias.
+
 This is a continuation, not process migration. Provider KV caches, hidden or
 encrypted reasoning, unrecorded system prompts, credentials, approvals, live
 shell processes, background tasks, and in-memory plugin state cannot move.
