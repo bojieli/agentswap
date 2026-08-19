@@ -499,6 +499,12 @@ func readKimiLegacy(candidate Candidate) (*Session, error) {
 		}
 		role := stringValue(message["role"])
 		switch role {
+		case "_system_prompt", "_checkpoint", "_usage":
+			// Python-era Kimi materializes its runtime prompt and bookkeeping
+			// records in context.jsonl when a native session is resumed. They
+			// are not conversation messages and cannot be reused by a different
+			// harness. Keep unknown roles fail-closed below.
+			return nil
 		case "user", "assistant":
 			event := Event{Kind: Message, Role: role}
 			switch content := message["content"].(type) {

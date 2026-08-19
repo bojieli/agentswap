@@ -372,6 +372,69 @@ func TestKimiLegacyRoundTrip(t *testing.T) {
 	assertRoundTrip(t, adapter, candidates[0])
 }
 
+func TestKimiLegacyReaderIgnoresNativeRuntimeMetadata(t *testing.T) {
+	isolate := isolatedHomes(t)
+	t.Setenv("KIMI_CODE_HOME", filepath.Join(isolate, "modern-empty"))
+	t.Setenv("AGENTSWAP_KIMI_FORMAT", "legacy")
+	cwd := t.TempDir()
+	adapter := kimiAdapter{}
+	result, err := adapter.Write(context.Background(), sampleHistory(t, cwd), WriteOptions{CWD: cwd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contextPath := filepath.Join(result.Path, "context.jsonl")
+	original, err := os.ReadFile(contextPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prefix []byte
+	for _, record := range []map[string]any{
+		{"role": "_system_prompt", "content": "native runtime prompt must not migrate"},
+		{"role": "_checkpoint", "id": 0},
+		{"role": "_usage", "token_count": 1234},
+	} {
+		line, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prefix = append(prefix, line...)
+		prefix = append(prefix, '\n')
+	}
+	if err := os.WriteFile(contextPath, append(prefix, original...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	candidate := candidateForResult(Kimi, result, cwd)
+	candidate.Format = "kimi-cli-v1"
+	got, err := adapter.Read(context.Background(), candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(got.Events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "native runtime prompt") {
+		t.Fatal("legacy Kimi runtime system prompt was transferred")
+	}
+
+	f, err := os.OpenFile(contextPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = writeJSONLine(f, map[string]any{"role": "_future_metadata", "content": "unknown"})
+	_ = f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = adapter.Read(context.Background(), candidate)
+	if err == nil || !strings.Contains(err.Error(), "unsupported legacy Kimi role") {
+		t.Fatalf("unknown legacy role error = %v", err)
+	}
+}
+
 func TestKimiLegacyDiscoveryMatchesSymlinkRegistryPath(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation is not generally available to unprivileged Windows tests")
