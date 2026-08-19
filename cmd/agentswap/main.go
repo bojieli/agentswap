@@ -23,6 +23,7 @@ func main() {
 		{"serve", "run the proxy daemon", cmdServe},
 		{"service", "run the daemon in the background, from login", cmdService},
 		{"run", "run a CLI, resuming it after a quota wait", cmdRun},
+		{"teleport", "move a resumable session to another coding agent", cmdTeleport},
 		{"login", "add an account, or replace a rejected credential", cmdLogin},
 		{"import", "adopt the logins already on this machine", cmdImport},
 		{"add-key", "add an API key to a lane", cmdAddKey},
