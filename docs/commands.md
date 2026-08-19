@@ -165,6 +165,78 @@ repeating the original instruction.
 It also sets the environment itself, so it works on a machine you never ran
 `install` on, and adds `--profile agentswap` to Codex invocations.
 
+### `agentswap teleport <target>`
+
+Creates a new native session for `claude`, `codex`, `opencode`, or `kimi` from
+an existing session belonging to another one of those agents. This is always a
+user command: pool exhaustion never chooses a different harness automatically.
+
+Run it from the project directory. Discovery compares canonical filesystem
+paths, including symlink equivalence, but deliberately does not fall back to
+"same Git repository": separate worktrees and monorepo packages must remain
+separate session scopes. The new target is given that same canonical directory,
+so it appears in the target's native resume picker.
+
+| Flag | Meaning |
+| --- | --- |
+| `--from claude\|codex\|opencode\|kimi` | restrict source discovery to one agent |
+| `--session ID` | select an exact source id in this directory |
+| `--latest` | choose the newest match without an interactive picker |
+| `--cwd PATH` | use a directory other than the current one |
+| `--dry-run` | read, validate, and report without writing a target |
+| `--launch` | run the exact native resume command after the write succeeds |
+
+Selection precedence is an explicit `--session`, an active-session environment
+id when `--from` identifies its harness, a still-fresh pool-exhaustion ticket
+(which can identify Claude versus Codex but never chooses the target), then the
+exact-directory candidates. One candidate is selected directly. Several
+candidates prompt only when stdin is a real terminal; otherwise the command
+fails with the flags needed to make the choice deterministic. `--latest` is the
+explicit non-interactive shortcut.
+
+The success output always includes the new id and exact resume command:
+
+```text
+Created Codex session 019...
+Resume: codex resume 019...
+```
+
+The target commands are `claude --resume ID`, `codex resume ID`,
+`opencode --session ID`, current `kimi --session ID`, and legacy `kimi -r ID`.
+`--launch` uses the exact id; it never races against another terminal through
+`--last` or `--continue`.
+
+Teleport preserves recorded messages and message order, text, recorded
+reasoning, tool names/call ids/JSON inputs/results/error state, plan revisions,
+timestamps, title, model, source id, and cwd wherever the destination has a
+native representation. It does not summarize or rewrite the history into a
+single prompt. Before any target write, the canonical stream is checked for
+malformed JSON, duplicate calls/results, orphaned results, empty records, and
+unknown conversation-bearing content. An unfinished source tool call gets an
+explicit interrupted result because the destination APIs require every call to
+be paired.
+
+The source is never modified. Claude, Codex, and both Kimi layouts stage files
+and publish them atomically. A failed write removes its newly created target
+artifacts. OpenCode is different: `opencode export`, `opencode session list`,
+and `opencode import` provide its schema boundary; a failed/unconfirmed import
+triggers deletion of only the newly generated target id.
+
+What cannot move is reported or rejected, not hidden: KV/prompt caches,
+unrecorded system instructions and hidden reasoning, provider-encrypted or
+signed reasoning state, credentials, approvals, live processes, background
+jobs, and in-memory plugin/MCP state. Recorded reasoning is retained as visible
+content if the target cannot reuse its provider signature. Text-file context is
+retained as visible text with a warning. Media, branched subagent transcripts,
+and unknown conversation-bearing native blocks currently fail closed.
+
+Kimi Code has two incompatible local formats. Current releases use
+`~/.kimi-code` with per-session state and versioned wire event logs; the
+Python-era CLI uses `$KIMI_SHARE_DIR` or `~/.kimi` with `context.jsonl` and
+`wire.jsonl`. Both are readable and writable. Set
+`AGENTSWAP_KIMI_FORMAT=legacy` only when deliberately targeting the older CLI;
+otherwise the current format is preferred.
+
 ## Wiring your CLIs
 
 ### `agentswap install`
@@ -210,3 +282,8 @@ Prints the version. Release builds carry the tag; a build from source says
 | `CLAUDE_CONFIG_DIR` | where Claude Code's settings and credentials are |
 | `CLAUDE_CREDENTIALS_PATH` | a specific credential file; no Keychain fallback |
 | `CODEX_HOME` | where Codex's config and auth are |
+| `KIMI_CODE_HOME` | current Kimi Code data root (default `~/.kimi-code`) |
+| `KIMI_SHARE_DIR` | legacy Kimi CLI data root (default `~/.kimi`) |
+| `AGENTSWAP_KIMI_FORMAT` | `modern` or `legacy` target format override |
+| `AGENTSWAP_OPENCODE_BIN` | alternate `opencode` executable used for native import/export |
+| `AGENTSWAP_SESSION_ID` | explicit active source id for `teleport` |

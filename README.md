@@ -159,6 +159,46 @@ agentswap run -- codex exec "fix the failing tests"
 `install` on, and adds `--profile agentswap` to Codex invocations — without it,
 Codex silently bypasses the proxy.
 
+## Moving a session to another coding agent
+
+When a whole provider is unavailable — every account and key is spent, or you
+simply want a model another harness exposes — the choice of harness belongs to
+you. `agentswap` reports the exhaustion; it does not silently send a
+conversation somewhere else.
+
+From the project directory, move the newest session into a new native session:
+
+```sh
+agentswap teleport codex
+agentswap teleport claude --from kimi --latest
+agentswap teleport opencode --session <source-id>
+agentswap teleport kimi --launch
+```
+
+Claude Code, Codex, OpenCode, and both current and legacy Kimi Code session
+formats are supported as sources. All four are supported as targets. Discovery
+uses an exact, symlink-aware match of the current directory, so worktrees and
+neighboring packages in a monorepo do not get mixed. If several sessions match,
+an interactive terminal gets a picker; scripts must use `--session`, `--from`,
+or `--latest`.
+
+Teleport translates the recorded structure — messages, recorded reasoning,
+tool calls, call ids, JSON inputs, results and errors, plans, timestamps, and
+model metadata — instead of turning the conversation into one summary prompt.
+It validates the entire source before touching the target and never modifies
+the source. `--dry-run` performs that validation without writing anything.
+OpenCode database changes go through OpenCode's own `export` and `import`
+commands rather than writing its SQLite database directly.
+
+This is a continuation, not process migration. Provider KV caches, hidden or
+encrypted reasoning, unrecorded system prompts, credentials, approvals, live
+shell processes, background tasks, and in-memory plugin state cannot move.
+Provider-signed reasoning becomes ordinary recorded content where necessary,
+with a warning. Text-file context is retained as visible text; media, branched
+subagent transcripts, or an unknown conversation-bearing schema fail closed
+rather than creating a target that only looks resumable. See the exact command
+and format contract in [docs/commands.md](docs/commands.md#agentswap-teleport-target).
+
 ## Configuration
 
 ```sh
@@ -192,6 +232,13 @@ upstream, priority or label. Every field and what it costs to get wrong:
 | `~/.config/agentswap/state.json` | observed quota and health |
 | `~/.claude/settings.json` | an `env` block, merged key by key |
 | `~/.codex/config.toml` | an additive, delimited provider + profile block |
+
+`teleport` additionally creates one new native target session under the
+target's own session root (`~/.claude/projects`, `~/.codex/sessions`,
+`~/.kimi-code/sessions`, or legacy `~/.kimi/sessions`). OpenCode is updated
+through `opencode import`. These are conversation files and can contain source
+code, prompts, and tool output; they receive the target CLI's normal private
+permissions. The source session is read-only.
 
 The last two follow `CLAUDE_CONFIG_DIR` and `CODEX_HOME` when you have set them,
 since the CLIs themselves do. Both are backed up before any change and restored
@@ -240,6 +287,11 @@ permitted is your call about your own accounts.
   stops, because nothing is supervising it.
 - agentswap has no OAuth flow of its own, so `agentswap login` guides a sign-in
   and adopts the result rather than signing you in.
+- Session teleportation cannot transfer hidden provider/runtime state, active
+  processes, credentials, or approvals. Unsupported conversation-bearing media
+  fails closed, and every representational degradation is printed.
+- OpenCode must be installed when it is a source or non-dry-run target, because
+  its native import/export commands are the compatibility boundary.
 
 ## Prior art
 
@@ -255,6 +307,14 @@ all you need, use one of them. What is different here is in
 instead of surfacing it, resuming a session afterwards, reading quota before the
 failure rather than after, and keeping conversations pinned so rotation does not
 quietly cost you cache.
+
+The offline session adapters build on format lessons from
+[agent-migrator](https://github.com/builderpepc/agent-migrator),
+[CatchUp](https://github.com/wilbeibi/catchup), and
+[agent-teleport](https://github.com/tornikegomareli/agent-teleport), while
+keeping the canonical event model and native writers in this dependency-free Go
+binary. OpenCode's own import/export interface and Kimi Code's versioned wire
+logs remain the authority for those formats.
 
 ## Documentation
 

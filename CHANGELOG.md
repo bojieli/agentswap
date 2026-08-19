@@ -155,6 +155,16 @@ Found by driving the real `claude` and `codex` against real upstreams:
 
 ### Added
 
+- **`agentswap teleport <target>`** moves a structurally preserved, resumable
+  session among Claude Code, Codex, OpenCode, and current or legacy Kimi Code.
+  It discovers by exact current directory, prompts on ambiguity, accepts an
+  exact source id, validates before writing, keeps source sessions untouched,
+  reports fidelity limits, supports dry-run and exact-id launch, and rolls back
+  incomplete target artifacts. Messages, tool call ids/inputs/results/errors,
+  recorded reasoning, plans, timestamps and model metadata cross through an
+  ordered canonical event stream rather than a summary prompt. OpenCode uses
+  its native import/export CLI instead of direct database writes.
+
 - **`agentswap add-token`**, for a long-lived token — the way out of an
   imported credential going stale. `import` copies the credential your CLI is
   currently using, and OAuth refresh tokens rotate, so whichever of you renews

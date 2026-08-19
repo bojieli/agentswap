@@ -42,6 +42,7 @@ change.
 | `internal/install` | Editing the CLIs' own config files, reversibly. |
 | `internal/importer` | Reading credentials the CLIs already wrote. |
 | `internal/supervisor` | `agentswap run`: resuming a session after a wait too long to hold a socket. |
+| `internal/session` | Offline discovery, canonical event validation, and native session translation for `teleport`. |
 | `internal/daemon` | Where a running daemon published its address. |
 
 ## The engine loop
@@ -81,6 +82,47 @@ streak) and mutates per-account state through the store. That split is
 deliberate: a retry budget belongs to a request, an exhausted window belongs to
 an account and outlives it.
 
+## Session teleportation
+
+Teleportation is outside the request engine. It is an offline file/CLI
+translation selected by the user, not protocol routing and not a new automatic
+branch after exhaustion:
+
+```text
+Claude JSONL ─┐
+Codex rollout ├─ reader → validated ordered events → writer ─┬─ Claude JSONL
+OpenCode CLI ─┤                                             ├─ Codex rollout
+Kimi wire ────┘                                             ├─ OpenCode import
+                                                            └─ Kimi wire
+```
+
+The canonical stream retains native message boundaries where possible and
+keeps tool calls and results as separate ordered parts joined by the original
+call id. Plans are events rather than prose appended to a handoff prompt. Raw
+provider signatures are not reused across trust domains. Validation happens
+before `Write`, so an unknown conversation block or orphan result cannot leave
+a plausible-looking but broken target.
+
+Discovery is adapter-specific but applies one invariant: the native session's
+cwd must be exactly the requested canonical path. Claude's encoded project
+directory is only an index and its records are checked again. Codex reads the
+leading `session_meta`. OpenCode consumes `session list --format json`. Kimi
+reads `state.json` or the legacy work-directory registry. There is no
+repository-root fallback.
+
+Writers preserve the source and allocate a fresh target id. File-backed
+targets stage content at the final filesystem boundary and rename it into
+place. OpenCode owns a changing SQLite schema, so agentswap gives a generated
+native export to `opencode import`, verifies its confirmation, and asks
+OpenCode to delete that new id if the import fails. This keeps a database driver
+and schema copy out of the credential-holding process.
+
+The supervisor never invokes teleport and teleport never chooses a target. A
+fresh 503 exhaustion ticket may narrow source discovery to its Claude or Codex
+lane, but it remains only a hint and does not bypass cwd or ambiguity checks.
+Only the user knows whether waiting, adding a credential, or moving to another
+harness is the right semantic choice.
+
 ## Concurrency
 
 The store hands out **clones**, never pointers into the pool. A request holds
@@ -119,10 +161,11 @@ dropped.
 
 ## What is deliberately absent
 
-**No request translation.** A lane is a wire protocol, and any account in a
+**No live request translation.** A lane is a wire protocol, and any account in a
 lane can serve any request in it without touching the body. Translating between
 protocols would mean owning a mapping that breaks every time either vendor ships
-a feature.
+a feature. The offline, version-checked session translation above never handles
+an in-flight provider request.
 
 **No parallelism across accounts.** Exactly one account is ever in flight.
 Running several to multiply throughput is both a different product and a much

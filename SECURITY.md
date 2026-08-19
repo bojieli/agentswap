@@ -52,6 +52,21 @@ an existing directory with looser permissions is tightened on open.
 bodies from upstream are read into memory to classify them, capped at 64 KiB,
 and are not logged.
 
+**A teleported session is sensitive local data.** It can contain prompts,
+proprietary source fragments, shell output, tool inputs, and error messages.
+File-backed target sessions are created in the target CLI's private session
+tree with 0600 files and staged before publication. The source is never opened
+for writing. Temporary OpenCode import payloads are 0600 and removed after its
+native importer returns.
+
+**OpenCode owns its database.** agentswap does not link a SQLite driver or
+write OpenCode tables. It executes the configured local `opencode` binary for
+session list/export/import, passes no agentswap credentials, checks the exact
+new session id in the import confirmation, and attempts to remove only that id
+if import is not confirmed. `AGENTSWAP_OPENCODE_BIN` is executable-code trust:
+setting it to an untrusted program gives that program the exported conversation
+and your normal process environment.
+
 ## Known limits
 
 - Anyone who can already run code as your user can read `accounts.json`. This
@@ -65,6 +80,16 @@ and are not logged.
 - A per-account `base_url` sends that account's key to the host you name. That
   is the point of the feature, and it is your responsibility to name a host you
   trust.
+- Teleportation cannot redact a conversation without changing its semantics.
+  The target contains the same recorded sensitive content as the source. Its
+  native CLI and any plugins loaded on resume receive that history.
+- Hidden model state, credentials, approvals, running tools and provider-bound
+  encrypted reasoning are not copied. Treating their absence as a security
+  boundary would be unsafe; the resumed target is a new process with its own
+  configuration and permissions.
+- Text-file attachments and edited-file context become visible conversation
+  text in targets that have no attachment representation. Binary media and
+  branched subagent transcripts are rejected rather than silently omitted.
 
 ## Not a vulnerability
 
