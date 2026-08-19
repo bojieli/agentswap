@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf16"
 )
 
 type claudeAdapter struct{}
@@ -21,9 +22,17 @@ func claudeRoot() string {
 }
 
 func encodeClaudeProject(path string) string {
-	path = filepath.ToSlash(path)
-	replacer := strings.NewReplacer(":", "-", "/", "-", "\\", "-")
-	return replacer.Replace(path)
+	units := utf16.Encode([]rune(filepath.ToSlash(path)))
+	var encoded strings.Builder
+	encoded.Grow(len(units))
+	for _, unit := range units {
+		if unit >= 'a' && unit <= 'z' || unit >= 'A' && unit <= 'Z' || unit >= '0' && unit <= '9' || unit == '-' {
+			encoded.WriteByte(byte(unit))
+		} else {
+			encoded.WriteByte('-')
+		}
+	}
+	return encoded.String()
 }
 
 func (claudeAdapter) Discover(_ context.Context, cwd string) ([]Candidate, error) {

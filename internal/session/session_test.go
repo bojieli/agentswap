@@ -206,6 +206,15 @@ func TestClaudeDiscoveryMatchesDifferentSymlinkAliases(t *testing.T) {
 	}
 }
 
+func TestClaudeProjectEncodingMatchesNativePunctuationRules(t *testing.T) {
+	t.Parallel()
+	got := encodeClaudeProject("/private/tmp/agentswap-live.ZTiyOg/project_name")
+	want := "-private-tmp-agentswap-live-ZTiyOg-project-name"
+	if got != want {
+		t.Fatalf("encodeClaudeProject = %q, want %q", got, want)
+	}
+}
+
 func TestClaudeReaderPreservesQueuedPromptsAndPlanAttachments(t *testing.T) {
 	root := isolatedHomes(t)
 	cwd := t.TempDir()
