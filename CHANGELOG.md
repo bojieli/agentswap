@@ -8,6 +8,23 @@ version moves for anything that changes behaviour.
 
 ### Fixed
 
+Found by creating native sessions and completing real model/tool turns after
+every directed teleport among Claude Code, Codex, OpenCode, and Kimi Code:
+
+- **Current Kimi targets loaded but could not continue.** Imported history has
+  no provider-specific bound agent profile, and Kimi deliberately restores a
+  session's binding instead of applying the global default. The exact resume
+  command now includes the configured target model so Kimi performs its own
+  native profile bind; `AGENTSWAP_KIMI_MODEL` can override it.
+- **Claude targets disappeared from the cwd resume picker when a path contained
+  punctuation.** Exact-id resume happened to scan beyond the project index,
+  hiding that agentswap preserved dots and underscores in the encoded project
+  key while Claude replaces every non-alphanumeric character. Target placement
+  now matches Claude's UTF-16 path encoding.
+- **Claude's `--max-budget-usd` metadata stopped teleport entirely.** Claude
+  2.1.235 records a `budget_usd` attachment; it is runtime accounting rather
+  than conversation content and is now safely ignored.
+
 Found by reading the rotation path against the states a pool actually reaches,
 and reproduced as a failing test before each was touched:
 
