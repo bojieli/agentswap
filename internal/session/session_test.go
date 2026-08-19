@@ -183,6 +183,7 @@ func TestClaudeReaderPreservesQueuedPromptsAndPlanAttachments(t *testing.T) {
 		{"type": "queue-operation", "operation": "remove", "content": "queued request"},
 		{"type": "attachment", "uuid": "q", "parentUuid": "u", "timestamp": "2026-08-19T10:00:01Z", "attachment": map[string]any{"type": "queued_command", "prompt": "queued request"}},
 		{"type": "attachment", "uuid": "p", "timestamp": "2026-08-19T10:00:02Z", "attachment": map[string]any{"type": "plan_file_reference", "planContent": "revision one"}},
+		{"type": "attachment", "uuid": "b", "timestamp": "2026-08-19T10:00:03Z", "attachment": map[string]any{"type": "budget_usd", "used": 0.1, "total": 1.0, "remaining": 0.9}},
 	}
 	var lines []byte
 	for _, record := range records {

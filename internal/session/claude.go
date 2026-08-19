@@ -223,7 +223,7 @@ func (claudeAdapter) Read(_ context.Context, candidate Candidate) (*Session, err
 				text := fmt.Sprintf("[Claude edited-file context: %s]\n%s", name, stringValue(attachment["snippet"]))
 				history.Events = append(history.Events, Event{Kind: Message, ID: stringValue(record["uuid"]), ParentID: stringValue(record["parentUuid"]), Role: "user", Timestamp: timestamp, Parts: []Part{{Kind: Text, Text: text}}})
 				history.Warnings = appendUnique(history.Warnings, "Claude edited-file context was retained as user-visible text")
-			case "agent_listing_delta", "auto_mode", "command_permissions", "compact_file_reference", "date_change", "deferred_tools_delta", "goal_status", "hook_non_blocking_error", "hook_system_message", "invoked_skills", "mcp_instructions_delta", "plan_mode", "plan_mode_exit", "plan_mode_reentry", "read_truncation_notice", "skill_listing", "task_reminder", "total_tokens_reminder":
+			case "agent_listing_delta", "auto_mode", "budget_usd", "command_permissions", "compact_file_reference", "date_change", "deferred_tools_delta", "goal_status", "hook_non_blocking_error", "hook_system_message", "invoked_skills", "mcp_instructions_delta", "plan_mode", "plan_mode_exit", "plan_mode_reentry", "read_truncation_notice", "skill_listing", "task_reminder", "total_tokens_reminder":
 				// Runtime instructions, state deltas and UI reminders are rebuilt by
 				// the destination rather than replayed as user conversation.
 			default:
