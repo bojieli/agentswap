@@ -203,6 +203,8 @@ with a warning. Text-file context is retained as visible text; media, branched
 subagent transcripts, or an unknown conversation-bearing schema fail closed
 rather than creating a target that only looks resumable. See the exact command
 and format contract in [docs/commands.md](docs/commands.md#agentswap-teleport-target).
+For a real four-harness acceptance matrix, see
+[docs/teleport-live-acceptance.md](docs/teleport-live-acceptance.md).
 
 ## Configuration
 
