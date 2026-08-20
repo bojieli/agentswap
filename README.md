@@ -193,14 +193,14 @@ it yourself:
 
 ```sh
 agentswap teleport claude codex
-agentswap teleport claude codex --dry-run
+agentswap teleport claude opencode --dry-run
 ```
 
 The source and target are always positional and always mean **source →
 target**. You can select an exact source session or directory:
 
 ```sh
-agentswap handoff claude codex --session <source-id>
+agentswap handoff kimi claude --session <source-id>
 agentswap teleport codex opencode --cwd ~/src/project
 ```
 

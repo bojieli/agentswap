@@ -56,12 +56,12 @@ func cmdTransfer(args []string, handoff bool) error {
 		fmt.Fprintln(os.Stderr, "\nExamples:")
 		if handoff {
 			fmt.Fprintln(os.Stderr, "  agentswap handoff claude codex")
-			fmt.Fprintln(os.Stderr, "  agentswap handoff codex claude --session <id> --dangerously-skip-permissions")
-			fmt.Fprintln(os.Stderr, "  agentswap handoff claude codex --dangerously-bypass-approvals-and-sandbox")
+			fmt.Fprintln(os.Stderr, "  agentswap handoff opencode claude --session <id> --dangerously-skip-permissions")
+			fmt.Fprintln(os.Stderr, "  agentswap handoff kimi codex --dangerously-bypass-approvals-and-sandbox")
 		} else {
 			fmt.Fprintln(os.Stderr, "  agentswap teleport claude codex")
-			fmt.Fprintln(os.Stderr, "  agentswap teleport codex claude --session <id>")
-			fmt.Fprintln(os.Stderr, "  agentswap teleport claude opencode --dry-run")
+			fmt.Fprintln(os.Stderr, "  agentswap teleport kimi claude --session <id>")
+			fmt.Fprintln(os.Stderr, "  agentswap teleport opencode codex --dry-run")
 		}
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "Flags:")
