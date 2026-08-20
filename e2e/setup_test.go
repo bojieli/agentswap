@@ -211,8 +211,15 @@ func TestDoctorReportsAnAddressMismatch(t *testing.T) {
 	// started somewhere else — `serve --addr` is exactly this situation.
 	e.pinAddr()
 	e.mustRun("install")
-	e.configAddr = ""
-	d := e.serve()
+	// Keep the CLI configuration pinned to its installed address, but launch
+	// the daemon on a different known-free address. Clearing configAddr would
+	// make the harness replace the configured value with 127.0.0.1:0, which is
+	// timing-sensitive and can accidentally select the same endpoint.
+	daemonAddr := freePort(t)
+	if daemonAddr == e.configAddr {
+		t.Fatalf("test requires distinct addresses, got %q", daemonAddr)
+	}
+	d := e.serve("--addr", daemonAddr)
 
 	r := e.run("doctor")
 	if r.code == 0 {
