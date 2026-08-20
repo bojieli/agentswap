@@ -359,6 +359,44 @@ func TestDryRunWritesNothing(t *testing.T) {
 	}
 }
 
+func TestClaudeDryRunPreviewRedactsUnrelatedSecrets(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir(home))
+	if err := os.MkdirAll(claudeDir(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(claudeDir(home), "settings.json")
+	original := `{
+	  "env": {"MY_SECRET_TOKEN": "do-not-print", "SAFE_VALUE": "show-me"},
+	  "provider": {"api_key": "nested-secret"}
+	}`
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := InstallClaude(addr, testMaxHold, true)
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	for _, secret := range []string{"do-not-print", "nested-secret", AuthTokenPlaceholder} {
+		if strings.Contains(plan.Preview, secret) {
+			t.Errorf("preview exposed %q:\n%s", secret, plan.Preview)
+		}
+	}
+	for _, want := range []string{"[redacted]", "show-me", "ANTHROPIC_BASE_URL"} {
+		if !strings.Contains(plan.Preview, want) {
+			t.Errorf("preview missing %q:\n%s", want, plan.Preview)
+		}
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != original {
+		t.Error("dry run rewrote the settings file")
+	}
+}
+
 func TestInstallBacksUpBeforeModifying(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir(home))

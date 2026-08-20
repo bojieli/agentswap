@@ -33,6 +33,17 @@ const (
 	KindAPIKey Kind = "api_key"
 )
 
+// AuthStyle records how an API credential is put on the wire. Most callers do
+// not need to set it: each lane has a native default. A same-protocol gateway
+// can differ, though — Claude Code's ANTHROPIC_AUTH_TOKEN uses a bearer token,
+// while Anthropic's own API keys use X-Api-Key.
+type AuthStyle string
+
+const (
+	AuthStyleBearer  AuthStyle = "bearer"
+	AuthStyleXAPIKey AuthStyle = "x-api-key"
+)
+
 // Account is one credential in the pool.
 type Account struct {
 	ID       string `json:"id"`
@@ -55,9 +66,11 @@ type Account struct {
 	ChatGPTAccountID string `json:"chatgpt_account_id,omitempty"`
 
 	// API key credentials. BaseURL overrides the lane default and is what
-	// makes same-protocol third-party providers work.
-	APIKey  string `json:"api_key,omitempty"`
-	BaseURL string `json:"base_url,omitempty"`
+	// makes same-protocol third-party providers work. AuthStyle is optional;
+	// the lane's native API-key scheme is used when it is absent.
+	APIKey    string    `json:"api_key,omitempty"`
+	BaseURL   string    `json:"base_url,omitempty"`
+	AuthStyle AuthStyle `json:"auth_style,omitempty"`
 }
 
 // UnmarshalJSON reads an account, defaulting enabled to true when the key is
@@ -149,6 +162,9 @@ func (a *Account) SameCredentialAs(other *Account) bool {
 // loud, but refusing to load the pool over it would take away the commands
 // needed to fix it.
 func (a *Account) Problem() string {
+	if a.AuthStyle != "" && a.AuthStyle != AuthStyleBearer && a.AuthStyle != AuthStyleXAPIKey {
+		return fmt.Sprintf("unknown auth_style %q, want bearer or x-api-key", a.AuthStyle)
+	}
 	switch a.Kind {
 	case KindAPIKey:
 		if a.APIKey == "" {

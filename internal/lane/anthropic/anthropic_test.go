@@ -251,6 +251,26 @@ func TestAuthorizeAPIKeyDropsOAuthBeta(t *testing.T) {
 	}
 }
 
+func TestAuthorizeBearerAPIKeyForThirdPartyProvider(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req.Header.Set("Authorization", "Bearer stale")
+	req.Header.Set("X-Api-Key", "also-stale")
+
+	(&Lane{}).Authorize(req, &store.Account{
+		Kind: store.KindAPIKey, APIKey: "krill-token", AuthStyle: store.AuthStyleBearer,
+	})
+
+	if got := req.Header.Get("Authorization"); got != "Bearer krill-token" {
+		t.Errorf("Authorization = %q, want the configured bearer credential", got)
+	}
+	if got := req.Header.Get("X-Api-Key"); got != "" {
+		t.Errorf("X-Api-Key = %q, want it cleared", got)
+	}
+	if strings.Contains(req.Header.Get("Anthropic-Beta"), oauthBeta) {
+		t.Error("a metered bearer credential was mistaken for an OAuth subscription")
+	}
+}
+
 func TestRefreshRotatesRefreshToken(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]string

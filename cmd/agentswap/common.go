@@ -30,6 +30,24 @@ func openStore() (*store.Store, config.Config, error) {
 	return st, cfg, nil
 }
 
+// openStoreReadOnly resolves the same files as openStore without creating or
+// repairing anything. A dry run must remain read-only even on a fresh machine.
+func openStoreReadOnly() (*store.Store, config.Config, error) {
+	dir, err := config.Dir()
+	if err != nil {
+		return nil, config.Config{}, err
+	}
+	cfg, err := config.Load(dir)
+	if err != nil {
+		return nil, config.Config{}, err
+	}
+	st, err := store.OpenReadOnly(dir)
+	if err != nil {
+		return nil, config.Config{}, err
+	}
+	return st, cfg, nil
+}
+
 // upstreamClient is the HTTP client used for model traffic.
 //
 // It deliberately has no Timeout: a single response can stream for many

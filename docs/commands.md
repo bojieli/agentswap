@@ -9,16 +9,20 @@ Commands that read or write the pool use the config directory, which is
 ## Getting credentials in
 
 ### `agentswap import`
-Adopts the credentials `claude` and `codex` have already stored. On macOS this
-includes the Keychain, where Claude Code keeps them instead of on disk.
+Adopts the credentials and active provider overrides `claude` and `codex` have
+already stored. On macOS this includes the Keychain, where Claude Code keeps
+its native login instead of on disk. A native subscription and a configured
+third-party provider are imported as separate accounts, with the provider's
+base URL and authentication style preserved.
 
 | Flag | Meaning |
 | --- | --- |
 | `--id NAME` | name the account (default: `<lane>-1`, `<lane>-2`, …) |
 | `--label TEXT` | human-readable name shown in `status` |
+| `--dry-run` | discover and show the accounts without writing pool files |
 
-A lane whose CLI is not signed in is skipped, not an error. A credential
-already in the pool is refreshed in place rather than added twice. If
+A lane with no usable login or configured provider is skipped, not an error. A
+credential already in the pool is refreshed in place rather than added twice. If
 `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` is set in your environment, it says so
 without adopting it.
 

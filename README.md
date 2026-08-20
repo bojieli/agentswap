@@ -38,7 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/bojieli/agentswap/main/install.sh |
 ## Quick start
 
 ```sh
-agentswap import           # adopt the login you already have
+agentswap import           # adopt logins and active provider overrides
 agentswap install          # point Claude Code and Codex at agentswap
 agentswap service install  # run the daemon now, and again at every login
 ```
@@ -53,7 +53,10 @@ claude                          # picks up the settings automatically
 codex                           # uses Codex's configured provider
 ```
 
-That is one account, which is not yet failover. Sign in as another and pool it:
+Import also preserves an active same-protocol provider override as its own pool
+entry, including its URL and authentication style.
+
+One account in a lane is not yet failover. Sign in as another and pool it:
 
 ```sh
 agentswap login --id work

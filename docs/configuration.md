@@ -203,6 +203,7 @@ rather than edited by hand.
 | `priority` | Lower is preferred within a lane. `agentswap add-key --priority` |
 | `enabled` | `agentswap disable` / `enable` |
 | `base_url` | Override the upstream for one account, for a same-protocol third-party provider. `agentswap add-key --base-url` |
+| `auth_style` | Optional `bearer` or `x-api-key`; import sets it when a provider uses a non-native header style. |
 
 Subscriptions are always tried before API keys regardless of priority, because
 they are already paid for.

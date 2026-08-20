@@ -196,7 +196,11 @@ func InstallClaude(addr string, maxHold time.Duration, dryRun bool) (*Plan, erro
 	}
 	out = append(out, '\n')
 
-	plan := &Plan{Path: path, Action: action, Preview: string(out)}
+	preview, err := redactedJSON(settings)
+	if err != nil {
+		return nil, err
+	}
+	plan := &Plan{Path: path, Action: action, Preview: preview}
 	if dryRun {
 		return plan, nil
 	}
@@ -207,6 +211,51 @@ func InstallClaude(addr string, maxHold time.Duration, dryRun bool) (*Plan, erro
 		return nil, err
 	}
 	return plan, os.WriteFile(path, out, 0o600)
+}
+
+// redactedJSON keeps install --dry-run useful without turning a configuration
+// preview into a secret-dumping command. Claude settings can contain unrelated
+// provider, hook, or MCP credentials that agentswap neither owns nor changes.
+func redactedJSON(settings map[string]any) (string, error) {
+	redacted := redactSetting(settings)
+	out, err := json.MarshalIndent(redacted, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(append(out, '\n')), nil
+}
+
+func redactSetting(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, child := range v {
+			if sensitiveSettingKey(key) {
+				out[key] = "[redacted]"
+			} else {
+				out[key] = redactSetting(child)
+			}
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, child := range v {
+			out[i] = redactSetting(child)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func sensitiveSettingKey(key string) bool {
+	upper := strings.ToUpper(key)
+	for _, marker := range []string{"TOKEN", "SECRET", "PASSWORD", "API_KEY", "AUTHORIZATION"} {
+		if strings.Contains(upper, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // UninstallClaude removes only the keys agentswap added.

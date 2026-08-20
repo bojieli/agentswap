@@ -73,6 +73,20 @@ func Open(dir string) (*Store, error) {
 	return s, nil
 }
 
+// OpenReadOnly loads the pool without creating, chmodding, cleaning, or writing
+// anything in dir. Commands whose contract is a dry run use this instead of
+// Open so even an absent config directory stays absent.
+func OpenReadOnly(dir string) (*Store, error) {
+	s := &Store{dir: dir, health: map[string]*Health{}}
+	if err := s.loadAccounts(); err != nil {
+		return nil, err
+	}
+	if err := s.loadHealth(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
 // tempStaleAfter is how old a temp file must be before it is assumed abandoned.
 // Another agentswap may be mid-write in this directory right now, and deleting
 // its temp file would fail its rename; nothing legitimate takes an hour.

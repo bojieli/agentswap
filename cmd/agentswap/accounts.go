@@ -16,9 +16,10 @@ func cmdImport(args []string) error {
 	fs := flag.NewFlagSet("import", flag.ExitOnError)
 	id := fs.String("id", "", "account id (default: derived from the lane)")
 	label := fs.String("label", "", "human-readable label")
+	dryRun := fs.Bool("dry-run", false, "show what would be imported without writing")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: agentswap import [--id ID] [--label NAME]")
-		fmt.Fprintln(os.Stderr, "\nAdopts the credentials already stored by `claude` and `codex`.")
+		fmt.Fprintln(os.Stderr, "\nAdopts the logins and active provider overrides stored by `claude` and `codex`.")
 		fmt.Fprintln(os.Stderr, "To pool several accounts, log in as each one and run import again with a new --id.")
 		fs.PrintDefaults()
 	}
@@ -26,22 +27,17 @@ func cmdImport(args []string) error {
 		return err
 	}
 
-	st, _, err := openStore()
-	if err != nil {
-		return err
-	}
-
 	sources := []struct {
 		lane store.LaneID
-		load func() (*store.Account, error)
+		load func() ([]*store.Account, error)
 	}{
-		{store.LaneAnthropic, importer.ImportClaude},
-		{store.LaneOpenAI, importer.ImportCodex},
+		{store.LaneAnthropic, importer.ImportClaudeAll},
+		{store.LaneOpenAI, importer.ImportCodexAll},
 	}
 
 	var found []*store.Account
 	for _, s := range sources {
-		a, err := s.load()
+		accounts, err := s.load()
 		if err != nil {
 			// A machine logged into only one of the two CLIs is the normal
 			// case, not a failure.
@@ -51,21 +47,51 @@ func cmdImport(args []string) error {
 			}
 			return err
 		}
-		found = append(found, a)
+		found = append(found, accounts...)
 	}
 	if len(found) == 0 {
 		return errors.New("nothing to import; log in with `claude` or `codex login` first")
 	}
 
+	var st *store.Store
+	var err error
+	if *dryRun {
+		st, _, err = openStoreReadOnly()
+	} else {
+		st, _, err = openStore()
+	}
+	if err != nil {
+		return err
+	}
+	prepareImports(st, found, *id, *label)
+
+	if *dryRun {
+		for _, a := range found {
+			kind := "subscription"
+			if a.Kind == store.KindAPIKey {
+				kind = "api key"
+			}
+			upstream := "vendor default"
+			if a.BaseURL != "" {
+				upstream = a.BaseURL
+			}
+			verb := "would import"
+			if matchingAccount(st, a) != nil {
+				verb = "would refresh"
+			}
+			fmt.Printf("  %-10s %s %q (%s, %s)\n", a.Lane, verb, a.ID, kind, upstream)
+		}
+		fmt.Println("\n(dry run — no pool files were written)")
+		return nil
+	}
+
 	taken := takenIDs(st)
-	nameImports(found, *id, *label, taken)
 
 	for _, a := range found {
 		// A credential already in the pool is the same login, not a second one.
 		// Adding it again would show two accounts that are refused in the same
 		// instant, which looks exactly like failover until you need it.
 		if existing := matchingAccount(st, a); existing != nil {
-			a.ID, a.Label = existing.ID, existing.Label
 			if err := st.Upsert(a); err != nil {
 				return err
 			}
@@ -92,6 +118,20 @@ func cmdImport(args []string) error {
 	fmt.Printf("\n%d account(s) in the pool. Next: agentswap install && agentswap serve\n", len(st.All()))
 	reportEnvKeys(st)
 	return nil
+}
+
+func prepareImports(st *store.Store, found []*store.Account, id, label string) {
+	taken := takenIDs(st)
+	// Reserve the identities of credentials already in the pool before naming
+	// genuinely new discoveries. Otherwise importing a native subscription and
+	// a provider override together can skip anthropic-2 merely because the
+	// already-known subscription temporarily consumed that candidate name.
+	for _, a := range found {
+		if existing := matchingAccount(st, a); existing != nil {
+			a.ID, a.Label = existing.ID, existing.Label
+		}
+	}
+	nameImports(found, id, label, taken)
 }
 
 // matchingAccount finds an account already holding this credential.
@@ -142,21 +182,35 @@ func nameImports(found []*store.Account, userID, userLabel string, taken map[str
 	for k := range taken {
 		seen[k] = true
 	}
+	unnamed := 0
 	for _, a := range found {
+		if a.ID == "" {
+			unnamed++
+		}
+	}
+	for _, a := range found {
+		if a.ID != "" {
+			seen[a.ID] = true
+			continue
+		}
 		switch {
 		case userID == "":
 			a.ID = nextFreeID(string(a.Lane), seen)
-		case len(found) == 1:
+		case unnamed == 1:
 			a.ID = userID
 		default:
-			a.ID = fmt.Sprintf("%s-%s", a.Lane, userID)
+			base := fmt.Sprintf("%s-%s", a.Lane, userID)
+			a.ID = base
+			if seen[a.ID] {
+				a.ID = nextFreeID(base, seen)
+			}
 		}
 		seen[a.ID] = true
 
 		switch {
 		case userLabel == "":
 			a.Label = a.ID
-		case len(found) == 1:
+		case unnamed == 1:
 			a.Label = userLabel
 		default:
 			a.Label = fmt.Sprintf("%s (%s)", userLabel, a.Lane)

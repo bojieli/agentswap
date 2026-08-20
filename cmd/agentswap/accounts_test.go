@@ -41,6 +41,21 @@ func TestImportDisambiguatesTwoLanes(t *testing.T) {
 	}
 }
 
+func TestImportDisambiguatesTwoCredentialsInOneLaneWithRequestedID(t *testing.T) {
+	found := []*store.Account{
+		{Lane: store.LaneAnthropic, Kind: store.KindOAuth},
+		{Lane: store.LaneAnthropic, Kind: store.KindAPIKey},
+	}
+	nameImports(found, "work", "", map[string]bool{})
+
+	if found[0].ID != "anthropic-work" {
+		t.Errorf("first anthropic id = %q, want anthropic-work", found[0].ID)
+	}
+	if found[1].ID != "anthropic-work-1" {
+		t.Errorf("second anthropic id = %q, want anthropic-work-1", found[1].ID)
+	}
+}
+
 func TestImportWithoutAnIDNumbersPerLane(t *testing.T) {
 	found := anthropicAndOpenAI()
 	nameImports(found, "", "", map[string]bool{})
@@ -93,5 +108,20 @@ func TestImportDoesNotCollideWithinOneRun(t *testing.T) {
 
 	if found[0].ID == found[1].ID {
 		t.Errorf("both accounts got id %q", found[0].ID)
+	}
+}
+
+func TestImportNamesNewOverrideAfterKnownSubscription(t *testing.T) {
+	found := []*store.Account{
+		{ID: "anthropic-1", Label: "anthropic-1", Lane: store.LaneAnthropic},
+		{Lane: store.LaneAnthropic},
+	}
+	nameImports(found, "", "", map[string]bool{"anthropic-1": true})
+
+	if found[0].ID != "anthropic-1" {
+		t.Errorf("known account was renamed to %q", found[0].ID)
+	}
+	if found[1].ID != "anthropic-2" {
+		t.Errorf("new override id = %q, want anthropic-2", found[1].ID)
 	}
 }

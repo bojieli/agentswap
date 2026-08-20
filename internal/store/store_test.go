@@ -390,6 +390,20 @@ func TestHandWrittenAccountDefaultsToEnabled(t *testing.T) {
 	}
 }
 
+func TestOpenReadOnlyDoesNotCreateAnAbsentDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "absent", "agentswap")
+	st, err := OpenReadOnly(dir)
+	if err != nil {
+		t.Fatalf("OpenReadOnly: %v", err)
+	}
+	if len(st.All()) != 0 {
+		t.Errorf("fresh read-only store has %d accounts", len(st.All()))
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("OpenReadOnly created or touched %s: %v", dir, err)
+	}
+}
+
 // Disabling is the deliberate act and has to survive a round trip.
 func TestExplicitlyDisabledSurvives(t *testing.T) {
 	st, dir := openTemp(t)

@@ -35,6 +35,16 @@ func codexAt(t *testing.T, content string) {
 	t.Setenv("CODEX_HOME", home)
 }
 
+func codexConfig(t *testing.T, content string) {
+	t.Helper()
+	home := os.Getenv("CODEX_HOME")
+	if home == "" {
+		home = t.TempDir()
+		t.Setenv("CODEX_HOME", home)
+	}
+	writeFile(t, filepath.Join(home, "config.toml"), content)
+}
+
 func TestImportClaude(t *testing.T) {
 	claudeAt(t, `{
 	  "claudeAiOauth": {
@@ -80,6 +90,83 @@ func TestImportClaudeWithoutATokenIsNotACredential(t *testing.T) {
 
 	if _, err := ImportClaude(); !errors.Is(err, ErrNoCredentials) {
 		t.Errorf("err = %v, want ErrNoCredentials so import can report it as a skip", err)
+	}
+}
+
+func TestImportClaudeAllIncludesNativeLoginAndProviderOverride(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+	credentials := filepath.Join(dir, ".credentials.json")
+	writeFile(t, credentials, `{
+	  "claudeAiOauth": {
+	    "accessToken": "native-access",
+	    "refreshToken": "native-refresh",
+	    "subscriptionType": "max"
+	  }
+	}`)
+	t.Setenv("CLAUDE_CREDENTIALS_PATH", credentials)
+	writeFile(t, filepath.Join(dir, "settings.json"), `{
+	  "env": {
+	    "ANTHROPIC_BASE_URL": "https://api.krill-ai.net",
+	    "ANTHROPIC_AUTH_TOKEN": "krill-token"
+	  }
+	}`)
+
+	all, err := ImportClaudeAll()
+	if err != nil {
+		t.Fatalf("ImportClaudeAll: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("accounts = %d, want native login plus Krill override", len(all))
+	}
+	if all[0].Kind != store.KindOAuth || all[0].AccessToken != "native-access" {
+		t.Errorf("native = %#v", all[0])
+	}
+	override := all[1]
+	if override.Kind != store.KindAPIKey || override.APIKey != "krill-token" {
+		t.Errorf("override credential = %#v", override)
+	}
+	if override.BaseURL != "https://api.krill-ai.net" {
+		t.Errorf("override base_url = %q", override.BaseURL)
+	}
+	if override.AuthStyle != store.AuthStyleBearer {
+		t.Errorf("override auth style = %q, want bearer for ANTHROPIC_AUTH_TOKEN", override.AuthStyle)
+	}
+}
+
+func TestImportClaudeAllUsesXAPIKeyStyle(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+	t.Setenv("CLAUDE_CREDENTIALS_PATH", filepath.Join(dir, "missing-credentials.json"))
+	writeFile(t, filepath.Join(dir, "settings.json"), `{
+	  "env": {
+	    "ANTHROPIC_BASE_URL": "https://gateway.example",
+	    "ANTHROPIC_API_KEY": "gateway-key"
+	  }
+	}`)
+
+	all, err := ImportClaudeAll()
+	if err != nil {
+		t.Fatalf("ImportClaudeAll: %v", err)
+	}
+	if len(all) != 1 || all[0].AuthStyle != store.AuthStyleXAPIKey {
+		t.Fatalf("accounts = %#v, want one x-api-key override", all)
+	}
+}
+
+func TestImportClaudeAllDoesNotReimportAgentSwapPlaceholder(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+	t.Setenv("CLAUDE_CREDENTIALS_PATH", filepath.Join(dir, "missing-credentials.json"))
+	writeFile(t, filepath.Join(dir, "settings.json"), `{
+	  "env": {
+	    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8420/anthropic",
+	    "ANTHROPIC_AUTH_TOKEN": "agentswap-managed"
+	  }
+	}`)
+
+	if _, err := ImportClaudeAll(); !errors.Is(err, ErrNoCredentials) {
+		t.Errorf("err = %v, want the managed placeholder ignored", err)
 	}
 }
 
@@ -132,6 +219,84 @@ func TestImportCodexPrefersTheSubscription(t *testing.T) {
 	}
 	if a.APIKey != "" {
 		t.Errorf("api key = %q, want the subscription to win outright", a.APIKey)
+	}
+}
+
+func TestImportCodexAllIncludesSubscriptionAndSelectedProvider(t *testing.T) {
+	codexAt(t, `{
+	  "OPENAI_API_KEY": "krill-key",
+	  "tokens": {
+	    "access_token": "chatgpt-access",
+	    "refresh_token": "chatgpt-refresh",
+	    "account_id": "acct-123"
+	  }
+	}`)
+	codexConfig(t, `
+model_provider = "krill"
+
+[model_providers.krill]
+base_url = "https://api.krill-ai.net/codex/v1"
+name = "krill"
+requires_openai_auth = true
+wire_api = "responses"
+`)
+
+	all, err := ImportCodexAll()
+	if err != nil {
+		t.Fatalf("ImportCodexAll: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("accounts = %d, want ChatGPT login plus Krill provider", len(all))
+	}
+	if all[0].Kind != store.KindOAuth || all[0].ChatGPTAccountID != "acct-123" {
+		t.Errorf("native subscription = %#v", all[0])
+	}
+	provider := all[1]
+	if provider.Kind != store.KindAPIKey || provider.APIKey != "krill-key" {
+		t.Errorf("provider credential = %#v", provider)
+	}
+	if provider.BaseURL != "https://api.krill-ai.net/codex/v1" {
+		t.Errorf("provider base_url = %q", provider.BaseURL)
+	}
+}
+
+func TestImportCodexRoutesSelectedProviderKeyToItsBaseURL(t *testing.T) {
+	codexAt(t, `{"OPENAI_API_KEY":"krill-key"}`)
+	codexConfig(t, `
+model_provider = "krill" # preserve an inline comment
+
+[model_providers.krill]
+base_url = "https://api.krill-ai.net/codex/v1"
+requires_openai_auth = true
+`)
+
+	a, err := ImportCodex()
+	if err != nil {
+		t.Fatalf("ImportCodex: %v", err)
+	}
+	if a.APIKey != "krill-key" || a.BaseURL != "https://api.krill-ai.net/codex/v1" {
+		t.Errorf("account = %#v, want the key bound to Krill", a)
+	}
+}
+
+func TestImportCodexProviderCanUseEnvKeyWithoutAuthFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	t.Setenv("KRILL_API_KEY", "from-env")
+	codexConfig(t, `
+model_provider = 'krill'
+
+[model_providers.'krill']
+base_url = 'https://api.krill-ai.net/codex/v1'
+env_key = 'KRILL_API_KEY'
+`)
+
+	all, err := ImportCodexAll()
+	if err != nil {
+		t.Fatalf("ImportCodexAll: %v", err)
+	}
+	if len(all) != 1 || all[0].APIKey != "from-env" || all[0].BaseURL == "" {
+		t.Fatalf("accounts = %#v", all)
 	}
 }
 

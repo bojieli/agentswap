@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -11,6 +12,49 @@ import (
 	"testing"
 	"time"
 )
+
+func TestImportDryRunDiscoversNativeAndConfiguredCredentialsWithoutWriting(t *testing.T) {
+	e := newEnv(t)
+	claudeLogin(t, e, "native-claude")
+	writeFile(t, filepath.Join(e.claude, "settings.json"), `{
+	  "env": {
+	    "ANTHROPIC_BASE_URL": "https://api.krill-ai.net",
+	    "ANTHROPIC_AUTH_TOKEN": "secret-claude-provider"
+	  }
+	}`)
+	writeFile(t, filepath.Join(e.codex, "auth.json"), `{
+	  "OPENAI_API_KEY": "secret-codex-provider",
+	  "tokens": {
+	    "access_token": "native-codex-access",
+	    "refresh_token": "native-codex-refresh",
+	    "account_id": "acct-dry-run"
+	  }
+	}`)
+	writeFile(t, filepath.Join(e.codex, "config.toml"), `
+model_provider = "krill"
+[model_providers.krill]
+base_url = "https://api.krill-ai.net/codex/v1"
+requires_openai_auth = true
+wire_api = "responses"
+`)
+
+	out := e.mustRun("import", "--dry-run").out()
+	for _, want := range []string{
+		"anthropic-1", "anthropic-2", "openai-1", "openai-2",
+		"api.krill-ai.net", "no pool files were written",
+	} {
+		mustContain(t, out, want, "import dry run")
+	}
+	for _, secret := range []string{
+		"secret-claude-provider", "secret-codex-provider",
+		"native-claude", "native-codex-access", "native-codex-refresh",
+	} {
+		mustNotContain(t, out, secret, "import dry run")
+	}
+	if _, err := os.Stat(filepath.Join(e.home, "accounts.json")); !os.IsNotExist(err) {
+		t.Errorf("import --dry-run wrote accounts.json: %v", err)
+	}
+}
 
 // Pooling one login twice is worse than pooling it once: `status` shows two
 // accounts, the user believes they have failover, and both are refused in the

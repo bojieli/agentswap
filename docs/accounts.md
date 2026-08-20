@@ -7,6 +7,7 @@ Everything you can put in the pool, and every way to put it there:
 | What | How it gets in | How you change it |
 | --- | --- | --- |
 | A subscription you are signed in to | `agentswap import` | `agentswap login --id NAME` |
+| The active Claude/Codex third-party provider | `agentswap import` | `agentswap set NAME --base-url URL` |
 | A subscription you are not signed in to yet | `agentswap login` | `agentswap login --id NAME` |
 | An API key, official or third-party | `agentswap add-key LANE` | `agentswap set NAME --key -` |
 | Which upstream an account talks to | `add-key --base-url` | `agentswap set NAME --base-url URL` |
@@ -53,6 +54,10 @@ agentswap doctor
 Subscriptions are always tried before API keys, so 1–2 are spent before 3–4
 are touched. Within each group, lower `--priority` goes first.
 
+If a CLI currently selects a third-party provider, step 1 adopts that too. The
+override and the vendor login become separate pool entries; importing one no
+longer hides the other.
+
 ## Where things live, and why it is not one file
 
 Three kinds of state, split by **who writes them**:
@@ -94,8 +99,11 @@ agentswap has no login of its own. Only `claude` and `codex` can mint a
 credential, so pooling an account is always: sign in with the CLI, then adopt
 what it stored — from `~/.claude/.credentials.json` or, on macOS, from the
 Keychain where Claude Code puts it instead; and from `~/.codex/auth.json`,
-which holds either a ChatGPT token set or a plain API key. `agentswap login` removes every part of that except the signing
-in.
+which holds either a ChatGPT token set or a plain API key. `agentswap import`
+also reads Claude Code's active `ANTHROPIC_BASE_URL` plus token/key and Codex's
+selected `[model_providers.*]` table. It binds each credential to that provider
+instead of silently treating a third-party key as an official-vendor key.
+`agentswap login` removes every part of the login dance except the signing in.
 
 ```sh
 agentswap login                 # pool another account
@@ -109,6 +117,13 @@ than driving your CLI.
 
 If you signed in before running it, there is nothing to wait for and it adopts
 immediately.
+
+Some Codex setups replace the ChatGPT login in `auth.json` when an API-key
+provider is activated, so both credentials are not simultaneously discoverable
+there. They can still coexist in agentswap: import while the provider key is
+active, run `codex login`, then import again. The first key is already safe in
+the pool and the second import adds the native subscription without deleting
+it.
 
 **One login is only ever pooled once.** Running `import` or `login` twice
 against the same account updates it in place rather than adding a second row.
@@ -213,7 +228,8 @@ and is visible in the process list while it runs. The three forms above exist
 so you never have to.
 
 A third-party provider that speaks the same protocol needs a `--base-url`, and
-is otherwise an ordinary member of the pool:
+is otherwise an ordinary member of the pool. `agentswap import` carries the
+active Claude/Codex override over automatically; use `add-key` for another one:
 
 ```sh
 agentswap add-key anthropic --key - --id gateway \

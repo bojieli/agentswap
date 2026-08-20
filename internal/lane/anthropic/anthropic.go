@@ -87,7 +87,11 @@ func (*Lane) Authorize(req *http.Request, a *store.Account) {
 		req.Header.Set("Authorization", "Bearer "+a.AccessToken)
 		req.Header.Set("Anthropic-Beta", withBeta(betas, oauthBeta))
 	default:
-		req.Header.Set("X-Api-Key", a.APIKey)
+		if a.AuthStyle == store.AuthStyleBearer {
+			req.Header.Set("Authorization", "Bearer "+a.APIKey)
+		} else {
+			req.Header.Set("X-Api-Key", a.APIKey)
+		}
 		// A subscription beta flag on an API-key request is at best ignored and
 		// at worst rejected, so drop it when we are not using a bearer token.
 		if b := removeBeta(betas, oauthBeta); b != "" {
