@@ -166,21 +166,28 @@ simply want a model another harness exposes — the choice of harness belongs to
 you. `agentswap` reports the exhaustion; it does not silently send a
 conversation somewhere else.
 
-From the project directory, move the newest session into a new native session:
+From the project directory, name the source and target agents. `teleport`
+creates a new native target session; `handoff` creates it and immediately opens
+the exact new session in the target CLI:
 
 ```sh
-agentswap teleport codex
-agentswap teleport claude --from kimi --latest
-agentswap teleport opencode --session <source-id>
-agentswap teleport kimi --launch
+agentswap teleport claude codex
+agentswap handoff codex claude
+agentswap teleport claude opencode --session <source-id>
+agentswap handoff kimi codex --dangerously-bypass-approvals-and-sandbox
 ```
 
 Claude Code, Codex, OpenCode, and both current and legacy Kimi Code session
 formats are supported as sources. All four are supported as targets. Discovery
 uses an exact, symlink-aware match of the current directory, so worktrees and
-neighboring packages in a monorepo do not get mixed. If several sessions match,
-an interactive terminal gets a picker; scripts must use `--session`, `--from`,
-or `--latest`.
+neighboring packages in a monorepo do not get mixed. The newest session from
+the named source is selected by default; `--session` selects an exact source id.
+When Codex is the target, the generated and launched command always includes
+`--profile agentswap`, so the continued session stays on the managed provider.
+Other `handoff` arguments are passed unchanged to the target CLI, allowing its
+normal model, permission, sandbox, prompt, and UI options. Agent Swap consumes
+only `--session` and `--cwd`; use `--` first if the target itself needs an
+option with either of those names.
 
 Teleport translates the recorded structure — messages, recorded reasoning,
 tool calls, call ids, JSON inputs, results and errors, plans, timestamps, and
@@ -202,7 +209,7 @@ Provider-signed reasoning becomes ordinary recorded content where necessary,
 with a warning. Text-file context is retained as visible text; media, branched
 subagent transcripts, or an unknown conversation-bearing schema fail closed
 rather than creating a target that only looks resumable. See the exact command
-and format contract in [docs/commands.md](docs/commands.md#agentswap-teleport-target).
+and format contract in [docs/commands.md](docs/commands.md#agentswap-teleport-source-target).
 For a real four-harness acceptance matrix, see
 [docs/teleport-live-acceptance.md](docs/teleport-live-acceptance.md).
 The complete credential, supervisor, platform, stress, fuzz, PTY, and legacy
@@ -242,8 +249,8 @@ upstream, priority or label. Every field and what it costs to get wrong:
 | `~/.claude/settings.json` | an `env` block, merged key by key |
 | `~/.codex/config.toml` | an additive, delimited provider + profile block |
 
-`teleport` additionally creates one new native target session under the
-target's own session root (`~/.claude/projects`, `~/.codex/sessions`,
+`teleport` and `handoff` additionally create one new native target session
+under the target's own session root (`~/.claude/projects`, `~/.codex/sessions`,
 `~/.kimi-code/sessions`, or legacy `~/.kimi/sessions`). OpenCode is updated
 through `opencode import`. These are conversation files and can contain source
 code, prompts, and tool output; they receive the target CLI's normal private

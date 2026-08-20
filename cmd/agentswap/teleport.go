@@ -1,82 +1,153 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"time"
 
-	"github.com/bojieli/agentswap/internal/config"
 	"github.com/bojieli/agentswap/internal/session"
-	"github.com/bojieli/agentswap/internal/store"
-	"github.com/bojieli/agentswap/internal/supervisor"
 )
 
 func cmdTeleport(args []string) error {
-	fs := flag.NewFlagSet("teleport", flag.ContinueOnError)
+	return cmdTransfer(args, false)
+}
+
+func cmdHandoff(args []string) error {
+	return cmdTransfer(args, true)
+}
+
+// cmdTransfer implements both user-facing forms. Teleport stops after creating
+// the target session; handoff continues by running the target's exact native
+// resume command. Keeping the pipeline shared prevents a convenience command
+// from acquiring weaker validation or selection rules than teleport itself.
+func cmdTransfer(args []string, handoff bool) error {
+	name := "teleport"
+	if handoff {
+		name = "handoff"
+	}
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	fromValue := fs.String("from", "", "source agent (claude, codex, opencode, or kimi)")
+	fromValue := fs.String("from", "", "deprecated: source agent for the old target-first syntax")
 	sessionID := fs.String("session", "", "exact source session id")
 	cwdValue := fs.String("cwd", "", "project directory (default: current directory)")
-	latest := fs.Bool("latest", false, "choose the newest matching source session without prompting")
+	latest := fs.Bool("latest", false, "deprecated: the newest source session is now selected by default")
 	dryRun := fs.Bool("dry-run", false, "validate and show the migration without writing it")
-	launch := fs.Bool("launch", false, "launch the target CLI after a successful teleport")
+	launch := fs.Bool("launch", false, "deprecated: use agentswap handoff to launch the target")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: agentswap teleport <target> [flags]")
-		fmt.Fprintln(os.Stderr, "\nCopies the complete observable session structure into a new native session")
-		fmt.Fprintln(os.Stderr, "for the target agent. The source is never modified. Discovery is scoped")
-		fmt.Fprintln(os.Stderr, "to the current working directory unless --cwd is given.")
-		fmt.Fprintln(os.Stderr, "\nTargets: claude, codex, opencode, kimi")
+		if handoff {
+			fmt.Fprintln(os.Stderr, "Usage: agentswap handoff <source> <target> [handoff flags] [target args...]")
+		} else {
+			fmt.Fprintln(os.Stderr, "Usage: agentswap teleport <source> <target> [flags]")
+		}
+		if handoff {
+			fmt.Fprintln(os.Stderr, "\nTeleports the newest source session into a native target session, then")
+			fmt.Fprintln(os.Stderr, "launches the target coding agent with that exact new session id.")
+		} else {
+			fmt.Fprintln(os.Stderr, "\nCopies the newest source session into a new native target session without")
+			fmt.Fprintln(os.Stderr, "launching it. The source is never modified.")
+		}
+		fmt.Fprintln(os.Stderr, "Discovery is scoped to the current working directory unless --cwd is given.")
+		fmt.Fprintln(os.Stderr, "\nAgents: claude, codex, opencode, kimi")
 		fmt.Fprintln(os.Stderr, "\nExamples:")
-		fmt.Fprintln(os.Stderr, "  agentswap teleport codex")
-		fmt.Fprintln(os.Stderr, "  agentswap teleport claude --from codex --latest")
-		fmt.Fprintln(os.Stderr, "  agentswap teleport opencode --session <id> --dry-run")
-		fmt.Fprintln(os.Stderr, "  agentswap teleport kimi --launch")
+		if handoff {
+			fmt.Fprintln(os.Stderr, "  agentswap handoff claude codex")
+			fmt.Fprintln(os.Stderr, "  agentswap handoff codex claude --session <id> --dangerously-skip-permissions")
+			fmt.Fprintln(os.Stderr, "  agentswap handoff claude codex --dangerously-bypass-approvals-and-sandbox")
+		} else {
+			fmt.Fprintln(os.Stderr, "  agentswap teleport claude codex")
+			fmt.Fprintln(os.Stderr, "  agentswap teleport codex claude --session <id>")
+			fmt.Fprintln(os.Stderr, "  agentswap teleport claude opencode --dry-run")
+		}
 		fmt.Fprintln(os.Stderr)
-		fs.PrintDefaults()
+		fmt.Fprintln(os.Stderr, "Flags:")
+		fmt.Fprintln(os.Stderr, "  --cwd path     project directory (default: current directory)")
+		fmt.Fprintln(os.Stderr, "  --session id   exact source session id (default: newest source session)")
+		if handoff {
+			fmt.Fprintln(os.Stderr, "\nEvery other argument is passed unchanged to the target CLI. Use -- before")
+			fmt.Fprintln(os.Stderr, "target arguments when the target itself needs a --cwd or --session option.")
+		} else {
+			fmt.Fprintln(os.Stderr, "  --dry-run      validate and show the migration without writing it")
+			fmt.Fprintln(os.Stderr, "\nDeprecated compatibility flags: --from, --latest, --launch")
+		}
 	}
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
 		fs.Usage()
 		if len(args) == 0 {
-			return errors.New("target agent is required")
+			return errors.New("source and target agents are required")
 		}
 		return nil
 	}
-	// The target comes first by design: it keeps the common command short and
-	// also lets the standard flag parser accept flags after it.
-	target, err := session.ParseAgent(args[0])
-	if err != nil {
-		return err
+
+	// The current form has two positional agents. For one compatibility window,
+	// continue accepting `teleport <target> --from <source>` so scripts can move
+	// without an abrupt break; target-only discovery is intentionally gone.
+	var sourceValue, targetValue string
+	var targetArgs []string
+	legacy := len(args) < 2 || strings.HasPrefix(args[1], "-")
+	flagArgs := args[1:]
+	if !legacy {
+		sourceValue, targetValue = args[0], args[1]
+		flagArgs = args[2:]
+	} else {
+		targetValue = args[0]
 	}
-	if err := fs.Parse(args[1:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
+	if handoff {
+		if legacy {
+			return errors.New("source and target agents are required; usage: agentswap handoff <source> <target> [target args...]")
 		}
-		return err
+		var parseErr error
+		*sessionID, *cwdValue, targetArgs, parseErr = parseHandoffArgs(flagArgs)
+		if parseErr != nil {
+			return parseErr
+		}
+	} else {
+		if err := fs.Parse(flagArgs); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return nil
+			}
+			return err
+		}
+		if fs.NArg() != 0 {
+			return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+		}
 	}
-	if fs.NArg() != 0 {
-		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
-	}
-	if *launch && *dryRun {
+	if !handoff && *launch && *dryRun {
 		return errors.New("--launch cannot be combined with --dry-run")
 	}
-	var from session.Agent
-	if *fromValue != "" {
-		from, err = session.ParseAgent(*fromValue)
-		if err != nil {
-			return fmt.Errorf("--from: %w", err)
+	if legacy {
+		if *fromValue == "" {
+			return errors.New("source agent is required; usage: agentswap teleport <source> <target>")
 		}
-		if from == target {
-			return errors.New("source and target agents are the same")
-		}
+		sourceValue = *fromValue
+		fmt.Fprintln(os.Stderr, "warning: `teleport <target> --from <source>` is deprecated; use `teleport <source> <target>`")
+	} else if *fromValue != "" {
+		return errors.New("--from cannot be combined with positional source and target agents")
+	}
+	if *latest {
+		fmt.Fprintln(os.Stderr, "warning: --latest is deprecated because the newest source session is selected by default")
+	}
+	if !handoff && *launch {
+		fmt.Fprintln(os.Stderr, "warning: teleport --launch is deprecated; use agentswap handoff <source> <target>")
+	}
+
+	from, err := session.ParseAgent(sourceValue)
+	if err != nil {
+		return fmt.Errorf("source: %w", err)
+	}
+	target, err := session.ParseAgent(targetValue)
+	if err != nil {
+		return fmt.Errorf("target: %w", err)
+	}
+	if from == target {
+		return errors.New("source and target agents are the same")
+	}
+	if err := validateTargetArgs(target, targetArgs); err != nil {
+		return err
 	}
 	cwd := *cwdValue
 	if cwd == "" {
@@ -100,30 +171,23 @@ func cmdTeleport(args []string) error {
 	if chosenID == "" {
 		chosenID = activeSessionID(from)
 	}
-	if from == "" && chosenID == "" {
-		from = freshTicketSource(target)
-	}
 	ctx := context.Background()
 	manager := session.NewManager()
 	candidates, err := manager.Discover(ctx, session.DiscoverOptions{Target: target, From: from, CWD: cwd})
 	if err != nil {
 		return err
 	}
-	selected, err := session.Select(candidates, chosenID, *latest)
+	selected, err := session.Select(candidates, chosenID, true)
 	if err != nil {
-		var ambiguous *session.AmbiguousError
-		if !errors.As(err, &ambiguous) {
-			return err
-		}
-		selected, err = chooseSession(ambiguous.Candidates)
-		if err != nil {
-			return err
-		}
+		return err
 	}
 	fmt.Fprintf(os.Stderr, "%s %s -> %s (%s)\n", selected.Agent.Display(), selected.ID, target.Display(), cwd)
 	result, history, err := manager.Teleport(ctx, selected, target, session.WriteOptions{CWD: cwd, DryRun: *dryRun})
 	if err != nil {
 		return err
+	}
+	if handoff {
+		result.Resume = append(result.Resume, targetArgs...)
 	}
 	if *dryRun {
 		fmt.Fprintf(os.Stdout, "Dry run succeeded: %d events can be teleported to %s.\n", len(history.Events), target.Display())
@@ -140,8 +204,60 @@ func cmdTeleport(args []string) error {
 	for _, warning := range uniqueStrings(result.Warnings) {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
 	}
-	if *launch {
+	if handoff || *launch {
+		fmt.Fprintf(os.Stdout, "Launching: %s\n", shellJoin(result.Resume))
 		return launchTarget(result.Resume, cwd)
+	}
+	return nil
+}
+
+// parseHandoffArgs consumes the two options owned by agentswap and leaves all
+// other tokens byte-for-byte for the target CLI. `--` is supported when the
+// target itself has a --cwd or --session flag that must not be consumed here.
+func parseHandoffArgs(args []string) (sessionID, cwd string, targetArgs []string, err error) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			targetArgs = append(targetArgs, args[i+1:]...)
+			break
+		}
+		name, value, hasValue := strings.Cut(arg, "=")
+		switch name {
+		case "--session", "-session", "--cwd", "-cwd":
+			if !hasValue {
+				if i+1 >= len(args) {
+					return "", "", nil, fmt.Errorf("%s requires a value", name)
+				}
+				i++
+				value = args[i]
+			}
+			if value == "" {
+				return "", "", nil, fmt.Errorf("%s requires a non-empty value", name)
+			}
+			if name == "--session" || name == "-session" {
+				sessionID = value
+			} else {
+				cwd = value
+			}
+		default:
+			targetArgs = append(targetArgs, arg)
+		}
+	}
+	return sessionID, cwd, targetArgs, nil
+}
+
+func validateTargetArgs(target session.Agent, args []string) error {
+	if target != session.Codex {
+		return nil
+	}
+	for _, arg := range args {
+		if arg == "--" {
+			break
+		}
+		name, _, _ := strings.Cut(arg, "=")
+		if name == "--profile" || name == "-p" || strings.HasPrefix(arg, "-p=") || strings.HasPrefix(arg, "-p") && len(arg) > 2 {
+			return errors.New("Codex handoff always uses --profile agentswap; remove the target --profile option")
+		}
 	}
 	return nil
 }
@@ -165,69 +281,6 @@ func activeSessionID(from session.Agent) string {
 		}
 	}
 	return ""
-}
-
-func freshTicketSource(target session.Agent) session.Agent {
-	dir, err := config.Dir()
-	if err != nil {
-		return ""
-	}
-	// A ticket is a hint only while it plausibly belongs to the just-failed
-	// session. It identifies the provider lane, never a target harness.
-	ticket, err := supervisor.PendingSince(dir, time.Now().Add(-2*time.Minute))
-	if err != nil || ticket == nil {
-		return ""
-	}
-	var source session.Agent
-	switch ticket.Lane {
-	case store.LaneAnthropic:
-		source = session.Claude
-	case store.LaneOpenAI:
-		source = session.Codex
-	}
-	if source == target {
-		return ""
-	}
-	return source
-}
-
-func chooseSession(candidates []session.Candidate) (session.Candidate, error) {
-	return chooseSessionWithIO(candidates, os.Stdin, os.Stderr, stdinIsTerminal())
-}
-
-func chooseSessionWithIO(candidates []session.Candidate, in io.Reader, out io.Writer, terminal bool) (session.Candidate, error) {
-	if len(candidates) == 0 {
-		return session.Candidate{}, errors.New("no source sessions found")
-	}
-	fmt.Fprintln(out, "Several sessions match this directory:")
-	for i, candidate := range candidates {
-		title := strings.ReplaceAll(strings.TrimSpace(candidate.Title), "\n", " ")
-		if runes := []rune(title); len(runes) > 60 {
-			title = string(runes[:60]) + "…"
-		}
-		age := candidate.UpdatedAt.Local().Format("2006-01-02 15:04")
-		if candidate.UpdatedAt.IsZero() {
-			age = "unknown time"
-		}
-		if title != "" {
-			fmt.Fprintf(out, "  %d) %-10s %s  %s  %q\n", i+1, candidate.Agent, candidate.ID, age, title)
-		} else {
-			fmt.Fprintf(out, "  %d) %-10s %s  %s\n", i+1, candidate.Agent, candidate.ID, age)
-		}
-	}
-	if !terminal {
-		return session.Candidate{}, errors.New("selection is ambiguous; rerun with --session <id>, --from <agent>, or --latest")
-	}
-	fmt.Fprintf(out, "Choose [1-%d]: ", len(candidates))
-	line, err := bufio.NewReader(in).ReadString('\n')
-	if err != nil {
-		return session.Candidate{}, fmt.Errorf("read selection: %w", err)
-	}
-	index, err := strconv.Atoi(strings.TrimSpace(line))
-	if err != nil || index < 1 || index > len(candidates) {
-		return session.Candidate{}, errors.New("invalid session selection")
-	}
-	return candidates[index-1], nil
 }
 
 func launchTarget(args []string, cwd string) error {

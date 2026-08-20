@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func claudeProjectKey(path string) string {
@@ -70,8 +71,8 @@ func TestTeleportClaudeToCodex(t *testing.T) {
 	source := writeClaudeTeleportFixture(t, e, project, sourceID, "Inspect the parser")
 	sourceBefore := readFile(t, source)
 
-	r := e.mustRun("teleport", "codex", "--from", "claude", "--latest", "--cwd", project)
-	for _, want := range []string{"Created Codex session", "codex resume", "Claude Code " + sourceID + " -> Codex"} {
+	r := e.mustRun("teleport", "claude", "codex", "--cwd", project)
+	for _, want := range []string{"Created Codex session", "codex resume", "--profile agentswap", "Claude Code " + sourceID + " -> Codex"} {
 		mustContain(t, r.out(), want, "teleport output")
 	}
 	if got := readFile(t, source); got != sourceBefore {
@@ -101,31 +102,36 @@ func TestTeleportClaudeToCodex(t *testing.T) {
 	}
 }
 
-func TestTeleportDryRunAndAmbiguity(t *testing.T) {
+func TestTeleportDefaultsToLatestAndDryRunWritesNothing(t *testing.T) {
 	e := newEnv(t)
 	project := filepath.Join(t.TempDir(), "project")
 	if err := os.MkdirAll(project, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeClaudeTeleportFixture(t, e, project, "22222222-2222-4222-8222-222222222222", "older")
-	writeClaudeTeleportFixture(t, e, project, "33333333-3333-4333-8333-333333333333", "newer")
-
-	ambiguous := e.run("teleport", "codex", "--from", "claude", "--cwd", project)
-	if ambiguous.code == 0 {
-		t.Fatalf("ambiguous teleport succeeded:\n%s", ambiguous.out())
+	oldID := "22222222-2222-4222-8222-222222222222"
+	newID := "33333333-3333-4333-8333-333333333333"
+	oldPath := writeClaudeTeleportFixture(t, e, project, oldID, "older")
+	newPath := writeClaudeTeleportFixture(t, e, project, newID, "newer")
+	base := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(oldPath, base, base); err != nil {
+		t.Fatal(err)
 	}
-	mustContain(t, ambiguous.out(), "selection is ambiguous", "ambiguous teleport")
+	if err := os.Chtimes(newPath, base.Add(time.Minute), base.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
 
-	dry := e.mustRun("teleport", "codex", "--from", "claude", "--latest", "--cwd", project, "--dry-run")
+	dry := e.mustRun("teleport", "claude", "codex", "--cwd", project, "--dry-run")
 	mustContain(t, dry.out(), "Dry run succeeded", "dry run")
 	mustContain(t, dry.out(), "Nothing was written", "dry run")
+	mustContain(t, dry.out(), "Claude Code "+newID+" -> Codex", "latest selection")
+	mustNotContain(t, dry.out(), "Claude Code "+oldID+" -> Codex", "latest selection")
 	rollouts, _ := filepath.Glob(filepath.Join(e.codex, "sessions", "*", "*", "*", "*.jsonl"))
 	if len(rollouts) != 0 {
 		t.Fatalf("dry run wrote Codex rollouts: %v", rollouts)
 	}
 }
 
-func TestTeleportLaunchUsesExactResumeAndKeepsTargetOnFailure(t *testing.T) {
+func TestHandoffUsesExactResumeAndKeepsTargetOnFailure(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake target CLI is a POSIX shell script")
 	}
@@ -153,13 +159,15 @@ exit "${FAKE_LAUNCH_EXIT:-0}"
 		t.Fatal(err)
 	}
 	extra := []string{"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"), "FAKE_LAUNCH_CAPTURE=" + capture}
-	r := e.runEnv(extra, "teleport", "codex", "--from", "claude", "--session", sourceID, "--cwd", project, "--launch")
+	r := e.runEnv(extra, "handoff", "claude", "codex", "--session", sourceID, "--cwd", project,
+		"--dangerously-bypass-approvals-and-sandbox", "continue here")
 	if r.code != 0 {
-		t.Fatalf("launch teleport exited %d:\n%s", r.code, r.out())
+		t.Fatalf("handoff exited %d:\n%s", r.code, r.out())
 	}
 	lines := strings.Split(strings.TrimSpace(readFile(t, capture)), "\n")
-	if len(lines) != 3 || lines[1] != "<resume>" {
-		t.Fatalf("launch capture = %#v, want cwd, resume, exact id", lines)
+	if len(lines) != 7 || lines[1] != "<resume>" || lines[3] != "<--profile>" || lines[4] != "<agentswap>" ||
+		lines[5] != "<--dangerously-bypass-approvals-and-sandbox>" || lines[6] != "<continue here>" {
+		t.Fatalf("handoff capture = %#v, want cwd, resume, exact id, agentswap profile, and unchanged target args", lines)
 	}
 	canonical, err := filepath.EvalSymlinks(project)
 	if err != nil {
@@ -169,16 +177,20 @@ exit "${FAKE_LAUNCH_EXIT:-0}"
 		t.Fatalf("launch cwd = %q, want %q", lines[0], canonical)
 	}
 	targetID := strings.TrimSuffix(strings.TrimPrefix(lines[2], "<"), ">")
-	for _, want := range []string{"Created Codex session " + targetID, "Resume: codex resume " + targetID} {
-		mustContain(t, r.out(), want, "launch teleport")
+	for _, want := range []string{
+		"Created Codex session " + targetID,
+		"Resume: codex resume " + targetID + " --profile agentswap --dangerously-bypass-approvals-and-sandbox 'continue here'",
+		"Launching: codex resume " + targetID + " --profile agentswap --dangerously-bypass-approvals-and-sandbox 'continue here'",
+	} {
+		mustContain(t, r.out(), want, "handoff")
 	}
 
-	failed := e.runEnv(append(extra, "FAKE_LAUNCH_EXIT=7"), "teleport", "codex", "--from", "claude", "--session", sourceID, "--cwd", project, "--launch")
+	failed := e.runEnv(append(extra, "FAKE_LAUNCH_EXIT=7"), "handoff", "claude", "codex", "--session", sourceID, "--cwd", project)
 	if failed.code == 0 {
 		t.Fatalf("failed target launch succeeded:\n%s", failed.out())
 	}
 	for _, want := range []string{"Created Codex session", "teleported session was kept", "exit status 7"} {
-		mustContain(t, failed.out(), want, "failed target launch")
+		mustContain(t, failed.out(), want, "failed handoff launch")
 	}
 	rollouts, err := filepath.Glob(filepath.Join(e.codex, "sessions", "*", "*", "*", "*.jsonl"))
 	if err != nil || len(rollouts) != 2 {
@@ -197,7 +209,7 @@ func TestTeleportSelectionEnvironmentAndInputValidation(t *testing.T) {
 	writeClaudeTeleportFixture(t, e, project, firstID, "selected by active environment")
 	writeClaudeTeleportFixture(t, e, project, secondID, "must not be selected")
 
-	selected := e.runEnv([]string{"CLAUDE_SESSION_ID=" + firstID}, "teleport", "codex", "--from", "claude", "--cwd", project)
+	selected := e.runEnv([]string{"CLAUDE_SESSION_ID=" + firstID}, "teleport", "claude", "codex", "--cwd", project)
 	if selected.code != 0 {
 		t.Fatalf("active-session teleport exited %d:\n%s", selected.code, selected.out())
 	}
@@ -211,13 +223,18 @@ func TestTeleportSelectionEnvironmentAndInputValidation(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "same source and target", args: []string{"teleport", "claude", "--from", "claude", "--cwd", project}, want: "source and target agents are the same"},
-		{name: "launch dry run", args: []string{"teleport", "codex", "--from", "claude", "--latest", "--cwd", project, "--launch", "--dry-run"}, want: "--launch cannot be combined"},
-		{name: "unknown target", args: []string{"teleport", "other", "--cwd", project}, want: "unknown agent"},
-		{name: "unexpected argument", args: []string{"teleport", "codex", "extra", "--cwd", project}, want: "unexpected arguments"},
-		{name: "cwd missing", args: []string{"teleport", "codex", "--cwd", filepath.Join(project, "missing")}, want: "working directory"},
-		{name: "cwd not directory", args: []string{"teleport", "codex", "--cwd", notDir}, want: "is not a directory"},
-		{name: "session absent in cwd", args: []string{"teleport", "codex", "--from", "claude", "--session", "missing", "--cwd", project}, want: "was not found in the current working directory"},
+		{name: "source required", args: []string{"teleport", "codex"}, want: "source agent is required"},
+		{name: "handoff needs both agents", args: []string{"handoff", "codex"}, want: "source and target agents are required"},
+		{name: "same source and target", args: []string{"teleport", "claude", "claude", "--cwd", project}, want: "source and target agents are the same"},
+		{name: "launch dry run", args: []string{"teleport", "claude", "codex", "--cwd", project, "--launch", "--dry-run"}, want: "--launch cannot be combined"},
+		{name: "Codex profile protected", args: []string{"handoff", "claude", "codex", "--cwd", project, "--profile", "mine"}, want: "always uses --profile agentswap"},
+		{name: "unknown source", args: []string{"teleport", "other", "codex", "--cwd", project}, want: "source: unknown agent"},
+		{name: "unknown target", args: []string{"teleport", "claude", "other", "--cwd", project}, want: "target: unknown agent"},
+		{name: "positional and from", args: []string{"teleport", "claude", "codex", "--from", "kimi", "--cwd", project}, want: "--from cannot be combined"},
+		{name: "unexpected argument", args: []string{"teleport", "claude", "codex", "extra", "--cwd", project}, want: "unexpected arguments"},
+		{name: "cwd missing", args: []string{"teleport", "claude", "codex", "--cwd", filepath.Join(project, "missing")}, want: "working directory"},
+		{name: "cwd not directory", args: []string{"teleport", "claude", "codex", "--cwd", notDir}, want: "is not a directory"},
+		{name: "session absent in cwd", args: []string{"teleport", "claude", "codex", "--session", "missing", "--cwd", project}, want: "was not found in the current working directory"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := e.run(tc.args...)
@@ -227,4 +244,12 @@ func TestTeleportSelectionEnvironmentAndInputValidation(t *testing.T) {
 			mustContain(t, r.out(), tc.want, tc.name)
 		})
 	}
+	rollouts, err := filepath.Glob(filepath.Join(e.codex, "sessions", "*", "*", "*", "*.jsonl"))
+	if err != nil || len(rollouts) != 1 {
+		t.Fatalf("invalid invocations changed Codex targets: %v, %v", rollouts, err)
+	}
+
+	legacy := e.mustRun("teleport", "codex", "--from", "claude", "--session", firstID, "--cwd", project, "--dry-run")
+	mustContain(t, legacy.out(), "is deprecated", "legacy teleport syntax")
+	mustContain(t, legacy.out(), "Claude Code "+firstID+" -> Codex", "legacy teleport syntax")
 }

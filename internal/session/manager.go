@@ -86,7 +86,7 @@ func Select(candidates []Candidate, sessionID string, latest bool) (Candidate, e
 			return Candidate{}, fmt.Errorf("session %q was not found in the current working directory", sessionID)
 		}
 		if len(matches) > 1 {
-			return Candidate{}, fmt.Errorf("session id %q is ambiguous across agents; add --from", sessionID)
+			return Candidate{}, fmt.Errorf("session id %q matches more than one source session", sessionID)
 		}
 		return matches[0], nil
 	}

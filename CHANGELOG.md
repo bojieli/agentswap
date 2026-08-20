@@ -6,6 +6,21 @@ version moves for anything that changes behaviour.
 
 ## Unreleased
 
+### Changed
+
+- **Session transfers now read naturally from source to target.**
+  `agentswap teleport claude codex` moves the newest Claude session in the
+  current directory without launching it. The new
+  `agentswap handoff claude codex` performs the same validated migration and
+  immediately opens the exact new Codex session. Handoff consumes `--session`
+  and `--cwd` and passes every other argument unchanged to the target CLI, so
+  native model, permission, sandbox, prompt, and UI options remain available.
+  The old target-first `--from`, `--latest`, and `--launch` forms remain
+  temporarily available with deprecation warnings.
+- **Every generated Codex continuation uses the Agent Swap profile.** Codex
+  targets now print and launch `codex resume ID --profile agentswap`, preventing
+  a handoff from silently returning to an unmanaged provider.
+
 ### Fixed
 
 - **Claude sessions could fail when a later event changed directories.** A

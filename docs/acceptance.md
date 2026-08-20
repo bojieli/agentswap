@@ -37,8 +37,9 @@ The suite directly covers the credential lifecycle and request engine:
   generation.
 
 The session suite covers every reader and writer, canonical validation, exact
-cwd and symlink matching, ambiguous and explicit selection, dry runs, native
-resume commands, launch failure retention, source immutability, and rollback.
+cwd and symlink matching, latest/active/exact selection, dry runs, native
+resume commands, handoff argument passthrough, launch failure retention, source
+immutability, and rollback.
 It also includes:
 
 - a 250-turn mixed history with Unicode, reasoning, MCP-style tool calls, tool
@@ -91,8 +92,10 @@ respective teleports.
 
 The non-provider [`teleport-pty-acceptance.sh`](../scripts/teleport-pty-acceptance.sh)
 drives the binary through a real pseudo-terminal. It verifies terminal
-detection, default current-directory discovery, choosing a non-latest session,
-and rejection of invalid input without a target write.
+behavior matches scripts: default current-directory discovery selects the
+latest named-source session without prompting, `--session` selects an exact
+non-latest source, a missing id writes no target, and Codex output retains the
+mandatory `--profile agentswap`.
 
 ## Real credential failover
 

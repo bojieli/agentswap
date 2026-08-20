@@ -55,65 +55,67 @@ touch -t 202608191001 "$project_sessions/$newer_id.jsonl"
 export AGENTSWAP_PTY_BINARY="$binary"
 export AGENTSWAP_PTY_CLAUDE_HOME="$claude_home"
 export AGENTSWAP_PTY_CODEX_HOME="$codex_home"
+export AGENTSWAP_PTY_OLDER_ID="$older_id"
 
-selection_log="$logs/selection.log"
-export AGENTSWAP_PTY_LOG="$selection_log"
+latest_log="$logs/latest.log"
+export AGENTSWAP_PTY_LOG="$latest_log"
 (cd "$canonical_project" && expect -c '
   set timeout 20
   log_file -noappend $env(AGENTSWAP_PTY_LOG)
-  spawn -noecho env CLAUDE_CONFIG_DIR=$env(AGENTSWAP_PTY_CLAUDE_HOME) CODEX_HOME=$env(AGENTSWAP_PTY_CODEX_HOME) $env(AGENTSWAP_PTY_BINARY) teleport codex --from claude
-  expect {
-    -re {Choose \[1-2\]: $} { send "2\r" }
-    timeout { puts stderr "timed out waiting for the native session picker"; exit 124 }
-    eof { puts stderr "picker exited before prompting"; exit 125 }
-  }
+  spawn -noecho env CLAUDE_CONFIG_DIR=$env(AGENTSWAP_PTY_CLAUDE_HOME) CODEX_HOME=$env(AGENTSWAP_PTY_CODEX_HOME) $env(AGENTSWAP_PTY_BINARY) teleport claude codex
   expect eof
   set status [wait]
   exit [lindex $status 3]
-') || fail "valid PTY selection failed"
+') || fail "latest-source PTY teleport failed"
 
-rg -Fq "1) claude     $newer_id" "$selection_log" || fail "picker did not list the newest cwd session first"
-rg -Fq "2) claude     $older_id" "$selection_log" || fail "picker did not list the older cwd session second"
-rg -Fq "Claude Code $older_id -> Codex ($canonical_project)" "$selection_log" || fail "picker did not use the selected source"
-rg -Fq "Created Codex session" "$selection_log" || fail "selected PTY teleport created no target"
-if rg -Fq "Claude Code $newer_id -> Codex" "$selection_log"; then
-  fail "picker used the unselected source"
-fi
+rg -Fq "Claude Code $newer_id -> Codex ($canonical_project)" "$latest_log" || fail "PTY default did not use the latest source"
+rg -Fq "Created Codex session" "$latest_log" || fail "latest-source PTY teleport created no target"
+rg -Fq -- "--profile agentswap" "$latest_log" || fail "Codex resume command omitted the agentswap profile"
+if rg -Fq "Choose [" "$latest_log"; then fail "PTY unexpectedly opened a session picker"; fi
 
-invalid_log="$logs/invalid-selection.log"
+exact_log="$logs/exact.log"
+export AGENTSWAP_PTY_LOG="$exact_log"
+(cd "$canonical_project" && expect -c '
+  set timeout 20
+  log_file -noappend $env(AGENTSWAP_PTY_LOG)
+  spawn -noecho env CLAUDE_CONFIG_DIR=$env(AGENTSWAP_PTY_CLAUDE_HOME) CODEX_HOME=$env(AGENTSWAP_PTY_CODEX_HOME) $env(AGENTSWAP_PTY_BINARY) teleport claude codex --session $env(AGENTSWAP_PTY_OLDER_ID)
+  expect eof
+  set status [wait]
+  exit [lindex $status 3]
+') || fail "exact-source PTY teleport failed"
+rg -Fq "Claude Code $older_id -> Codex ($canonical_project)" "$exact_log" || fail "--session did not select the exact older source"
+
+invalid_log="$logs/invalid-session.log"
 export AGENTSWAP_PTY_LOG="$invalid_log"
 set +e
 (cd "$canonical_project" && expect -c '
   set timeout 20
   log_file -noappend $env(AGENTSWAP_PTY_LOG)
-  spawn -noecho env CLAUDE_CONFIG_DIR=$env(AGENTSWAP_PTY_CLAUDE_HOME) CODEX_HOME=$env(AGENTSWAP_PTY_CODEX_HOME) $env(AGENTSWAP_PTY_BINARY) teleport codex --from claude
-  expect {
-    -re {Choose \[1-2\]: $} { send "not-a-number\r" }
-    timeout { puts stderr "timed out waiting for the native session picker"; exit 124 }
-    eof { puts stderr "picker exited before prompting"; exit 125 }
-  }
+  spawn -noecho env CLAUDE_CONFIG_DIR=$env(AGENTSWAP_PTY_CLAUDE_HOME) CODEX_HOME=$env(AGENTSWAP_PTY_CODEX_HOME) $env(AGENTSWAP_PTY_BINARY) teleport claude codex --session missing
   expect eof
   set status [wait]
   exit [lindex $status 3]
 ')
 invalid_status=$?
 set -e
-[[ $invalid_status -ne 0 ]] || fail "invalid PTY selection unexpectedly succeeded"
-rg -Fq "invalid session selection" "$invalid_log" || fail "invalid PTY selection did not return a clear error"
+[[ $invalid_status -ne 0 ]] || fail "missing PTY session unexpectedly succeeded"
+rg -Fq 'session "missing" was not found' "$invalid_log" || fail "missing PTY session did not return a clear error"
 
 target_count=$(find "$codex_home/sessions" -type f -name '*.jsonl' | wc -l | tr -d ' ')
-[[ $target_count == 1 ]] || fail "expected exactly one target after valid and invalid selections, found $target_count"
+[[ $target_count == 2 ]] || fail "expected two targets after latest, exact, and missing-id runs, found $target_count"
 
 {
-  printf '%s\n' "agentswap real PTY picker acceptance"
+  printf '%s\n' "agentswap real PTY deterministic-selection acceptance"
   printf 'project=%s\n' "$canonical_project"
-  printf 'selected_source=%s\n' "$older_id"
-  printf '%s\n' 'real_terminal_detection=PASS' 'cwd_default_discovery=PASS' \
-    'interactive_selection=PASS' 'invalid_selection=PASS' 'invalid_selection_no_write=PASS'
+  printf 'latest_source=%s\nexact_source=%s\n' "$newer_id" "$older_id"
+  printf '%s\n' 'cwd_default_discovery=PASS' 'latest_default=PASS' \
+    'exact_session=PASS' 'no_interactive_picker=PASS' 'missing_session_no_write=PASS' \
+    'codex_agentswap_profile=PASS'
 } >"$logs/acceptance-summary.txt"
 
-echo "PASS: a real PTY displayed and accepted the cwd-scoped session picker"
-echo "PASS: the selected non-latest source alone produced a target"
-echo "PASS: invalid interactive input failed without writing a target"
+echo "PASS: a real PTY selected the latest cwd-scoped source without prompting"
+echo "PASS: --session selected an exact non-latest source"
+echo "PASS: a missing session failed without writing a target"
+echo "PASS: Codex resume output included --profile agentswap"
 echo "acceptance summary: $logs/acceptance-summary.txt"
 echo "acceptance artifacts retained at $acceptance_root"

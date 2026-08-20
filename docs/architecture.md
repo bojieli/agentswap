@@ -118,11 +118,12 @@ native export to `opencode import`, verifies its confirmation, and asks
 OpenCode to delete that new id if the import fails. This keeps a database driver
 and schema copy out of the credential-holding process.
 
-The supervisor never invokes teleport and teleport never chooses a target. A
-fresh 503 exhaustion ticket may narrow source discovery to its Claude or Codex
-lane, but it remains only a hint and does not bypass cwd or ambiguity checks.
-Only the user knows whether waiting, adding a credential, or moving to another
-harness is the right semantic choice.
+The supervisor never invokes teleport, and neither transfer command chooses a
+source or target harness. Both are positional user decisions. `handoff` is a
+thin launch step over the same selection, validation, and write pipeline used
+by `teleport`; it does not weaken the session checks. Only the user knows
+whether waiting, adding a credential, or moving to another harness is the right
+semantic choice.
 
 ## Concurrency
 

@@ -123,7 +123,7 @@ teleport_log="$logs/teleport-claude-to-kimi.txt"
   CLAUDE_CONFIG_DIR="$claude_home" \
   KIMI_SHARE_DIR="$kimi_share" \
   AGENTSWAP_KIMI_FORMAT=legacy \
-  "$binary" teleport kimi --from claude --session "$source_id" --cwd "$canonical_project" \
+  "$binary" teleport claude kimi --session "$source_id" --cwd "$canonical_project" \
     >"$teleport_log" 2>&1) || fail "agentswap could not create the legacy Kimi target"
 
 target_id=$(sed -nE 's/^Created Kimi Code session ([^ ]+)$/\1/p' "$teleport_log" | sed -n '1p')
@@ -170,7 +170,7 @@ return_teleport_log="$logs/teleport-kimi-to-claude.txt"
 (cd "$canonical_project" && \
   CLAUDE_CONFIG_DIR="$claude_home" \
   KIMI_SHARE_DIR="$kimi_share" \
-  "$binary" teleport claude --from kimi --session "$target_id" --cwd "$canonical_project" \
+  "$binary" teleport kimi claude --session "$target_id" --cwd "$canonical_project" \
     >"$return_teleport_log" 2>&1) || fail "agentswap could not read the real legacy Kimi source"
 
 return_id=$(sed -nE 's/^Created Claude Code session ([^ ]+)$/\1/p' "$return_teleport_log" | sed -n '1p')

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -319,6 +320,10 @@ func TestCodexWriterUsesConfiguredModelProvider(t *testing.T) {
 	}
 	if got, _ := record.Payload["model_provider"].(string); got != "krill" {
 		t.Fatalf("teleported model provider = %q, want krill", got)
+	}
+	wantResume := []string{"codex", "resume", result.ID, "--profile", "agentswap"}
+	if !reflect.DeepEqual(result.Resume, wantResume) {
+		t.Fatalf("Codex resume command = %#v, want %#v", result.Resume, wantResume)
 	}
 }
 

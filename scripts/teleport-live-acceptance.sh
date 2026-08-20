@@ -206,12 +206,16 @@ run_pair() {
   local teleport_log="$logs/$pair.teleport"
   local resume_log="$logs/$pair.resume.jsonl"
   echo "testing $source->$target" >&2
-  (cd "$project" && "$binary" teleport "$target" --from "$source" \
+  (cd "$project" && "$binary" teleport "$source" "$target" \
     --session "$source_id" --cwd "$project" >"$teleport_log" 2>&1)
 
   local target_id
   target_id=$(sed -nE 's/^Created .* session ([^ ]+)$/\1/p' "$teleport_log" | sed -n '1p')
   [[ -n $target_id ]] || fail "$pair did not create a target id"
+  if [[ $target == codex ]]; then
+    rg -Fq "Resume: codex resume $target_id --profile agentswap" "$teleport_log" || \
+      fail "$pair did not report the mandatory Codex agentswap profile"
+  fi
 
   local prompt
   prompt=$(continuation_prompt "$target" "$source" "$token")

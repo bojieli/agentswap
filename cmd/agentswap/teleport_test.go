@@ -1,37 +1,17 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/bojieli/agentswap/internal/session"
-	"github.com/bojieli/agentswap/internal/store"
-	"github.com/bojieli/agentswap/internal/supervisor"
 )
 
-func TestFreshTicketSuggestsSourceNotTarget(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("AGENTSWAP_HOME", dir)
-	if err := supervisor.WriteTicket(dir, supervisor.Ticket{
-		Lane: store.LaneAnthropic, Until: time.Now().Add(time.Hour), WrittenAt: time.Now(),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if got := freshTicketSource(session.Codex); got != session.Claude {
-		t.Fatalf("ticket source = %q, want Claude", got)
-	}
-	if got := freshTicketSource(session.Claude); got != "" {
-		t.Fatalf("ticket suggested the target as its own source: %q", got)
-	}
-}
-
-func TestActiveSessionIDRequiresKnownSource(t *testing.T) {
+func TestActiveSessionIDUsesExplicitSource(t *testing.T) {
 	t.Setenv("CODEX_THREAD_ID", "thread-1")
 	if got := activeSessionID(session.Codex); got != "thread-1" {
 		t.Fatalf("Codex active id = %q", got)
@@ -46,67 +26,55 @@ func TestActiveSessionIDRequiresKnownSource(t *testing.T) {
 }
 
 func TestShellJoin(t *testing.T) {
-	got := shellJoin([]string{"codex", "resume", "plain", "two words", "it's"})
-	want := "codex resume plain 'two words' 'it'\\''s'"
+	got := shellJoin([]string{"codex", "resume", "plain", "two words", "it's", "--profile", "agentswap"})
+	want := "codex resume plain 'two words' 'it'\\''s' --profile agentswap"
 	if got != want {
 		t.Fatalf("shellJoin = %q, want %q", got, want)
 	}
 }
 
-func TestFreshTicketIgnoresOldTicket(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("AGENTSWAP_HOME", dir)
-	if err := supervisor.WriteTicket(filepath.Clean(dir), supervisor.Ticket{
-		Lane: store.LaneOpenAI, Until: time.Now().Add(time.Hour), WrittenAt: time.Now().Add(-10 * time.Minute),
-	}); err != nil {
+func TestParseHandoffArgsPassesTargetArgumentsUnchanged(t *testing.T) {
+	sourceID, cwd, targetArgs, err := parseHandoffArgs([]string{
+		"--session", "source-id", "--cwd=/tmp/project",
+		"--dangerously-bypass-approvals-and-sandbox", "continue here",
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got := freshTicketSource(session.Claude); got != "" {
-		t.Fatalf("stale ticket source = %q", got)
+	if sourceID != "source-id" || cwd != "/tmp/project" {
+		t.Fatalf("handoff options = session %q cwd %q", sourceID, cwd)
+	}
+	want := []string{"--dangerously-bypass-approvals-and-sandbox", "continue here"}
+	if !reflect.DeepEqual(targetArgs, want) {
+		t.Fatalf("target args = %#v, want %#v", targetArgs, want)
+	}
+
+	_, _, targetArgs, err = parseHandoffArgs([]string{"--session=source-id", "--", "--cwd", "target-cwd", "--session", "target-id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = []string{"--cwd", "target-cwd", "--session", "target-id"}
+	if !reflect.DeepEqual(targetArgs, want) {
+		t.Fatalf("separated target args = %#v, want %#v", targetArgs, want)
 	}
 }
 
-func TestChooseSessionWithIO(t *testing.T) {
-	candidates := []session.Candidate{
-		{Agent: session.Claude, ID: "claude-old", Title: "first\nline", UpdatedAt: time.Date(2026, 8, 19, 10, 0, 0, 0, time.Local)},
-		{Agent: session.Codex, ID: "codex-new", Title: strings.Repeat("界", 61), UpdatedAt: time.Date(2026, 8, 19, 11, 0, 0, 0, time.Local)},
+func TestParseHandoffArgsValidatesOwnedAndProtectedFlags(t *testing.T) {
+	for _, args := range [][]string{{"--session"}, {"--cwd="}} {
+		if _, _, _, err := parseHandoffArgs(args); err == nil || !strings.Contains(err.Error(), "requires") {
+			t.Fatalf("parseHandoffArgs(%q) error = %v", args, err)
+		}
 	}
-	for _, tc := range []struct {
-		name     string
-		input    string
-		terminal bool
-		wantID   string
-		wantErr  string
-	}{
-		{name: "select first", input: "1\n", terminal: true, wantID: "claude-old"},
-		{name: "select second with whitespace", input: " 2 \n", terminal: true, wantID: "codex-new"},
-		{name: "not a number", input: "x\n", terminal: true, wantErr: "invalid session selection"},
-		{name: "zero", input: "0\n", terminal: true, wantErr: "invalid session selection"},
-		{name: "too large", input: "3\n", terminal: true, wantErr: "invalid session selection"},
-		{name: "closed input", terminal: true, wantErr: "read selection"},
-		{name: "non-terminal", input: "1\n", wantErr: "selection is ambiguous"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var out bytes.Buffer
-			got, err := chooseSessionWithIO(candidates, strings.NewReader(tc.input), &out, tc.terminal)
-			if tc.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-					t.Fatalf("error = %v, want %q", err, tc.wantErr)
-				}
-			} else if err != nil || got.ID != tc.wantID {
-				t.Fatalf("selection = %+v, %v; want %s", got, err, tc.wantID)
-			}
-			listing := out.String()
-			if !strings.Contains(listing, `"first line"`) || strings.Contains(listing, "first\nline") {
-				t.Fatalf("picker did not sanitize title: %q", listing)
-			}
-			if !strings.Contains(listing, strings.Repeat("界", 60)+"…") {
-				t.Fatalf("picker did not rune-truncate title: %q", listing)
-			}
-		})
+	for _, args := range [][]string{{"--profile", "mine"}, {"--profile=mine"}, {"-p=mine"}, {"-pmine"}} {
+		if err := validateTargetArgs(session.Codex, args); err == nil || !strings.Contains(err.Error(), "--profile agentswap") {
+			t.Fatalf("validateTargetArgs(%q) error = %v", args, err)
+		}
+		if err := validateTargetArgs(session.Claude, args); err != nil {
+			t.Fatalf("Claude target rejected passthrough args %q: %v", args, err)
+		}
 	}
-	if _, err := chooseSessionWithIO(nil, strings.NewReader(""), &bytes.Buffer{}, true); err == nil || !strings.Contains(err.Error(), "no source sessions") {
-		t.Fatalf("empty picker error = %v", err)
+	if err := validateTargetArgs(session.Codex, []string{"--", "--profile", "literal prompt text"}); err != nil {
+		t.Fatalf("Codex target separator did not protect literal prompt args: %v", err)
 	}
 }
 

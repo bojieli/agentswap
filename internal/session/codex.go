@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/bojieli/agentswap/internal/install"
 )
 
 type codexAdapter struct{}
@@ -25,10 +27,11 @@ func codexRoot() string { return envDir("CODEX_HOME", filepath.Join(homeDir(), "
 // user's configured provider (for example, a compatible endpoint in
 // ~/.codex/config.toml).
 //
-// We only need the top-level model_provider setting here. Profile selection is
-// a command-line concern (codex --profile ...), and teleport's resume command
-// deliberately does not invent a profile. If the config is absent or does not
-// have a top-level provider, retain Codex's normal default.
+// We only need the top-level model_provider setting here. The generated resume
+// command separately and unconditionally applies `--profile agentswap`; this
+// metadata remains the target's native base provider rather than pretending a
+// profile-only provider was selected when the rollout was written. If the
+// config is absent or has no top-level provider, retain Codex's normal default.
 func codexConfiguredModelProvider() string {
 	path := filepath.Join(codexRoot(), "config.toml")
 	f, err := os.Open(path)
@@ -383,7 +386,7 @@ func (codexAdapter) Write(_ context.Context, history *Session, opts WriteOptions
 	dir := filepath.Join(codexRoot(), "sessions", now.Format("2006"), now.Format("01"), now.Format("02"))
 	name := "rollout-" + now.Format("2006-01-02T15-04-05") + "-" + id + ".jsonl"
 	final := filepath.Join(dir, name)
-	result = Result{Agent: Codex, ID: id, Path: final, Resume: []string{"codex", "resume", id}, Files: []string{final}}
+	result = Result{Agent: Codex, ID: id, Path: final, Resume: []string{"codex", "resume", id, "--profile", install.ProfileName}, Files: []string{final}}
 	if opts.DryRun {
 		return result, nil
 	}

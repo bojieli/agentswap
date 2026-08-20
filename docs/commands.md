@@ -165,11 +165,45 @@ repeating the original instruction.
 It also sets the environment itself, so it works on a machine you never ran
 `install` on, and adds `--profile agentswap` to Codex invocations.
 
-### `agentswap teleport <target>`
+### `agentswap teleport <source> <target>`
 
 Creates a new native session for `claude`, `codex`, `opencode`, or `kimi` from
-an existing session belonging to another one of those agents. This is always a
-user command: pool exhaustion never chooses a different harness automatically.
+the newest current-directory session belonging to another one of those agents.
+Both agents are positional and the order is always source, then target:
+
+```sh
+agentswap teleport claude codex
+```
+
+Teleport stops after creating the target and prints its native resume command.
+This is always a user command: pool exhaustion never chooses a different
+harness automatically.
+
+### `agentswap handoff <source> <target>`
+
+Performs the same validated teleport and then launches the target coding agent
+with the exact new session id:
+
+```sh
+agentswap handoff claude codex
+agentswap handoff claude codex --dangerously-bypass-approvals-and-sandbox
+agentswap handoff codex claude --dangerously-skip-permissions
+```
+
+`handoff` is the short interactive path. It accepts `--session` and `--cwd`;
+every other argument is appended unchanged to the native target resume
+command. This supports the target's normal model, approval, sandbox, prompt,
+and display options without Agent Swap having to mirror them. Use a `--`
+separator when the target itself needs a flag named `--session` or `--cwd`:
+
+```sh
+agentswap handoff claude codex --cwd ./project -- --cwd ./target-view
+```
+
+Because launching is the defining behavior, use `teleport --dry-run` when only
+validation is wanted. Codex target arguments may not contain `--profile` or
+`-p`; Agent Swap unconditionally supplies `--profile agentswap` and refuses an
+override rather than allowing a handoff to bypass the managed provider.
 
 Run it from the project directory. Discovery compares canonical filesystem
 paths, including symlink equivalence, but deliberately does not fall back to
@@ -179,38 +213,39 @@ so it appears in the target's native resume picker.
 
 | Flag | Meaning |
 | --- | --- |
-| `--from claude\|codex\|opencode\|kimi` | restrict source discovery to one agent |
 | `--session ID` | select an exact source id in this directory |
-| `--latest` | choose the newest match without an interactive picker |
 | `--cwd PATH` | use a directory other than the current one |
-| `--dry-run` | read, validate, and report without writing a target |
-| `--launch` | run the exact native resume command after the write succeeds |
+| `--dry-run` | with `teleport`, read, validate, and report without writing a target |
 
 Selection precedence is an explicit `--session`, an active-session environment
-id when `--from` identifies its harness, a still-fresh pool-exhaustion ticket
-(which can identify Claude versus Codex but never chooses the target), then the
-exact-directory candidates. One candidate is selected directly. Several
-candidates prompt only when stdin is a real terminal; otherwise the command
-fails with the flags needed to make the choice deterministic. `--latest` is the
-explicit non-interactive shortcut.
+id for the named source harness, then the newest exact-directory source
+candidate. There is no cross-agent discovery or interactive picker, so the
+same command selects the same session in a terminal and in a script.
+
+For compatibility, `teleport <target> --from <source>` and `teleport --launch`
+remain accepted with deprecation warnings. `--latest` is also accepted but is
+now redundant. New scripts should use the positional form and `handoff`.
 
 The success output always includes the new id and exact resume command:
 
 ```text
 Created Codex session 019...
-Resume: codex resume 019...
+Resume: codex resume 019... --profile agentswap
 ```
 
-The target commands are `claude --resume ID`, `codex resume ID`,
+The target commands are `claude --resume ID`,
+`codex resume ID --profile agentswap`,
 `opencode --session ID`, current `kimi --session ID --model MODEL`, and legacy
 `kimi -r ID`.
-`--launch` uses the exact id; it never races against another terminal through
-`--last` or `--continue`.
+`handoff` uses the exact id; it never races against another terminal through
+`--last` or `--continue`. The Codex profile is not user-selectable here:
+Agent Swap always supplies its own profile so the continued target cannot
+silently bypass the managed provider.
 
 Codex target rollouts record the top-level `model_provider` from the target's
 `CODEX_HOME/config.toml` (usually `~/.codex/config.toml`) so `codex resume ID`
-continues through the provider already configured there. If that provider is
-selected only through a Codex profile, resume with the same `--profile`.
+retains valid native metadata. The generated resume command additionally and
+unconditionally applies the `agentswap` profile.
 
 Teleport preserves recorded messages and message order, text, recorded
 reasoning, tool names/call ids/JSON inputs/results/error state, plan revisions,
@@ -298,4 +333,4 @@ Prints the version. Release builds carry the tag; a build from source says
 | `AGENTSWAP_KIMI_FORMAT` | `modern` or `legacy` target format override |
 | `AGENTSWAP_KIMI_MODEL` | target model alias in the generated current-Kimi resume command |
 | `AGENTSWAP_OPENCODE_BIN` | alternate `opencode` executable used for native import/export |
-| `AGENTSWAP_SESSION_ID` | explicit active source id for `teleport` |
+| `AGENTSWAP_SESSION_ID` | explicit active source id for `teleport` or `handoff` |
