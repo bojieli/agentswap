@@ -88,6 +88,17 @@ jobs:
           # embeds the same checksums published above.
           scripts/generate-homebrew-formula.sh "$VERSION" dist dist/agentswap.rb
 
+          # Keep the in-repository tap usable between releases. A release
+          # cannot safely publish a formula whose checksums differ from the
+          # formula users get from `brew tap`.
+          if [ -f Formula/agentswap.rb ]; then
+            cmp -s Formula/agentswap.rb dist/agentswap.rb || {
+              echo 'Formula/agentswap.rb is stale; update it before tagging' >&2
+              diff -u Formula/agentswap.rb dist/agentswap.rb || true
+              exit 1
+            }
+          fi
+
           # Fail before publishing if an archive or checksum is malformed.
           test "$(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l | tr -d ' ')" -eq 7
           (cd dist && sha256sum -c SHA256SUMS)

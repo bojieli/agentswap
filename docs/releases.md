@@ -15,16 +15,20 @@ same supply-chain path users rely on:
   `SHA256SUMS`, generates a Homebrew formula, and attaches build-provenance
   attestations.
 
-## Install on macOS
+## Install with Homebrew
 
-Homebrew chooses Apple Silicon versus Intel automatically:
+The repository doubles as a Homebrew tap. The explicit URL works even though
+the source repository is named `agentswap` rather than the conventional
+`homebrew-agentswap`:
 
 ```sh
-brew install --formula https://github.com/bojieli/agentswap/releases/latest/download/agentswap.rb
+brew tap bojieli/agentswap https://github.com/bojieli/agentswap.git
+brew install bojieli/agentswap/agentswap
 ```
 
-The formula installs the release binary only. Account import, CLI wiring, and
-the daemon remain explicit:
+Homebrew chooses Apple Silicon versus Intel (and Linux arm64 versus amd64)
+automatically. The formula installs the release binary only. Account import,
+CLI wiring, and the daemon remain explicit:
 
 ```sh
 agentswap import
@@ -32,13 +36,15 @@ agentswap install
 agentswap service install
 ```
 
-The formula is generated as a release asset because its version and four
-platform archive checksums must change together for every tag.
+The formula is committed at [`Formula/agentswap.rb`](../Formula/agentswap.rb)
+and is also generated as a release asset. Its version and four platform
+archive checksums must change together for every tag; CI and the release
+workflow verify the generated file before publishing.
 
 GitHub does not serve private release assets anonymously. If this repository is
 private, users need repository access and should download the formula and
-archive with authenticated GitHub tooling; an unauthenticated `brew install`
-URL requires a public release or a separate public Homebrew tap.
+archive with authenticated GitHub tooling. The tap is intended for this public
+repository and its public releases.
 
 ## Create a release
 

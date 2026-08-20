@@ -41,16 +41,17 @@ supported harness.
 
 ### Homebrew on macOS or Linux
 
-After the first public release, Homebrew can download the checksum-pinned
-formula directly from GitHub:
+Homebrew installs the checksum-pinned formula from this repository's tap:
 
 ```sh
-brew install --formula https://github.com/bojieli/agentswap/releases/latest/download/agentswap.rb
+brew tap bojieli/agentswap https://github.com/bojieli/agentswap.git
+brew install bojieli/agentswap/agentswap
 ```
 
 Apple Silicon, Intel, and Linux architectures select their matching archive
-automatically. See [the release guide](docs/releases.md) for how the formula
-is generated and published.
+automatically. The tap is the same public repository, so no separate account
+or package service is required. See [the release guide](docs/releases.md) for
+how the formula is generated and published.
 
 ### Go toolchain
 
