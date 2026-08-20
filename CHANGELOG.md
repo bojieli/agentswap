@@ -18,6 +18,9 @@ version moves for anything that changes behaviour.
   architecture-aware `agentswap.rb` formula for macOS and Linux, and attach
   build-provenance attestations when the repository is public. CI also
   smoke-tests formula generation and ShellCheck coverage for release scripts.
+- The generated formula is also committed under `Formula/agentswap.rb`, so the
+  public repository can be used directly as a Homebrew tap. The release job
+  refuses to publish when the committed formula and release checksums differ.
 
 ### Changed
 

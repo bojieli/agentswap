@@ -9,7 +9,8 @@
 #
 #   go install github.com/bojieli/agentswap/cmd/agentswap@latest
 #   git clone https://github.com/bojieli/agentswap && cd agentswap && make install
-#   brew install --formula https://github.com/bojieli/agentswap/releases/latest/download/agentswap.rb
+#   brew tap bojieli/agentswap https://github.com/bojieli/agentswap.git
+#   brew install bojieli/agentswap/agentswap
 #
 # This script verifies the SHA-256 checksum of what it downloads against the
 # published SHA256SUMS, and refuses to install if it cannot.
