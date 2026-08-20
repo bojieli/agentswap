@@ -391,20 +391,6 @@ func (claudeAdapter) Read(_ context.Context, candidate Candidate) (*Session, err
 	return history, nil
 }
 
-func claudeResultText(content any) (string, error) {
-	parts, err := claudeResultParts(content, "", false)
-	if err != nil {
-		return "", err
-	}
-	var texts []string
-	for _, part := range parts {
-		if part.Kind == Text || part.Kind == ToolResult {
-			texts = append(texts, part.Text)
-		}
-	}
-	return strings.Join(texts, "\n"), nil
-}
-
 func claudeResultParts(content any, callID string, isError bool) ([]Part, error) {
 	switch value := content.(type) {
 	case nil:

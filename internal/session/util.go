@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -306,14 +305,6 @@ func hashHex(value []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func uint64Random() (uint64, error) {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return 0, err
-	}
-	return binary.BigEndian.Uint64(b[:]), nil
-}
-
 func safeTitle(value, fallback string) string {
 	value = strings.TrimSpace(strings.ReplaceAll(value, "\x00", ""))
 	if value == "" {
@@ -354,13 +345,6 @@ func proposedPlan(text string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(trimmed[start:end]), true
-}
-
-func fileMTime(path string) time.Time {
-	if info, err := os.Stat(path); err == nil {
-		return info.ModTime()
-	}
-	return time.Time{}
 }
 
 func ensureDir(path string) error { return os.MkdirAll(path, 0o700) }

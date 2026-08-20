@@ -502,16 +502,6 @@ func rejectKimiSubagents(agentsDir string) error {
 	return nil
 }
 
-func kimiOutputText(output any) (string, error) {
-	if text, ok := output.(string); ok {
-		return text, nil
-	}
-	if blocks, ok := output.([]any); ok {
-		return claudeResultText(blocks)
-	}
-	return stringifyOutput(output)
-}
-
 func kimiOutputParts(output any, callID string) ([]Part, error) {
 	if text, ok := output.(string); ok {
 		return []Part{{Kind: ToolResult, CallID: callID, Text: text}}, nil

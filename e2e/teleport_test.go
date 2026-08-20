@@ -98,7 +98,17 @@ func TestTeleportClaudeToCodex(t *testing.T) {
 	if err := scanner.Err(); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"session_meta", project, "Inspect the parser", "call-e2e", "parser.go", "package parser", "The parser is ready."} {
+	canonical, err := filepath.EvalSymlinks(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		// canonicalPath deliberately compares Windows paths case-insensitively.
+		// EvalSymlinks also expands 8.3 aliases on the hosted runner, so compare
+		// the same canonical representation that the rollout records.
+		canonical = strings.ToLower(canonical)
+	}
+	for _, want := range []string{"session_meta", canonical, "Inspect the parser", "call-e2e", "parser.go", "package parser", "The parser is ready."} {
 		mustContain(t, contents.String(), want, "Codex rollout")
 	}
 }

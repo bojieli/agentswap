@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -455,16 +454,4 @@ func openCodeModel(history *Session) (provider, model string) {
 		}
 	}
 	return provider, model
-}
-
-func parseInt64(value any) int64 {
-	switch v := value.(type) {
-	case float64:
-		return int64(v)
-	case string:
-		n, _ := strconv.ParseInt(v, 10, 64)
-		return n
-	default:
-		return 0
-	}
 }
