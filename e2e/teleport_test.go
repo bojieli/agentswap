@@ -108,7 +108,12 @@ func TestTeleportClaudeToCodex(t *testing.T) {
 		// the same canonical representation that the rollout records.
 		canonical = strings.ToLower(canonical)
 	}
-	for _, want := range []string{"session_meta", canonical, "Inspect the parser", "call-e2e", "parser.go", "package parser", "The parser is ready."} {
+	encodedCWD, err := json.Marshal(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustContain(t, contents.String(), `"cwd":`+string(encodedCWD), "Codex rollout cwd")
+	for _, want := range []string{"session_meta", "Inspect the parser", "call-e2e", "parser.go", "package parser", "The parser is ready."} {
 		mustContain(t, contents.String(), want, "Codex rollout")
 	}
 }
