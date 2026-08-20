@@ -291,6 +291,37 @@ func TestCodexRoundTrip(t *testing.T) {
 	assertRoundTrip(t, adapter, candidates[0])
 }
 
+func TestCodexWriterUsesConfiguredModelProvider(t *testing.T) {
+	isolatedHomes(t)
+	cwd := t.TempDir()
+	if err := os.MkdirAll(codexRoot(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := "model_provider = 'krill' # preserve the user's default provider\n[model_providers.krill]\nbase_url = 'https://example.test/v1'\n"
+	if err := os.WriteFile(filepath.Join(codexRoot(), "config.toml"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (codexAdapter{}).Write(context.Background(), sampleHistory(t, cwd), WriteOptions{CWD: cwd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.Open(result.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	var record struct {
+		Type    string         `json:"type"`
+		Payload map[string]any `json:"payload"`
+	}
+	if err := json.NewDecoder(first).Decode(&record); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := record.Payload["model_provider"].(string); got != "krill" {
+		t.Fatalf("teleported model provider = %q, want krill", got)
+	}
+}
+
 func TestKimiCodeRoundTrip(t *testing.T) {
 	isolatedHomes(t)
 	cwd := t.TempDir()

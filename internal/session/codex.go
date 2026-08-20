@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,67 @@ func newCodexAdapter() Adapter    { return codexAdapter{} }
 func (codexAdapter) Agent() Agent { return Codex }
 
 func codexRoot() string { return envDir("CODEX_HOME", filepath.Join(homeDir(), ".codex")) }
+
+// codexConfiguredModelProvider returns the provider Codex will use for a
+// session started without an explicit profile. Codex stores the effective
+// provider in each rollout's session_meta record and uses that value when a
+// session is resumed, so writing a fixed "openai" provider would bypass a
+// user's configured provider (for example, a compatible endpoint in
+// ~/.codex/config.toml).
+//
+// We only need the top-level model_provider setting here. Profile selection is
+// a command-line concern (codex --profile ...), and teleport's resume command
+// deliberately does not invent a profile. If the config is absent or does not
+// have a top-level provider, retain Codex's normal default.
+func codexConfiguredModelProvider() string {
+	path := filepath.Join(codexRoot(), "config.toml")
+	f, err := os.Open(path)
+	if err != nil {
+		return "openai"
+	}
+	defer f.Close()
+
+	section := ""
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") {
+			section = line
+			continue
+		}
+		if section != "" {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(key) != "model_provider" {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		// The provider is a TOML string. Handle both TOML basic and literal
+		// strings, and tolerate an inline comment after either form.
+		if strings.HasPrefix(value, "\"") {
+			if end := strings.Index(value[1:], "\""); end >= 0 {
+				var provider string
+				if err := json.Unmarshal([]byte(value[:end+2]), &provider); err == nil && provider != "" {
+					return provider
+				}
+			}
+		} else if strings.HasPrefix(value, "'") {
+			if end := strings.IndexByte(value[1:], '\''); end >= 0 {
+				if provider := value[1 : end+1]; provider != "" {
+					return provider
+				}
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "openai"
+	}
+	return "openai"
+}
 
 func (codexAdapter) Discover(_ context.Context, cwd string) ([]Candidate, error) {
 	canonical, err := canonicalPath(cwd)
@@ -350,7 +412,7 @@ func (codexAdapter) Write(_ context.Context, history *Session, opts WriteOptions
 	meta := map[string]any{
 		"id": id, "session_id": id, "timestamp": now.Format(time.RFC3339Nano),
 		"cwd": canonical, "originator": "agentswap", "cli_version": "agentswap",
-		"source": "cli", "thread_source": "user", "model_provider": "openai",
+		"source": "cli", "thread_source": "user", "model_provider": codexConfiguredModelProvider(),
 		"model": history.Model,
 		"agentswap_source": map[string]any{
 			"agent": history.Source, "session_id": history.SourceID,

@@ -207,6 +207,11 @@ The target commands are `claude --resume ID`, `codex resume ID`,
 `--launch` uses the exact id; it never races against another terminal through
 `--last` or `--continue`.
 
+Codex target rollouts record the top-level `model_provider` from the target's
+`CODEX_HOME/config.toml` (usually `~/.codex/config.toml`) so `codex resume ID`
+continues through the provider already configured there. If that provider is
+selected only through a Codex profile, resume with the same `--profile`.
+
 Teleport preserves recorded messages and message order, text, recorded
 reasoning, tool names/call ids/JSON inputs/results/error state, plan revisions,
 timestamps, title, model, source id, and cwd wherever the destination has a
