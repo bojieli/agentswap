@@ -9,6 +9,7 @@ import (
 
 func claudeSettings(e *env) string { return filepath.Join(e.claude, "settings.json") }
 func codexConfig(e *env) string    { return filepath.Join(e.codex, "config.toml") }
+func codexProfile(e *env) string   { return filepath.Join(e.codex, "agentswap.config.toml") }
 func backupsIn(t *testing.T, dir, base string) []string {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
@@ -49,6 +50,7 @@ func TestInstallAndUninstallRoundTrip(t *testing.T) {
 	for _, want := range []string{"[model_providers.agentswap]", "wire_api", "profiles.mine", "gpt-5.6"} {
 		mustContain(t, codex, want, "codex config after install")
 	}
+	mustContain(t, readFile(t, codexProfile(e)), `model_provider = "agentswap"`, "codex profile after install")
 
 	// A backup before touching anything the user wrote.
 	if got := backupsIn(t, e.claude, "settings.json"); len(got) == 0 {
@@ -64,20 +66,31 @@ func TestInstallAndUninstallRoundTrip(t *testing.T) {
 	if got := readFile(t, codexConfig(e)); got != codexOriginal {
 		t.Errorf("codex config not restored byte for byte:\ngot:\n%s\nwant:\n%s", got, codexOriginal)
 	}
+	if _, err := os.Stat(codexProfile(e)); !os.IsNotExist(err) {
+		t.Errorf("codex profile was not removed: %v", err)
+	}
 }
 
 func TestInstallIsIdempotent(t *testing.T) {
 	e := newEnv(t)
 	e.mustRun("install")
 	first := readFile(t, codexConfig(e))
+	firstProfile := readFile(t, codexProfile(e))
 	e.mustRun("install")
 	second := readFile(t, codexConfig(e))
+	secondProfile := readFile(t, codexProfile(e))
 
 	if first != second {
 		t.Errorf("a second install changed the file:\nfirst:\n%s\nsecond:\n%s", first, second)
 	}
+	if firstProfile != secondProfile {
+		t.Errorf("a second install changed the profile:\nfirst:\n%s\nsecond:\n%s", firstProfile, secondProfile)
+	}
 	if n := strings.Count(second, "[model_providers.agentswap]"); n != 1 {
 		t.Errorf("the agentswap block appears %d times, want 1", n)
+	}
+	if n := strings.Count(secondProfile, `model_provider = "agentswap"`); n != 1 {
+		t.Errorf("the profile selector appears %d times, want 1", n)
 	}
 }
 
@@ -93,6 +106,9 @@ func TestInstallDryRunWritesNothing(t *testing.T) {
 	if _, err := os.Stat(codexConfig(e)); !os.IsNotExist(err) {
 		t.Error("--dry-run wrote the codex config")
 	}
+	if _, err := os.Stat(codexProfile(e)); !os.IsNotExist(err) {
+		t.Error("--dry-run wrote the codex profile")
+	}
 }
 
 func TestInstallOnlyOneCLI(t *testing.T) {
@@ -104,6 +120,9 @@ func TestInstallOnlyOneCLI(t *testing.T) {
 	}
 	if _, err := os.Stat(codexConfig(e)); !os.IsNotExist(err) {
 		t.Error("--only claude touched the codex config")
+	}
+	if _, err := os.Stat(codexProfile(e)); !os.IsNotExist(err) {
+		t.Error("--only claude touched the codex profile")
 	}
 }
 
@@ -128,6 +147,21 @@ func TestDoctorOnAWorkingSetup(t *testing.T) {
 		t.Fatalf("doctor exited %d on a healthy setup:\n%s", r.code, r.out())
 	}
 	mustContain(t, r.out(), "Everything checks out", "doctor")
+}
+
+func TestDoctorNoticesAMissingCodexProfileOverlay(t *testing.T) {
+	e := newEnv(t)
+	e.pinAddr()
+	e.pool("only")
+	e.serve()
+	e.mustRun("install")
+	if err := os.Remove(codexProfile(e)); err != nil {
+		t.Fatal(err)
+	}
+
+	r := e.run("doctor")
+	mustContain(t, r.out(), "Codex is not pointed at agentswap", "doctor without Codex profile")
+	mustNotContain(t, r.out(), "Codex is pointed at agentswap", "doctor without Codex profile")
 }
 
 // Most people use one of the two CLIs. Reporting the other as a fault makes the

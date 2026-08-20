@@ -31,6 +31,11 @@ your original account and bypasses the proxy entirely:
 codex --profile agentswap
 ```
 
+If Codex reports that the profile is a legacy `[profiles.agentswap]` table,
+upgrade Codex and rerun `agentswap install`. Current Codex reads the managed
+profile from `$CODEX_HOME/agentswap.config.toml`; agentswap leaves your base
+`config.toml` and unrelated profile files intact.
+
 `agentswap run -- codex ...` adds this for you.
 
 For Claude Code, check that the settings file was actually picked up. Anything

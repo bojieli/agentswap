@@ -45,6 +45,16 @@ repo=$(cd "$(dirname "$0")/.." && pwd -P)
 binary="$acceptance_root/agentswap"
 (cd "$repo" && go build -o "$binary" ./cmd/agentswap)
 
+# Codex targets are required to continue through Agent Swap, not whichever
+# provider happens to be selected in the user's base config. The live harness
+# intentionally does not rewrite real CLI configuration, so verify the profile
+# that `agentswap install` created before spending credits.
+codex_home=${CODEX_HOME:-$HOME/.codex}
+codex_profile="$codex_home/agentswap.config.toml"
+if [[ ! -f $codex_profile ]] || ! rg -q 'model_provider[[:space:]]*=.*agentswap' "$codex_profile"; then
+  fail "Codex is not configured with the managed agentswap profile; run agentswap install --only codex"
+fi
+
 fixture_prompt() {
   local harness=$1 token=$2
   printf '%s' "Create a session-migration acceptance fixture. SOURCE_HARNESS=$harness. Recall token: $token. Create a native two-step plan or todo list: step 1 'Inspect marker' in progress and step 2 'Teleport and continue' pending. Use a file-reading tool to read acceptance-marker.txt and report its exact content. Then use a shell tool to run: ls deliberately-missing-$harness.txt . Preserve and report the expected failure. Update the native plan so step 1 is completed and step 2 remains pending. Do not modify files. Finish with exactly two lines, replacing <marker-from-file> with the value you read: OBSERVED source=$harness token=$token marker=<marker-from-file> missing=deliberately-missing-$harness.txt outcome=failed plan1=completed plan2=pending ; FIXTURE_READY $token"
@@ -228,7 +238,7 @@ run_pair() {
         >"$resume_log" 2>"$logs/$pair.resume.stderr")
       ;;
     codex)
-      (cd "$project" && codex exec resume --json --skip-git-repo-check \
+      (cd "$project" && codex --profile agentswap exec resume --json --skip-git-repo-check \
         "$target_id" "$prompt" </dev/null \
         >"$resume_log" 2>"$logs/$pair.resume.stderr")
       ;;

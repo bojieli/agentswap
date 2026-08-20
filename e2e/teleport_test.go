@@ -228,6 +228,7 @@ func TestTeleportSelectionEnvironmentAndInputValidation(t *testing.T) {
 		{name: "same source and target", args: []string{"teleport", "claude", "claude", "--cwd", project}, want: "source and target agents are the same"},
 		{name: "launch dry run", args: []string{"teleport", "claude", "codex", "--cwd", project, "--launch", "--dry-run"}, want: "--launch cannot be combined"},
 		{name: "Codex profile protected", args: []string{"handoff", "claude", "codex", "--cwd", project, "--profile", "mine"}, want: "always uses --profile agentswap"},
+		{name: "Codex provider protected", args: []string{"handoff", "claude", "codex", "--cwd", project, "-c", `model_provider="openai"`}, want: "always uses the agentswap provider"},
 		{name: "unknown source", args: []string{"teleport", "other", "codex", "--cwd", project}, want: "source: unknown agent"},
 		{name: "unknown target", args: []string{"teleport", "claude", "other", "--cwd", project}, want: "target: unknown agent"},
 		{name: "positional and from", args: []string{"teleport", "claude", "codex", "--from", "kimi", "--cwd", project}, want: "--from cannot be combined"},

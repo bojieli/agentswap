@@ -76,6 +76,9 @@ func cmdConfig(args []string) error {
 	if path, err := install.CodexConfigPath(); err == nil {
 		fmt.Printf("  %-12s %s\n", "codex", describe(path, "not present"))
 	}
+	if path, err := install.CodexProfilePath(); err == nil {
+		fmt.Printf("  %-12s %s\n", "codex profile", describe(path, "not present"))
+	}
 
 	out, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {

@@ -78,6 +78,30 @@ func TestParseHandoffArgsValidatesOwnedAndProtectedFlags(t *testing.T) {
 	}
 }
 
+func TestValidateTargetArgsRejectsCodexProviderOverrides(t *testing.T) {
+	for _, args := range [][]string{
+		{"--oss"},
+		{"--local-provider=ollama"},
+		{"--config", `model_provider="openai"`},
+		{"--config=model_providers.agentswap.base_url=\"https://example.test\""},
+		{"-c", `model_providers={}`},
+		{"-cmodel_provider=\"openai\""},
+	} {
+		if err := validateTargetArgs(session.Codex, args); err == nil || !strings.Contains(err.Error(), "agentswap provider") {
+			t.Errorf("validateTargetArgs(%q) = %v, want agentswap provider error", args, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"--model", "gpt-5.6-sol"},
+		{"--config", `model_reasoning_effort="high"`},
+		{"-cmodel_verbosity=\"low\""},
+	} {
+		if err := validateTargetArgs(session.Codex, args); err != nil {
+			t.Errorf("validateTargetArgs(%q) = %v, want allowed model option", args, err)
+		}
+	}
+}
+
 func TestLaunchTargetPassesExactArgsAndCWD(t *testing.T) {
 	if os.Getenv("AGENTSWAP_TEST_LAUNCH_HELPER") == "1" {
 		launchHelperProcess()

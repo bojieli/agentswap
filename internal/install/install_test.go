@@ -147,6 +147,12 @@ wire_api = "responses"
 	}
 	after, _ := os.ReadFile(path)
 	s := string(after)
+	profilePath := filepath.Join(codexHome, ProfileName+".config.toml")
+	profile, err := os.ReadFile(profilePath)
+	if err != nil {
+		t.Fatalf("read Codex profile: %v", err)
+	}
+	profileText := string(profile)
 
 	// The user's existing provider and top-level keys must survive verbatim:
 	// rewriting model_provider in place is exactly the kind of edit that
@@ -157,8 +163,14 @@ wire_api = "responses"
 	if !strings.Contains(s, "api.krill-ai.net") {
 		t.Error("existing provider block was lost")
 	}
-	if !strings.Contains(s, "[profiles.agentswap]") {
+	if strings.Contains(s, "[profiles.agentswap]") {
+		t.Error("legacy agentswap profile table was added")
+	}
+	if !strings.Contains(profileText, "model_provider = \"agentswap\"") {
 		t.Error("agentswap profile was not added")
+	}
+	if ok, err := CodexProfileUsesAgentSwap(); err != nil || !ok {
+		t.Errorf("CodexProfileUsesAgentSwap = %v, %v; want true", ok, err)
 	}
 
 	if err := UninstallCodex(); err != nil {
@@ -167,6 +179,12 @@ wire_api = "responses"
 	restored, _ := os.ReadFile(path)
 	if string(restored) != original {
 		t.Errorf("uninstall did not restore the file exactly:\n--- got ---\n%s\n--- want ---\n%s", restored, original)
+	}
+	if _, err := os.Stat(profilePath); !os.IsNotExist(err) {
+		t.Errorf("uninstall left the managed profile behind: %v", err)
+	}
+	if ok, err := CodexProfileUsesAgentSwap(); err != nil || ok {
+		t.Errorf("CodexProfileUsesAgentSwap after uninstall = %v, %v; want false", ok, err)
 	}
 }
 
@@ -180,10 +198,141 @@ func TestInstallCodexIsIdempotent(t *testing.T) {
 		}
 	}
 	b, _ := os.ReadFile(filepath.Join(codexHome, "config.toml"))
+	profile, _ := os.ReadFile(filepath.Join(codexHome, ProfileName+".config.toml"))
 	// A duplicated TOML table is a parse error, so repeated installs must
 	// replace rather than accumulate.
-	if n := strings.Count(string(b), "[profiles.agentswap]"); n != 1 {
-		t.Errorf("profile block appears %d times, want 1", n)
+	if n := strings.Count(string(b), "[model_providers.agentswap]"); n != 1 {
+		t.Errorf("provider block appears %d times, want 1", n)
+	}
+	if n := strings.Count(string(profile), "model_provider = \"agentswap\""); n != 1 {
+		t.Errorf("profile selector appears %d times, want 1", n)
+	}
+}
+
+func TestInstallCodexMigratesItsLegacyProfileTable(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	path := filepath.Join(codexHome, "config.toml")
+	legacy := `model = "gpt-5.6-sol"
+
+# >>> agentswap >>>
+# Added by an older agentswap release.
+[model_providers.agentswap]
+name = "agentswap"
+base_url = "http://old.example/openai"
+wire_api = "responses"
+requires_openai_auth = true
+
+[profiles.agentswap]
+model_provider = "agentswap"
+# <<< agentswap <<<
+`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := InstallCodex(addr, false); err != nil {
+		t.Fatalf("migrate install: %v", err)
+	}
+	base, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(base), "[profiles.agentswap]") || strings.Contains(string(base), "old.example") {
+		t.Errorf("legacy Codex profile survived migration:\n%s", base)
+	}
+	if !strings.Contains(string(base), "http://"+addr+"/openai") {
+		t.Errorf("current provider address missing after migration:\n%s", base)
+	}
+	profile, err := os.ReadFile(filepath.Join(codexHome, ProfileName+".config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(profile), `model_provider = "agentswap"`) {
+		t.Errorf("v2 profile missing after migration:\n%s", profile)
+	}
+}
+
+func TestCodexProfilePreservesUserSettingsAndUninstallRestoresThem(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	profilePath := filepath.Join(codexHome, ProfileName+".config.toml")
+	original := "model = \"gpt-5.6-sol\"\nmodel_reasoning_effort = \"high\"\n\n[features]\nweb_search = true\n"
+	if err := os.WriteFile(profilePath, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := InstallCodex(addr, false); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	installed, err := os.ReadFile(profilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{original, `model_provider = "agentswap"`} {
+		if !strings.Contains(string(installed), want) {
+			t.Errorf("installed profile omitted %q:\n%s", want, installed)
+		}
+	}
+	if err := UninstallCodex(); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	restored, err := os.ReadFile(profilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(restored) != original {
+		t.Errorf("profile not restored exactly:\ngot:\n%s\nwant:\n%s", restored, original)
+	}
+}
+
+func TestCodexUninstallPreservesAPreexistingEmptyProfileFile(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	profilePath := filepath.Join(codexHome, ProfileName+".config.toml")
+	if err := os.WriteFile(profilePath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InstallCodex(addr, false); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if err := UninstallCodex(); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	b, err := os.ReadFile(profilePath)
+	if err != nil {
+		t.Fatalf("preexisting empty profile was removed: %v", err)
+	}
+	if len(b) != 0 {
+		t.Errorf("preexisting empty profile gained content: %q", b)
+	}
+}
+
+func TestInstallCodexRefusesUserOwnedAgentSwapProfileProvider(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	configPath := filepath.Join(codexHome, "config.toml")
+	profilePath := filepath.Join(codexHome, ProfileName+".config.toml")
+	configOriginal := "model = \"gpt-5.6-sol\"\n"
+	profileOriginal := "model_provider = \"my-gateway\"\n"
+	if err := os.WriteFile(configPath, []byte(configOriginal), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(profilePath, []byte(profileOriginal), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := InstallCodex(addr, false); err == nil || !strings.Contains(err.Error(), "already selects a Codex provider") {
+		t.Fatalf("install conflict error = %v", err)
+	}
+	for path, want := range map[string]string{configPath: configOriginal, profilePath: profileOriginal} {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != want {
+			t.Errorf("conflicting install changed %s:\ngot %q\nwant %q", path, got, want)
+		}
 	}
 }
 
@@ -204,6 +353,9 @@ func TestDryRunWritesNothing(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(codexHome, "config.toml")); !os.IsNotExist(err) {
 		t.Error("dry run created the codex config file")
+	}
+	if _, err := os.Stat(filepath.Join(codexHome, ProfileName+".config.toml")); !os.IsNotExist(err) {
+		t.Error("dry run created the codex profile file")
 	}
 }
 

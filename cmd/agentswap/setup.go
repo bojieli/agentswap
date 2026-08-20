@@ -30,7 +30,7 @@ func cmdEnv(args []string) error {
 	for k, v := range install.ClaudeEnv(cfg.Addr, cfg.Park.MaxHold.D()) {
 		fmt.Printf("export %s=%q\n", k, v)
 	}
-	fmt.Printf("# Codex reads config.toml, not the environment. Run `agentswap install`,\n")
+	fmt.Printf("# Codex reads config files, not the environment. Run `agentswap install`,\n")
 	fmt.Printf("# then start it with: codex --profile %s\n", install.ProfileName)
 	return nil
 }
@@ -75,7 +75,14 @@ func cmdInstall(args []string) error {
 
 func report(name string, plan *install.Plan, dryRun bool) {
 	verb := map[bool]string{true: "would " + plan.Action, false: plan.Action + "d"}[dryRun]
-	fmt.Printf("%s: %s %s\n", name, verb, plan.Path)
+	paths := plan.Paths
+	if len(paths) == 0 {
+		paths = []string{plan.Path}
+	}
+	fmt.Printf("%s: %s %s\n", name, verb, paths[0])
+	for _, path := range paths[1:] {
+		fmt.Printf("  and %s\n", path)
+	}
 	if dryRun {
 		for _, line := range strings.Split(strings.TrimRight(plan.Preview, "\n"), "\n") {
 			fmt.Printf("    %s\n", line)
@@ -188,8 +195,13 @@ func cmdDoctor(args []string) error {
 	claudeAddr := wiredAddr(claudePath, "/anthropic", addr, cfg.Addr)
 	codexPath, _ := install.CodexConfigPath()
 	codexAddr := wiredAddr(codexPath, "/openai", addr, cfg.Addr)
+	codexProfileOK, _ := install.CodexProfileUsesAgentSwap()
+	codexReadyAddr := codexAddr
+	if !codexProfileOK {
+		codexReadyAddr = ""
+	}
 
-	if claudeAddr == "" && codexAddr == "" {
+	if claudeAddr == "" && codexReadyAddr == "" {
 		check(false, "a CLI is pointed at agentswap", "run `agentswap install`")
 	}
 	reportWiring := func(name, wired, fixOnly string) {
@@ -205,8 +217,8 @@ func cmdDoctor(args []string) error {
 		}
 	}
 	reportWiring("Claude Code", claudeAddr, "claude")
-	reportWiring("Codex", codexAddr, "codex")
-	if codexAddr == addr {
+	reportWiring("Codex", codexReadyAddr, "codex")
+	if codexReadyAddr == addr {
 		// Codex has no equivalent of Claude Code's automatic pickup, so a
 		// correct config still needs the flag at the call site.
 		fmt.Printf("       start Codex with: codex --profile %s\n", install.ProfileName)

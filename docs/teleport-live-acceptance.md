@@ -85,12 +85,15 @@ scripts/teleport-live-acceptance.sh
 ```
 
 The script requires `claude`, `codex`, `kimi`, `opencode`, `go`, `jq`, `rg`,
-and `shasum`. It builds the current `agentswap` binary, isolates OpenCode's
-XDG state in a temporary directory, retains all sanitized logs for inspection,
-and prints the artifact directory and summary path. A failed assertion exits
-non-zero and retains the same artifacts. The retained logs are intentionally
-raw for debugging; do not publish them because native session logs can contain
-conversation content.
+and `shasum`. Before running it, use `agentswap install`, put at least one
+account in the OpenAI lane, and start `agentswap serve`; Codex target resumes
+are deliberately run with `--profile agentswap`. The script verifies that
+profile before spending provider credits. It builds the current `agentswap`
+binary, isolates OpenCode's XDG state in a temporary directory, retains all
+sanitized logs for inspection, and prints the artifact directory and summary
+path. A failed assertion exits non-zero and retains the same artifacts. The
+retained logs are intentionally raw for debugging; do not publish them because
+native session logs can contain conversation content.
 
 The test is an acceptance check for the currently installed CLI versions.
 

@@ -201,9 +201,12 @@ agentswap handoff claude codex --cwd ./project -- --cwd ./target-view
 ```
 
 Because launching is the defining behavior, use `teleport --dry-run` when only
-validation is wanted. Codex target arguments may not contain `--profile` or
-`-p`; Agent Swap unconditionally supplies `--profile agentswap` and refuses an
-override rather than allowing a handoff to bypass the managed provider.
+validation is wanted. Codex target arguments may not replace the profile or
+provider through `--profile`, `-p`, `--oss`, `--local-provider`, or a
+`model_provider`/`model_providers` config override. Agent Swap unconditionally
+supplies `--profile agentswap` and refuses provider overrides rather than
+allowing a handoff to bypass the managed provider. Model, approval, sandbox,
+reasoning, and prompt options remain pass-through arguments.
 
 Run it from the project directory. Discovery compares canonical filesystem
 paths, including symlink equivalence, but deliberately does not fall back to
@@ -288,8 +291,9 @@ model when needed.
 
 ### `agentswap install`
 Points Claude Code and Codex at agentswap: an `env` block merged key by key
-into the Claude settings, and an additive, delimited block in the Codex config.
-Both are backed up first.
+into the Claude settings, an additive provider block in Codex's base config,
+and an `agentswap.config.toml` profile overlay that selects that provider.
+Both Codex files are backed up before they are changed.
 
 | Flag | Meaning |
 | --- | --- |
@@ -313,7 +317,9 @@ eval "$(agentswap env)"
 
 Useful for a one-off shell, a CI job, or trying agentswap without changing
 anything. Codex reads a config file rather than the environment, so it still
-needs `install` and `--profile agentswap`.
+needs `install` and `--profile agentswap`. Modern Codex loads that profile from
+`$CODEX_HOME/agentswap.config.toml`; older releases that only understand the
+legacy `[profiles.agentswap]` table should be upgraded before using handoff.
 
 ### `agentswap version`
 Prints the version. Release builds carry the tag; a build from source says

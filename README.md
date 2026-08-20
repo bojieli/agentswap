@@ -185,9 +185,10 @@ the named source is selected by default; `--session` selects an exact source id.
 When Codex is the target, the generated and launched command always includes
 `--profile agentswap`, so the continued session stays on the managed provider.
 Other `handoff` arguments are passed unchanged to the target CLI, allowing its
-normal model, permission, sandbox, prompt, and UI options. Agent Swap consumes
-only `--session` and `--cwd`; use `--` first if the target itself needs an
-option with either of those names.
+normal model, permission, sandbox, prompt, and UI options. Codex profile and
+provider overrides are the exception: they are refused so the managed route
+cannot be silently bypassed. Agent Swap consumes only `--session` and `--cwd`;
+use `--` first if the target itself needs an option with either of those names.
 
 Teleport translates the recorded structure — messages, recorded reasoning,
 tool calls, call ids, JSON inputs, results and errors, plans, timestamps, and
@@ -298,7 +299,8 @@ permitted is your call about your own accounts.
   stream rather than in headers, so that lane learns an account is spent from
   the 429.
 - Codex needs `--profile agentswap`; it has no equivalent of Claude Code's
-  automatic settings pickup.
+  automatic settings pickup. `agentswap install` creates the current
+  `$CODEX_HOME/agentswap.config.toml` profile overlay for it.
 - Automatic resume needs `agentswap run`. A bare `claude` gets the 503 and
   stops, because nothing is supervising it.
 - agentswap has no OAuth flow of its own, so `agentswap login` guides a sign-in

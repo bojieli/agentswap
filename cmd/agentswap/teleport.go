@@ -68,8 +68,10 @@ func cmdTransfer(args []string, handoff bool) error {
 		fmt.Fprintln(os.Stderr, "  --cwd path     project directory (default: current directory)")
 		fmt.Fprintln(os.Stderr, "  --session id   exact source session id (default: newest source session)")
 		if handoff {
-			fmt.Fprintln(os.Stderr, "\nEvery other argument is passed unchanged to the target CLI. Use -- before")
-			fmt.Fprintln(os.Stderr, "target arguments when the target itself needs a --cwd or --session option.")
+			fmt.Fprintln(os.Stderr, "\nOther arguments are passed unchanged to the target CLI. Codex profile/provider")
+			fmt.Fprintln(os.Stderr, "overrides are refused so its managed agentswap provider cannot be bypassed.")
+			fmt.Fprintln(os.Stderr, "Use -- before target arguments when the target itself needs a --cwd or")
+			fmt.Fprintln(os.Stderr, "--session option.")
 		} else {
 			fmt.Fprintln(os.Stderr, "  --dry-run      validate and show the migration without writing it")
 			fmt.Fprintln(os.Stderr, "\nDeprecated compatibility flags: --from, --latest, --launch")
@@ -250,10 +252,30 @@ func validateTargetArgs(target session.Agent, args []string) error {
 	if target != session.Codex {
 		return nil
 	}
-	for _, arg := range args {
+	for i, arg := range args {
 		name, _, _ := strings.Cut(arg, "=")
 		if name == "--profile" || name == "-p" || strings.HasPrefix(arg, "-p=") || strings.HasPrefix(arg, "-p") && len(arg) > 2 {
 			return errors.New("Codex handoff always uses --profile agentswap; remove the target --profile option")
+		}
+		if name == "--oss" || name == "--local-provider" {
+			return errors.New("Codex handoff always uses the agentswap provider; remove the target provider option")
+		}
+		var configValue string
+		switch {
+		case name == "--config" || name == "-c":
+			if _, value, hasValue := strings.Cut(arg, "="); hasValue {
+				configValue = value
+			} else if i+1 < len(args) {
+				configValue = args[i+1]
+			}
+		case strings.HasPrefix(arg, "-c") && len(arg) > 2:
+			configValue = strings.TrimPrefix(arg[2:], "=")
+		}
+		if key, _, ok := strings.Cut(configValue, "="); ok {
+			key = strings.TrimSpace(key)
+			if key == "model_provider" || key == "model_providers" || strings.HasPrefix(key, "model_providers.") {
+				return errors.New("Codex handoff always uses the agentswap provider; remove the target model-provider config override")
+			}
 		}
 	}
 	return nil

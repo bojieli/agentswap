@@ -1,8 +1,9 @@
 // Package install wires Claude Code and Codex to a running agentswap daemon.
 //
 // Both edits are reversible and neither replaces an existing configuration:
-// the Claude settings file is merged key by key, and the Codex config gains an
-// additive, delimited block. A timestamped backup is written before either.
+// the Claude settings file is merged key by key, and Codex gets an additive,
+// delimited provider block plus a small profile overlay. A timestamped backup
+// is written before either file is changed.
 package install
 
 import (
@@ -11,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -23,6 +25,10 @@ const (
 
 	// ProfileName is the Codex profile and provider id agentswap registers.
 	ProfileName = "agentswap"
+
+	profileBeginMarker = "# >>> agentswap profile >>>"
+	profileEndMarker   = "# <<< agentswap profile <<<"
+	profileCreatedFile = "# agentswap-created-profile-file"
 )
 
 // AuthTokenPlaceholder is what Claude Code is told to send. The proxy discards
@@ -56,7 +62,8 @@ func clientTimeout(maxHold time.Duration) time.Duration {
 // show the user exactly what will change.
 type Plan struct {
 	Path    string
-	Action  string // "create" or "update"
+	Paths   []string // Path followed by any related files changed by the plan.
+	Action  string   // "create" or "update"
 	Preview string
 }
 
@@ -88,14 +95,53 @@ func ClaudeConfigDir() (string, error) {
 
 // CodexConfigPath returns the Codex config file.
 func CodexConfigPath() (string, error) {
+	home, err := codexHome()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "config.toml"), nil
+}
+
+// CodexProfilePath returns the v2 profile overlay used by modern Codex
+// releases. Keeping this separate from config.toml avoids the legacy
+// [profiles.<name>] table, which current Codex rejects when --profile is used.
+func CodexProfilePath() (string, error) {
+	home, err := codexHome()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ProfileName+".config.toml"), nil
+}
+
+func codexHome() (string, error) {
 	if h := os.Getenv("CODEX_HOME"); h != "" {
-		return filepath.Join(h, "config.toml"), nil
+		return h, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".codex", "config.toml"), nil
+	return filepath.Join(home, ".codex"), nil
+}
+
+// CodexProfileUsesAgentSwap reports whether the profile selected by
+// `--profile agentswap` actually selects Agent Swap's provider. Doctor uses
+// this alongside the base provider URL: either half without the other would
+// make a handoff bypass the proxy or fail at launch time.
+func CodexProfileUsesAgentSwap() (bool, error) {
+	path, err := CodexProfilePath()
+	if err != nil {
+		return false, err
+	}
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	provider, ok := topLevelTOMLString(string(b), "model_provider")
+	return ok && provider == ProfileName, nil
 }
 
 // ClaudeEnv is the environment block agentswap manages inside settings.json.
@@ -213,9 +259,10 @@ func UninstallClaude(addr string) error {
 	return os.WriteFile(path, append(out, '\n'), 0o600)
 }
 
-// CodexBlock is the additive configuration agentswap appends. It registers a
-// provider and a profile rather than changing model_provider at top level,
-// because appending is safe and rewriting an existing key is not.
+// CodexBlock is the additive provider configuration agentswap appends to the
+// base Codex config. The profile selector itself lives in CodexProfileBlock;
+// modern Codex reads profiles from <name>.config.toml and rejects the old
+// [profiles.<name>] table.
 func CodexBlock(addr string) string {
 	var b strings.Builder
 	b.WriteString(beginMarker + "\n")
@@ -226,15 +273,33 @@ func CodexBlock(addr string) string {
 	fmt.Fprintf(&b, "base_url = \"http://%s/openai\"\n", addr)
 	b.WriteString("wire_api = \"responses\"\n")
 	b.WriteString("requires_openai_auth = true\n\n")
-	fmt.Fprintf(&b, "[profiles.%s]\n", ProfileName)
-	fmt.Fprintf(&b, "model_provider = %q\n", ProfileName)
 	b.WriteString(endMarker + "\n")
+	return b.String()
+}
+
+// codexProfileBlock is the complete managed portion of the v2 profile file.
+// It deliberately contains only the provider selector: model, sandbox, and
+// other options remain inherited from the user's base config unless they add
+// them to this profile themselves.
+func codexProfileBlock(createdFile bool) string {
+	var b strings.Builder
+	b.WriteString(profileBeginMarker + "\n")
+	b.WriteString("# Added by `agentswap install`. Remove with `agentswap uninstall`.\n")
+	if createdFile {
+		b.WriteString(profileCreatedFile + "\n")
+	}
+	b.WriteString("model_provider = \"" + ProfileName + "\"\n")
+	b.WriteString(profileEndMarker + "\n")
 	return b.String()
 }
 
 // InstallCodex appends (or refreshes) agentswap's block in the Codex config.
 func InstallCodex(addr string, dryRun bool) (*Plan, error) {
 	path, err := CodexConfigPath()
+	if err != nil {
+		return nil, err
+	}
+	profilePath, err := CodexProfilePath()
 	if err != nil {
 		return nil, err
 	}
@@ -249,6 +314,12 @@ func InstallCodex(addr string, dryRun bool) (*Plan, error) {
 	}
 
 	body := stripBlock(existing)
+	if hasTOMLTable(body, "model_providers."+ProfileName) {
+		return nil, fmt.Errorf("%s already defines the %q Codex provider; remove or rename that block before running agentswap install", path, ProfileName)
+	}
+	if hasTOMLTable(body, "profiles."+ProfileName) || hasTopLevelTOMLKey(body, "profile") {
+		return nil, fmt.Errorf("%s contains a user-owned legacy Codex profile selector; migrate it to a <name>.config.toml file before running agentswap install", path)
+	}
 	if body != "" && !strings.HasSuffix(body, "\n") {
 		body += "\n"
 	}
@@ -257,40 +328,96 @@ func InstallCodex(addr string, dryRun bool) (*Plan, error) {
 	}
 	out := body + CodexBlock(addr)
 
-	plan := &Plan{Path: path, Action: action, Preview: CodexBlock(addr)}
+	profileExisting := ""
+	profileExisted := false
+	if b, err := os.ReadFile(profilePath); err == nil {
+		profileExisting = string(b)
+		profileExisted = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("read %s: %w", profilePath, err)
+	}
+	profileBody := stripProfileBlock(profileExisting)
+	if profileBody != "" && hasTopLevelTOMLKey(profileBody, "model_provider") {
+		return nil, fmt.Errorf("%s already selects a Codex provider; move that configuration before installing the %s profile", profilePath, ProfileName)
+	}
+	// A TOML document cannot return to its root after entering a table, so the
+	// managed top-level selector must precede user-owned tables. Prepending also
+	// lets uninstall retain the user's file byte for byte.
+	profileBlock := codexProfileBlock(!profileExisted || strings.Contains(profileExisting, profileCreatedFile))
+	profileOut := profileBlock
+	if profileBody != "" {
+		profileOut += "\n" + profileBody
+	}
+
+	plan := &Plan{Path: path, Paths: []string{path, profilePath}, Action: action,
+		Preview: CodexBlock(addr) + "\n# " + profilePath + "\n" + profileBlock}
 	if dryRun {
 		return plan, nil
 	}
 	if err := backup(path); err != nil {
 		return nil, err
 	}
+	if err := backup(profilePath); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	return plan, os.WriteFile(path, []byte(out), 0o600)
+	if err := os.WriteFile(path, []byte(out), 0o600); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(profilePath, []byte(profileOut), 0o600); err != nil {
+		return nil, err
+	}
+	return plan, nil
 }
 
-// UninstallCodex removes agentswap's delimited block, leaving the rest as is.
+// UninstallCodex removes agentswap's delimited provider and profile blocks,
+// leaving user-owned configuration as is.
 func UninstallCodex() error {
 	path, err := CodexConfigPath()
 	if err != nil {
 		return err
 	}
 	b, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err == nil {
+		out := stripBlock(string(b))
+		if out != string(b) {
+			if err := backup(path); err != nil {
+				return err
+			}
+			if err := os.WriteFile(path, []byte(out), 0o600); err != nil {
+				return err
+			}
+		}
+	}
+
+	profilePath, err := CodexProfilePath()
+	if err != nil {
+		return err
+	}
+	pb, err := os.ReadFile(profilePath)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	out := stripBlock(string(b))
-	if out == string(b) {
+	removeCreatedFile := strings.Contains(string(pb), profileCreatedFile)
+	profileOut := stripProfileBlock(string(pb))
+	if profileOut == string(pb) {
 		return nil
 	}
-	if err := backup(path); err != nil {
+	if err := backup(profilePath); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(out), 0o600)
+	if removeCreatedFile && strings.TrimSpace(profileOut) == "" {
+		return os.Remove(profilePath)
+	}
+	return os.WriteFile(profilePath, []byte(profileOut), 0o600)
 }
 
 // stripBlock removes the delimited agentswap region, if present, restoring the
@@ -318,6 +445,83 @@ func stripBlock(s string) string {
 		out += "\n"
 	}
 	return out
+}
+
+func stripProfileBlock(s string) string {
+	start := strings.Index(s, profileBeginMarker)
+	if start < 0 {
+		return s
+	}
+	rest := s[start:]
+	end := strings.Index(rest, profileEndMarker)
+	if end < 0 {
+		// Match stripBlock's fail-safe behavior for an interrupted write.
+		return strings.TrimSuffix(s[:start], "\n")
+	}
+	end += start + len(profileEndMarker)
+	if strings.HasPrefix(s[end:], "\r\n") {
+		end += 2
+	} else if strings.HasPrefix(s[end:], "\n") {
+		end++
+	}
+	prefix, suffix := s[:start], s[end:]
+	if start == 0 {
+		// Drop the one blank line InstallCodex inserts between its block and
+		// the original file, without normalizing any user-owned bytes.
+		suffix = strings.TrimPrefix(suffix, "\n")
+	} else {
+		prefix = strings.TrimSuffix(prefix, "\n")
+	}
+	return prefix + suffix
+}
+
+// hasTOMLTable and hasTopLevelTOMLKey intentionally handle only the simple
+// declarations agentswap owns. They are conflict guards, not a TOML parser;
+// comments and whitespace around the declaration are ignored.
+func hasTOMLTable(body, table string) bool {
+	want := "[" + table + "]"
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
+		if line == want {
+			return true
+		}
+	}
+	return false
+}
+
+func hasTopLevelTOMLKey(body, key string) bool {
+	_, ok := topLevelTOMLValue(body, key)
+	return ok
+}
+
+func topLevelTOMLString(body, key string) (string, bool) {
+	value, ok := topLevelTOMLValue(body, key)
+	if !ok {
+		return "", false
+	}
+	if unquoted, err := strconv.Unquote(value); err == nil {
+		return unquoted, true
+	}
+	if len(value) >= 2 && value[0] == '\'' && value[len(value)-1] == '\'' {
+		return value[1 : len(value)-1], true
+	}
+	return "", false
+}
+
+func topLevelTOMLValue(body, key string) (string, bool) {
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
+		if strings.HasPrefix(line, "[") {
+			// TOML keys after a table header belong to that table; root keys
+			// cannot resume later in the document.
+			return "", false
+		}
+		if strings.HasPrefix(line, key) && strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(line, key)), "=") {
+			rest := strings.TrimSpace(strings.TrimPrefix(line, key))
+			return strings.TrimSpace(strings.TrimPrefix(rest, "=")), true
+		}
+	}
+	return "", false
 }
 
 // backup copies path alongside itself before it is modified. Losing a hand
