@@ -19,7 +19,9 @@ version moves for anything that changes behaviour.
   temporarily available with deprecation warnings.
 - **Every generated Codex continuation uses the Agent Swap profile.** Codex
   targets now print and launch `codex resume ID --profile agentswap`, preventing
-  a handoff from silently returning to an unmanaged provider.
+  a handoff from silently returning to an unmanaged provider. The generated
+  rollout's `session_meta.model_provider` is aligned to the same profile so
+  Codex's resume-time metadata cannot override that routing choice.
 
 ### Fixed
 

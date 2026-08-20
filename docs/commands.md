@@ -242,10 +242,11 @@ The target commands are `claude --resume ID`,
 Agent Swap always supplies its own profile so the continued target cannot
 silently bypass the managed provider.
 
-Codex target rollouts record the top-level `model_provider` from the target's
-`CODEX_HOME/config.toml` (usually `~/.codex/config.toml`) so `codex resume ID`
-retains valid native metadata. The generated resume command additionally and
-unconditionally applies the `agentswap` profile.
+Codex target rollouts record `model_provider = "agentswap"` in their
+`session_meta` because Codex uses that field during resume. This keeps the
+native metadata aligned with the generated command's unconditional
+`--profile agentswap`; a user's unrelated top-level provider cannot make a
+handoff silently bypass the managed provider.
 
 Teleport preserves recorded messages and message order, text, recorded
 reasoning, tool names/call ids/JSON inputs/results/error state, plan revisions,

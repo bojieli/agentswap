@@ -292,13 +292,13 @@ func TestCodexRoundTrip(t *testing.T) {
 	assertRoundTrip(t, adapter, candidates[0])
 }
 
-func TestCodexWriterUsesConfiguredModelProvider(t *testing.T) {
+func TestCodexWriterUsesAgentSwapProvider(t *testing.T) {
 	isolatedHomes(t)
 	cwd := t.TempDir()
 	if err := os.MkdirAll(codexRoot(), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	config := "model_provider = 'krill' # preserve the user's default provider\n[model_providers.krill]\nbase_url = 'https://example.test/v1'\n"
+	config := "model_provider = 'krill' # the base provider must not override a handoff\n[model_providers.krill]\nbase_url = 'https://example.test/v1'\n"
 	if err := os.WriteFile(filepath.Join(codexRoot(), "config.toml"), []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -318,8 +318,8 @@ func TestCodexWriterUsesConfiguredModelProvider(t *testing.T) {
 	if err := json.NewDecoder(first).Decode(&record); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := record.Payload["model_provider"].(string); got != "krill" {
-		t.Fatalf("teleported model provider = %q, want krill", got)
+	if got, _ := record.Payload["model_provider"].(string); got != "agentswap" {
+		t.Fatalf("teleported model provider = %q, want agentswap", got)
 	}
 	wantResume := []string{"codex", "resume", result.ID, "--profile", "agentswap"}
 	if !reflect.DeepEqual(result.Resume, wantResume) {

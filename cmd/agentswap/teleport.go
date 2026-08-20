@@ -251,9 +251,6 @@ func validateTargetArgs(target session.Agent, args []string) error {
 		return nil
 	}
 	for _, arg := range args {
-		if arg == "--" {
-			break
-		}
 		name, _, _ := strings.Cut(arg, "=")
 		if name == "--profile" || name == "-p" || strings.HasPrefix(arg, "-p=") || strings.HasPrefix(arg, "-p") && len(arg) > 2 {
 			return errors.New("Codex handoff always uses --profile agentswap; remove the target --profile option")

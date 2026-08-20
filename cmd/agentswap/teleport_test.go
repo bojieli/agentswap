@@ -73,8 +73,8 @@ func TestParseHandoffArgsValidatesOwnedAndProtectedFlags(t *testing.T) {
 			t.Fatalf("Claude target rejected passthrough args %q: %v", args, err)
 		}
 	}
-	if err := validateTargetArgs(session.Codex, []string{"--", "--profile", "literal prompt text"}); err != nil {
-		t.Fatalf("Codex target separator did not protect literal prompt args: %v", err)
+	if err := validateTargetArgs(session.Codex, []string{"--", "--profile", "literal prompt text"}); err == nil {
+		t.Fatal("Codex target profile override after the separator was accepted")
 	}
 }
 
