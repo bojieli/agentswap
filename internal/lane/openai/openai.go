@@ -198,19 +198,20 @@ func parseError(body []byte) errorBody {
 	return e
 }
 
-// planExhausted lists the error codes that mean "this account is out of
-// quota", as opposed to "you are going too fast".
-var planExhausted = map[string]bool{
-	"usage_limit_reached":                  true,
-	"usage_limit_exceeded":                 true,
-	"workspace_owner_usage_limit_reached":  true,
-	"workspace_member_usage_limit_reached": true,
-	"workspace_member_credits_depleted":    true,
-	"insufficient_quota":                   true,
-}
-
 // Classify decides what to do with a response.
 func (*Lane) Classify(resp *http.Response, body []byte, cfg config.Retry, now time.Time) lane.Outcome {
+	// A 2xx status line is a claim, not proof: a gateway can deliver the
+	// failure in-band, as a JSON error envelope or a standard terminal event
+	// ("error", "response.failed") at the head of the stream. Nothing has
+	// reached the client yet, so these classify exactly like their
+	// HTTP-status equivalents.
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		if f, ok := lane.ParseInBandError(body); ok {
+			return lane.ClassifyInBand(f, cfg, now)
+		}
+		return lane.Outcome{Action: lane.ActionRelay}
+	}
+
 	e := parseError(body)
 	code := firstNonEmpty(e.Error.Code, e.Error.Type, e.Type)
 
@@ -219,9 +220,6 @@ func (*Lane) Classify(resp *http.Response, body []byte, cfg config.Retry, now ti
 	}
 
 	switch {
-	case resp.StatusCode >= 200 && resp.StatusCode < 300:
-		return lane.Outcome{Action: lane.ActionRelay}
-
 	case resp.StatusCode >= 300 && resp.StatusCode < 400:
 		// Handed straight back. Following it ourselves would send the pool's
 		// credential to a host nobody configured.
@@ -267,7 +265,7 @@ func classify429(resp *http.Response, e errorBody, code string, now time.Time, c
 	resetIn := firstPositive(e.Error.ResetsInSeconds, e.Error.ResetAfterSecond, e.ResetsInSeconds)
 
 	// A named plan-exhaustion code is decisive regardless of timing.
-	if planExhausted[code] || strings.Contains(reachedType, "usage") || strings.Contains(reachedType, "plan") {
+	if lane.IsPlanExhausted(code) || strings.Contains(reachedType, "usage") || strings.Contains(reachedType, "plan") {
 		at := now.Add(5 * time.Hour)
 		if resetIn > 0 {
 			at = now.Add(seconds(resetIn))

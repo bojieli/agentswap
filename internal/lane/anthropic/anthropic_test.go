@@ -135,6 +135,35 @@ func TestClassify(t *testing.T) {
 			resp: resp(404, nil),
 			want: lane.ActionFatal,
 		},
+		{
+			// A gateway can answer an overload in-band: a 200 whose first
+			// stream event is a standard terminal error. Nothing has reached
+			// the client, so it classifies exactly like a 529.
+			name:     "in-stream overloaded_error on a 200 retries the same account",
+			resp:     resp(200, nil),
+			body:     "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n",
+			want:     lane.ActionRetrySame,
+			overload: true,
+		},
+		{
+			name:        "in-stream rate limit without timing rotates on the conservative guess",
+			resp:        resp(200, nil),
+			body:        "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\"}}\n\n",
+			want:        lane.ActionRotate,
+			wantResetIn: 5 * time.Hour,
+		},
+		{
+			name: "in-stream auth refusal refreshes the credential",
+			resp: resp(200, nil),
+			body: "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"bad token\"}}\n\n",
+			want: lane.ActionRefreshAuth,
+		},
+		{
+			name: "a healthy message_start relays",
+			resp: resp(200, nil),
+			body: "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\"}}\n\n",
+			want: lane.ActionRelay,
+		},
 	}
 
 	var l Lane

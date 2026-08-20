@@ -149,6 +149,40 @@ func TestOverloadIsRetriedNotSurfaced(t *testing.T) {
 	}
 }
 
+// A gateway can deliver the overload in-band: a 200 whose first stream event
+// is a standard terminal error, which is how Krill AI reported it. The status
+// line lying is no reason to surface it — nothing has reached the client yet,
+// so this must be absorbed exactly like the 529 above.
+func TestInBandOverloadIsRetriedNotSurfaced(t *testing.T) {
+	e := newEnv(t)
+	e.pool("only")
+	var calls int
+	var mu sync.Mutex
+	e.upstream.handle(func(w http.ResponseWriter, _ *http.Request, _ recorded) {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		if n < 3 {
+			_, _ = io.WriteString(w, "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"service_unavailable_error\",\"code\":\"server_is_overloaded\",\"message\":\"overloaded\"}}\n\n")
+			return
+		}
+		_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\"}\n\n")
+	})
+	d := e.serve()
+
+	resp, body := d.post(t, "/anthropic/v1/messages", `{"model":"claude"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s: in-band overload should be absorbed", resp.StatusCode, body)
+	}
+	mustNotContain(t, body, "server_is_overloaded", "client-visible body")
+	mustContain(t, body, "message_start", "client-visible body")
+	if len(e.upstream.seen()) < 3 {
+		t.Errorf("upstream saw %d requests, want the retries", len(e.upstream.seen()))
+	}
+}
+
 // When everything is spent the request waits rather than failing, and the
 // client sees only the eventual success.
 func TestParkingWaitsForQuotaAndThenSucceeds(t *testing.T) {

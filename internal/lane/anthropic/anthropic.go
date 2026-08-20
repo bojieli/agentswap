@@ -283,6 +283,17 @@ func errorType(body []byte) string {
 
 // Classify decides what to do with a response.
 func (*Lane) Classify(resp *http.Response, body []byte, cfg config.Retry, now time.Time) lane.Outcome {
+	// A 2xx status line is a claim, not proof: a gateway can deliver the
+	// failure in-band, as a JSON error envelope or a standard terminal event
+	// ("error") at the head of the stream. Nothing has reached the client
+	// yet, so these classify exactly like their HTTP-status equivalents.
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		if f, ok := lane.ParseInBandError(body); ok {
+			return lane.ClassifyInBand(f, cfg, now)
+		}
+		return lane.Outcome{Action: lane.ActionRelay}
+	}
+
 	etype := errorType(body)
 
 	// An overloaded upstream sometimes arrives dressed as a 500 rather than a
@@ -296,9 +307,6 @@ func (*Lane) Classify(resp *http.Response, body []byte, cfg config.Retry, now ti
 	}
 
 	switch {
-	case resp.StatusCode >= 200 && resp.StatusCode < 300:
-		return lane.Outcome{Action: lane.ActionRelay}
-
 	case resp.StatusCode >= 300 && resp.StatusCode < 400:
 		// Handed straight back. Following it ourselves would send the pool's
 		// credential to a host nobody configured.

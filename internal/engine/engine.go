@@ -24,6 +24,11 @@ import (
 // Error envelopes are small; anything larger is not one.
 const errorBodyLimit = 64 << 10
 
+// headSampleLimit caps how much of a 2xx body is buffered to prove it carries
+// content rather than an in-band failure. A terminal stream event or error
+// envelope is far smaller than this.
+const headSampleLimit = 8 << 10
+
 // ErrNoAccounts means the lane has no enabled accounts at all.
 var ErrNoAccounts = errors.New("no accounts configured for this lane")
 
@@ -230,24 +235,50 @@ func (e *Engine) Execute(ctx context.Context, laneID store.LaneID, req *http.Req
 
 		e.observe(ln, acct, resp)
 
-		var errBody []byte
-		if resp.StatusCode >= 300 {
-			errBody, _ = io.ReadAll(io.LimitReader(resp.Body, errorBodyLimit))
+		// A 2xx status line is a claim, not proof: some upstreams deliver a
+		// terminal failure in-band — a JSON error envelope, or a standard
+		// terminal event at the head of an event stream. Sample the head so
+		// the lane can classify those exactly like their HTTP-status
+		// equivalents, which is safe precisely because nothing has reached
+		// the client yet.
+		var sample []byte
+		sampled := resp.StatusCode >= 200 && resp.StatusCode < 300
+		if sampled {
+			sample = readHead(resp.Body)
+		} else {
+			sample, _ = io.ReadAll(io.LimitReader(resp.Body, errorBodyLimit))
 			_ = resp.Body.Close()
 		}
 
-		outcome := ln.Classify(resp, errBody, e.cfg.Retry, now)
+		outcome := ln.Classify(resp, sample, e.cfg.Retry, now)
 
 		switch outcome.Action {
 		case lane.ActionRelay:
+			if len(sample) > 0 {
+				resp.Body = prefixBody(sample, resp.Body)
+			}
 			e.markSuccess(acct, convKey)
 			return &Result{Response: resp, Account: acct, Attempts: attempts}, nil
 
 		case lane.ActionFatal:
-			// Hand the client its own error back, body included.
-			resp.Body = io.NopCloser(bytes.NewReader(errBody))
+			// Hand the client its own error back, body included. An in-band
+			// failure on a 2xx is relayed as the standard event it arrived
+			// as, which the client understands natively.
+			if sampled {
+				resp.Body = prefixBody(sample, resp.Body)
+			} else {
+				resp.Body = io.NopCloser(bytes.NewReader(sample))
+			}
 			return &Result{Response: resp, Account: acct, Attempts: attempts}, nil
+		}
 
+		// Every remaining action retries with a fresh request, so this
+		// response is dead weight; closing it returns the connection.
+		if sampled {
+			_ = resp.Body.Close()
+		}
+
+		switch outcome.Action {
 		case lane.ActionRefreshAuth:
 			// A key is not a token: there is no exchange that turns a refused
 			// one into a working one. Attempting it produced an error about

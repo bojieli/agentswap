@@ -162,9 +162,16 @@ headers, so that lane learns an account is spent from the 429.
 
 ## A stream fails partway through
 
-Cannot be retried transparently, and agentswap does not pretend otherwise. Once
-bytes have reached the client, replaying the request would duplicate output.
-Those errors reach the CLI, which will usually offer to continue.
+Once bytes have reached the client, a failure cannot be retried transparently,
+and agentswap does not pretend otherwise: replaying the request would
+duplicate output. Those errors reach the CLI, which will usually offer to
+continue.
+
+A failure announced *before* any content is a different matter. Some gateways
+report an overload as a standard terminal event (`error`, `response.failed`)
+at the head of an otherwise-200 stream rather than as a status code. Nothing
+has reached the client at that point, so agentswap classifies it exactly like
+its HTTP-status equivalent and retries or rotates invisibly.
 
 ## The daemon stops when I close the terminal
 

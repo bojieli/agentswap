@@ -454,3 +454,89 @@ func TestContextCancellationStopsRetrying(t *testing.T) {
 }
 
 var _ = fmt.Sprintf
+
+// An overload delivered in-band on a 200 — a standard terminal stream event
+// instead of a status code — must be absorbed exactly like a 529.
+func TestInBandOverloadRetriesUntilSuccess(t *testing.T) {
+	var n int
+	const success = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\"}}\n\n"
+	h := newHarness(t, []string{"a"}, func(_ string, w http.ResponseWriter, _ *http.Request) {
+		n++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if n < 3 {
+			_, _ = io.WriteString(w, "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n")
+			return
+		}
+		_, _ = io.WriteString(w, success)
+	})
+
+	res, err := run(t, h, `{"model":"claude","messages":[]}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	defer res.Response.Body.Close()
+
+	if res.Response.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", res.Response.StatusCode)
+	}
+	if res.Attempts != 3 {
+		t.Errorf("attempts = %d, want 3", res.Attempts)
+	}
+	// The same backoff schedule a 529 would have produced: 1s, 2s.
+	if got, want := h.waiter.total(), 3*time.Second; got != want {
+		t.Errorf("total wait = %v, want %v", got, want)
+	}
+	body, _ := io.ReadAll(res.Response.Body)
+	if string(body) != success {
+		t.Errorf("body = %q, want %q", body, success)
+	}
+}
+
+// Classification peeks at the head of a healthy stream; the relay must not
+// lose a byte of it.
+func TestHealthyStreamRelaysByteForByte(t *testing.T) {
+	const payload = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"hi\"}}\n\n"
+	h := newHarness(t, []string{"a"}, func(_ string, w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, payload)
+	})
+
+	res, err := run(t, h, `{"model":"claude","messages":[]}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	defer res.Response.Body.Close()
+
+	body, _ := io.ReadAll(res.Response.Body)
+	if string(body) != payload {
+		t.Errorf("body = %q, want byte-for-byte %q", body, payload)
+	}
+}
+
+// An in-band failure the client is responsible for passes through untouched —
+// same status, same bytes — and no other account is burned on it.
+func TestInBandFatalPassesThroughWithoutRotating(t *testing.T) {
+	const payload = "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"bad model\"}}\n\n"
+	h := newHarness(t, []string{"a", "b"}, func(_ string, w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, payload)
+	})
+
+	res, err := run(t, h, `{"model":"nope"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	defer res.Response.Body.Close()
+
+	if res.Response.StatusCode != 200 {
+		t.Errorf("status = %d, want 200", res.Response.StatusCode)
+	}
+	if got := h.attempts(); len(got) != 1 {
+		t.Errorf("attempts = %v, want exactly one", got)
+	}
+	body, _ := io.ReadAll(res.Response.Body)
+	if string(body) != payload {
+		t.Errorf("body = %q, want byte-for-byte %q", body, payload)
+	}
+}

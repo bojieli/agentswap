@@ -41,6 +41,18 @@ version moves for anything that changes behaviour.
 
 ### Fixed
 
+- **A failure delivered inside a successful response was relayed instead of
+  absorbed.** Some gateways — Krill AI among them — report an overload as a
+  200 whose first stream event is a standard terminal error (`error` or
+  `response.failed`), where the official upstreams use a 429, 529, or 5xx.
+  The engine only classified error statuses, so the failure passed straight
+  to the client even though nothing had reached it yet and a retry was safe.
+  The engine now samples the head of every 2xx body, and both lanes classify
+  the standard in-band events and error types exactly like their HTTP-status
+  equivalents: an overload retries in place, quota exhaustion rotates, a
+  refused credential refreshes, and anything else is handed back
+  byte-for-byte.
+
 - **Claude sessions could fail when a later event changed directories.** A
   transcript may legitimately record a process CWD outside its project root;
   event-level CWD metadata is now tolerated during teleport instead of being

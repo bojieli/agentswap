@@ -67,7 +67,13 @@ client error that would fail identically anywhere. Everything else is absorbed:
 
 3. **Classify.** The lane turns a response into one of five actions. This is
    where the three failure modes get separated, which is the hard part: they
-   all arrive as a 429 or a 5xx and each wants the opposite response.
+   usually arrive as a 429 or a 5xx, and each wants the opposite response.
+   But a status line is only a claim — a gateway can deliver the failure
+   in-band, as a standard terminal event (`error`, `response.failed`) at the
+   head of a 200's stream. The engine samples that head before committing to
+   the relay, and an in-band failure classifies exactly like its status-code
+   equivalent, which is safe precisely because nothing has reached the client
+   yet.
 
    | Action | When | Effect |
    | --- | --- | --- |

@@ -101,6 +101,61 @@ func TestClassify(t *testing.T) {
 			want:        lane.ActionRotate,
 			wantResetIn: 90500 * time.Millisecond,
 		},
+		{
+			// The failure Krill AI served: a 200 whose first — and only —
+			// stream event is a terminal error. Nothing has reached the
+			// client, so it classifies exactly like a 529.
+			name:     "in-stream overload on a 200 retries the same account",
+			resp:     resp(200, nil),
+			body:     "event: response.failed\ndata: {\"type\":\"error\",\"error\":{\"type\":\"service_unavailable_error\",\"code\":\"server_is_overloaded\",\"message\":\"Our servers are currently overloaded.\"}}\n\n",
+			want:     lane.ActionRetrySame,
+			overload: true,
+		},
+		{
+			name:     "the official response.failed event nests the error",
+			resp:     resp(200, nil),
+			body:     "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_overloaded\",\"message\":\"Overloaded\"}}}\n\n",
+			want:     lane.ActionRetrySame,
+			overload: true,
+		},
+		{
+			name:        "in-stream plan exhaustion rotates using the advertised reset",
+			resp:        resp(200, nil),
+			body:        "event: error\ndata: {\"type\":\"error\",\"error\":{\"code\":\"usage_limit_reached\",\"resets_in_seconds\":1800}}\n\n",
+			want:        lane.ActionRotate,
+			wantResetIn: 30 * time.Minute,
+		},
+		{
+			name:      "in-stream burst limit stays put",
+			resp:      resp(200, nil),
+			body:      "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"resets_in_seconds\":20}}\n\n",
+			want:      lane.ActionRetrySame,
+			wantRetry: 20 * time.Second,
+		},
+		{
+			name: "in-stream auth refusal refreshes the credential",
+			resp: resp(200, nil),
+			body: "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"bad token\"}}\n\n",
+			want: lane.ActionRefreshAuth,
+		},
+		{
+			name: "an unknown in-stream error is the client's own",
+			resp: resp(200, nil),
+			body: "event: response.failed\ndata: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"bad model\"}}\n\n",
+			want: lane.ActionFatal,
+		},
+		{
+			name: "a healthy opening event relays",
+			resp: resp(200, nil),
+			body: "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n\n",
+			want: lane.ActionRelay,
+		},
+		{
+			name: "a healthy JSON response relays",
+			resp: resp(200, nil),
+			body: `{"id":"resp_1","status":"completed","error":null,"output":[]}`,
+			want: lane.ActionRelay,
+		},
 	}
 
 	var l Lane

@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/bojieli/agentswap/internal/config"
 )
 
 var now = time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
@@ -126,6 +128,152 @@ func TestRetryAfterHeader(t *testing.T) {
 			}
 			if ok && got != c.want {
 				t.Errorf("= %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestParseInBandError(t *testing.T) {
+	cases := []struct {
+		name string
+		head string
+		want InBandError
+		ok   bool
+	}{
+		{
+			name: "a gateway's response.failed carrying an error envelope",
+			head: "event: response.failed\ndata: {\"type\":\"error\",\"error\":{\"type\":\"service_unavailable_error\",\"code\":\"server_is_overloaded\",\"message\":\"Our servers are currently overloaded.\"}}\n\n",
+			want: InBandError{Type: "service_unavailable_error", Code: "server_is_overloaded", Message: "Our servers are currently overloaded."},
+			ok:   true,
+		},
+		{
+			name: "an anthropic-style error event",
+			head: "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n",
+			want: InBandError{Type: "overloaded_error", Message: "Overloaded"},
+			ok:   true,
+		},
+		{
+			name: "the official response.failed nests the error in the response",
+			head: "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_overloaded\",\"message\":\"Overloaded\"}}}\n\n",
+			want: InBandError{Type: "response.failed", Code: "server_overloaded", Message: "Overloaded"},
+			ok:   true,
+		},
+		{
+			name: "a JSON error envelope on a 200",
+			head: `{"type":"error","error":{"code":"usage_limit_reached","resets_in_seconds":1800}}`,
+			want: InBandError{Code: "usage_limit_reached", ResetsInSeconds: 1800},
+			ok:   true,
+		},
+		{
+			name: "reset_after_seconds is honored too",
+			head: `{"type":"error","error":{"code":"usage_limit_reached","reset_after_seconds":90}}`,
+			want: InBandError{Code: "usage_limit_reached", ResetsInSeconds: 90},
+			ok:   true,
+		},
+		{
+			name: "a terminal event whose payload we cannot read is still terminal",
+			head: "event: error\ndata: <not json>\n\n",
+			want: InBandError{Type: "error"},
+			ok:   true,
+		},
+		{
+			name: "a failure announced after the opening event is still caught",
+			head: "event: response.created\ndata: {\"type\":\"response.created\"}\n\nevent: response.failed\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}\n\n",
+			want: InBandError{Type: "overloaded_error"},
+			ok:   true,
+		},
+		{name: "a healthy opening event", head: "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n\n"},
+		{name: "a healthy message_start", head: "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\"}}\n\n"},
+		{name: "a healthy JSON response", head: `{"id":"resp_1","status":"completed","error":null,"output":[]}`},
+		{name: "a truncated healthy JSON response", head: `{"id":"resp_1","status":"completed","output":[{"text":"lo`},
+		{name: "empty", head: ""},
+		{name: "garbage", head: "<<<<<<<<"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := ParseInBandError([]byte(c.head))
+			if ok != c.ok {
+				t.Fatalf("ok = %v, want %v", ok, c.ok)
+			}
+			if ok && got != c.want {
+				t.Errorf("= %+v, want %+v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestClassifyInBand(t *testing.T) {
+	cfg := config.Default().Retry // BurstCutoff = 120s
+
+	cases := []struct {
+		name        string
+		in          InBandError
+		want        Action
+		overload    bool
+		wantResetIn time.Duration
+		wantRetry   time.Duration
+	}{
+		{
+			name:     "overloaded_error retries without a bound",
+			in:       InBandError{Type: "overloaded_error"},
+			want:     ActionRetrySame,
+			overload: true,
+		},
+		{
+			name:     "a gateway's service_unavailable_error retries",
+			in:       InBandError{Type: "service_unavailable_error", Code: "server_is_overloaded"},
+			want:     ActionRetrySame,
+			overload: true,
+		},
+		{
+			name:        "plan exhaustion rotates on the advertised reset",
+			in:          InBandError{Code: "usage_limit_reached", ResetsInSeconds: 1800},
+			want:        ActionRotate,
+			wantResetIn: 30 * time.Minute,
+		},
+		{
+			name:        "plan exhaustion without timing uses the conservative guess",
+			in:          InBandError{Code: "insufficient_quota"},
+			want:        ActionRotate,
+			wantResetIn: 5 * time.Hour,
+		},
+		{
+			name:      "a short rate limit is a burst and stays put",
+			in:        InBandError{Type: "rate_limit_error", ResetsInSeconds: 20},
+			want:      ActionRetrySame,
+			wantRetry: 20 * time.Second,
+		},
+		{
+			name:        "a long rate limit rotates",
+			in:          InBandError{Type: "rate_limit_error", ResetsInSeconds: 1800},
+			want:        ActionRotate,
+			wantResetIn: 30 * time.Minute,
+		},
+		{
+			name: "a refused credential refreshes",
+			in:   InBandError{Type: "authentication_error", Message: "bad token"},
+			want: ActionRefreshAuth,
+		},
+		{
+			name: "an unknown failure is the client's own error",
+			in:   InBandError{Type: "invalid_request_error", Message: "bad model"},
+			want: ActionFatal,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := ClassifyInBand(c.in, cfg, now)
+			if got.Action != c.want {
+				t.Errorf("action = %v, want %v (reason: %s)", got.Action, c.want, got.Reason)
+			}
+			if got.Overload != c.overload {
+				t.Errorf("overload = %v, want %v", got.Overload, c.overload)
+			}
+			if c.wantRetry != 0 && got.RetryAfter != c.wantRetry {
+				t.Errorf("retryAfter = %v, want %v", got.RetryAfter, c.wantRetry)
+			}
+			if c.wantResetIn != 0 && !got.ResetAt.Equal(now.Add(c.wantResetIn)) {
+				t.Errorf("resetAt = %v, want %v", got.ResetAt, now.Add(c.wantResetIn))
 			}
 		})
 	}

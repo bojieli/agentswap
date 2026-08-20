@@ -241,6 +241,7 @@ agentswap distinguishes failures that look similar to a client:
 | Short per-minute throttle | Wait on the same account to preserve its prompt cache. |
 | Quota window exhausted | Retire the account and try the next eligible account. |
 | Overloaded server or transient 5xx | Retry with backoff and jitter. |
+| Failure delivered in-band on a 200 | Some gateways report errors as a terminal stream event instead of a status code; classified like its HTTP equivalent and absorbed before the client sees a byte. |
 | Stale login | Refresh once, then explain exactly which account needs `agentswap login`. |
 | Invalid request | Return the provider's error without rotating accounts. |
 
