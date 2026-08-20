@@ -8,6 +8,11 @@ version moves for anything that changes behaviour.
 
 ### Fixed
 
+- **Claude sessions could fail when a later event changed directories.** A
+  transcript may legitimately record a process CWD outside its project root;
+  event-level CWD metadata is now tolerated during teleport instead of being
+  treated as a corrupt session.
+
 Found by creating native sessions and completing real model/tool turns after
 every directed teleport among Claude Code, Codex, OpenCode, and Kimi Code:
 

@@ -612,6 +612,30 @@ func TestClaudeReaderFailsClosedOnMedia(t *testing.T) {
 	}
 }
 
+func TestClaudeReaderAllowsRecordCWDOutsideProject(t *testing.T) {
+	cwd := t.TempDir()
+	external := t.TempDir()
+	id := "11111111-1111-4111-8111-111111111111"
+	path := filepath.Join(t.TempDir(), id+".jsonl")
+	records := []string{
+		`{"type":"user","uuid":"u","cwd":` + quoteJSON(cwd) + `,"message":{"role":"user","content":"start"}}`,
+		`{"type":"assistant","uuid":"a","cwd":` + quoteJSON(external) + `,"message":{"role":"assistant","content":"continued elsewhere"}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(records, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	history, err := (claudeAdapter{}).Read(context.Background(), Candidate{Agent: Claude, ID: id, CWD: cwd, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !samePath(history.CWD, cwd) {
+		t.Fatalf("history cwd = %q, want selected project cwd %q", history.CWD, cwd)
+	}
+	if len(history.Events) != 2 {
+		t.Fatalf("history events = %d, want 2", len(history.Events))
+	}
+}
+
 func TestReadersRejectCorruptJSONL(t *testing.T) {
 	isolatedHomes(t)
 	path := filepath.Join(t.TempDir(), "broken.jsonl")

@@ -103,12 +103,13 @@ provider signatures are not reused across trust domains. Validation happens
 before `Write`, so an unknown conversation block or orphan result cannot leave
 a plausible-looking but broken target.
 
-Discovery is adapter-specific but applies one invariant: the native session's
-cwd must be exactly the requested canonical path. Claude's encoded project
-directory is only an index and its records are checked again. Codex reads the
-leading `session_meta`. OpenCode consumes `session list --format json`. Kimi
-reads `state.json` or the legacy work-directory registry. There is no
-repository-root fallback.
+Discovery is adapter-specific and uses each native format's project/session
+index to scope candidates to the requested canonical path. Claude's encoded
+project directory and its initial session CWD are used for discovery; later
+Claude records may report any process CWD and are retained as metadata. Codex
+reads the leading `session_meta`. OpenCode consumes `session list --format
+json`. Kimi reads `state.json` or the legacy work-directory registry. There is
+no repository-root fallback.
 
 Writers preserve the source and allocate a fresh target id. File-backed
 targets stage content at the final filesystem boundary and rename it into

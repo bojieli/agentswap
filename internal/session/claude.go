@@ -161,12 +161,6 @@ func (claudeAdapter) Read(_ context.Context, candidate Candidate) (*Session, err
 			return err
 		}
 		rtype, _ := record["type"].(string)
-		if value, _ := record["cwd"].(string); value != "" {
-			if !samePath(value, candidate.CWD) {
-				return fmt.Errorf("record cwd %q does not match %q", value, candidate.CWD)
-			}
-			history.CWD = value
-		}
 		if value, _ := record["slug"].(string); value != "" {
 			slug = value
 		}
