@@ -1,5 +1,9 @@
 # Acceptance record
 
+This is maintainer evidence, not a prerequisite for ordinary installation.
+For the user-facing setup, start with the [README](../README.md). For the
+cross-harness behavior this record checks, see [sessions.md](sessions.md).
+
 This is the evidence record for the credential-pooling, failure-handling,
 supervisor, and session-teleport features. It separates deterministic tests
 from requests made against real providers; a simulated quota response is not

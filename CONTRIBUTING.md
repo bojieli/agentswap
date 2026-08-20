@@ -1,109 +1,150 @@
 # Contributing
 
-Thanks for looking. Bug reports and small, well-argued patches are the most
-useful things you can send.
+Bug fixes, tests, documentation improvements, and adapters for additional
+coding-agent harnesses are welcome. The most useful contribution starts with a
+real user problem and makes the expected behavior easy to verify.
 
-## Getting set up
+Before changing code, read the user-facing [README](README.md) and the relevant
+guide:
+
+- account or provider behavior: [docs/accounts.md](docs/accounts.md);
+- recovery and session transfer: [docs/sessions.md](docs/sessions.md);
+- command behavior: [docs/commands.md](docs/commands.md);
+- design boundaries: [docs/architecture.md](docs/architecture.md).
+
+## Set up a development checkout
 
 ```sh
 git clone https://github.com/bojieli/agentswap
 cd agentswap
-make check          # build, vet, test with the race detector, gofmt
+make check
 ```
 
-There is nothing else to install: agentswap has no third-party dependencies,
-so a Go toolchain is the whole toolchain. `make lint` additionally runs
-[golangci-lint](https://golangci-lint.run) if you have it.
+The only required toolchain is Go. agentswap has no third-party Go
+dependencies. `make lint` additionally runs
+[golangci-lint](https://golangci-lint.run) when it is installed.
 
-Run the daemon against a scratch pool rather than your real one:
+Run development commands against a disposable configuration directory:
 
 ```sh
 AGENTSWAP_HOME=/tmp/agentswap-dev go run ./cmd/agentswap serve -v
 ```
 
-`AGENTSWAP_HOME` moves the accounts, config and state files together, so a
-development daemon cannot touch the credentials you actually use.
+`AGENTSWAP_HOME` moves accounts, configuration, and state together so a test
+daemon cannot touch your real credentials.
 
-## The one hard rule: no dependencies
+## What to contribute
+
+### Bug fixes
+
+Describe the failure in user terms: what command ran, what was expected, and
+what happened instead. Add a regression test that fails before the fix,
+especially for rotation, retry, parking, importing, or session translation.
+
+### New harness adapters
+
+Session adapters should read the native format, validate the complete history,
+and write through the target's safest native interface. Keep the source
+read-only. Do not replace a conversation with a summary prompt when the native
+format can preserve structured events.
+
+### New provider lanes
+
+Implement the `lane.Lane` interface, register the lane in
+`cmd/agentswap/common.go`, and add the proxy path in `internal/proxy`. The
+engine should not need provider-specific changes.
+
+Document how the provider distinguishes a short throttle, exhausted quota,
+overload, authentication failure, and an invalid request. Incorrect
+classification either wastes prompt-cache value by rotating too early or
+leaves a session stuck on an account that cannot recover.
+
+### Documentation and examples
+
+Keep pages task-oriented. Start with the user's goal, use short paragraphs,
+show a copyable command, and link to the exact reference section for advanced
+flags. Update the README and [docs/README.md](docs/README.md) when adding a
+new user-visible capability.
+
+## The security rule: no dependencies
 
 `go.sum` must stay empty, and CI fails if it is not. This process holds live
-OAuth tokens for your Anthropic and OpenAI accounts. Every dependency is
-another maintainer who could publish a version that reads them, and the
-standard library has been enough so far.
+OAuth tokens for Anthropic- and OpenAI-compatible accounts. Every dependency is
+another party with access to the process and another supply-chain update to
+trust.
 
-If you genuinely cannot do something without a dependency, open an issue
-before writing the code — the answer may be that the feature is not worth it.
-
-## What good change looks like
-
-**Explain the failure, not the fix.** The comments in this codebase say why a
-decision was made, because the "what" is already in the code. A comment like
-`// retry 3 times` is noise; `// Overload is rarely account-specific, so absorb
-a few on the same account before spending another one's quota on it` is the
-reason nobody has to rediscover.
-
-**Bring a test that fails first.** Especially for anything touching rotation,
-retry or parking: those paths are hard to reach by hand and easy to break
-invisibly. The existing tests are written to be readable as a specification —
-`TestBurstLimitStaysOnSameAccount` says what the system promises. Aim for that.
-
-**Keep failover honest.** agentswap is failover-only by design: exactly one
-account is ever in flight, and it moves only when the current one is genuinely
-refused. Patches that run accounts in parallel to multiply throughput will be
-declined — see the terms-of-service section of the README for why.
-
-**Do not log credentials.** Not at debug level, not in an error message, not
-in a struct dump. `Account.Display()` exists so that logging an account is
-safe by default.
+If a change seems to require a dependency, open an issue first. The standard
+library has been sufficient so far, and a small local implementation may be a
+safer answer.
 
 ## Testing conventions
 
-- Table tests where the cases are genuinely parallel; separate named tests
-  where each case is its own story.
-- No real network. Every upstream in the test suite is an `httptest.Server`.
-- No real clock for anything longer than milliseconds. The engine takes a
-  `now func() time.Time` and a `Waiter`, and the supervisor takes a `Wait`,
-  precisely so that a five-hour park is a fast test — see `fakeClock` in
-  `internal/engine/engine_test.go`. A test that really sleeps is a test nobody
-  runs, or one that races the deadline it is trying to observe.
-- No writes outside `t.TempDir()`. Tests that touch the config directory set
-  `AGENTSWAP_HOME`, `CODEX_HOME` or `CLAUDE_CREDENTIALS_PATH` with `t.Setenv`.
+- Use `httptest.Server` rather than a real upstream in ordinary tests.
+- Use the engine's fake clock and waiter instead of sleeping through long
+  quota windows.
+- Write files only under `t.TempDir()`; set `AGENTSWAP_HOME`, `CODEX_HOME`, or
+  `CLAUDE_CREDENTIALS_PATH` with `t.Setenv`.
+- Never print, persist, or compare a live credential. Use clearly fake fixture
+  values and verify that logs mask them.
+- Keep comments focused on why a non-obvious decision exists.
 
-## The two suites
-
-`internal/...` and `cmd/...` are unit tests: they cover decisions, with a fake
-clock and a fake upstream, so a five-hour park is a fast test.
-
-`e2e/` compiles the binary and drives it as a subprocess — argv, exit codes,
-files on disk, HTTP. It imports no internal package on purpose, so a refactor
-that breaks the product cannot be hidden by a refactor of the tests. Several
-of the bugs fixed in this repository were only visible from there.
+The repository has two complementary suites:
 
 ```sh
-make unit     # fast; skips the subprocess suite
-make e2e      # just the end-to-end suite, verbosely
-make test     # both, with the race detector
-make cover    # both, merged into one coverage number
+make unit       # fast unit and command tests
+make e2e        # compiled-binary subprocess tests
+make test       # race-enabled full suite
+make cover      # merged unit and subprocess coverage
+make check      # build, vet, format, dependency policy, and tests
 ```
 
-Coverage is merged across the two because the CLI layer reads 9% from the unit
-tests alone and 88% once the binary's own run is counted. CI fails below a 75%
-floor — a ratchet, not a target.
+Run the full race-enabled suite before sending a change:
 
-Run `go test -race -shuffle=on ./...` before sending; CI runs it on Linux,
-macOS and Windows, against the oldest supported Go and the current stable one.
+```sh
+go test -race -shuffle=on ./...
+```
 
-## Commit messages
+The CI matrix runs it on Linux, macOS, and Windows against the minimum and
+stable supported Go toolchains. CI also checks Shell scripts, release targets,
+the Homebrew formula, vulnerabilities, lint, and a coverage floor.
 
-Present tense, and say what changes for the user rather than what changed in
-the code. If a commit fixes something subtle, the body should be the
-explanation you would want to find in `git blame` a year from now.
+## Pull requests
 
-## Reporting a bug
+Keep a pull request focused and explain:
 
-`agentswap doctor` output is the single most useful thing to include; it walks
-the chain in the order a request travels it. Please also say which CLI, which
-version of it, and whether the accounts involved are subscriptions or API keys.
+1. the user-facing failure or need;
+2. the behavior that changes;
+3. the tests or acceptance evidence that cover it; and
+4. any compatibility or provider terms-of-service considerations.
 
-If the bug involves a credential being rejected or leaked, do not open a public
-issue — see [SECURITY.md](SECURITY.md).
+The pull request checklist also asks you to confirm that no credential can
+reach a log line and that `go.sum` remains empty.
+
+## Releases
+
+Update `CHANGELOG.md`, commit the change, and push an annotated semantic
+version tag:
+
+```sh
+git tag -a v0.2.0 -m 'agentswap v0.2.0'
+git push origin v0.2.0
+```
+
+The release workflow reruns tests, builds the supported archives, publishes
+`SHA256SUMS`, generates the Homebrew formula, and attaches build provenance for
+public repositories. See [docs/releases.md](docs/releases.md).
+
+## Commit messages and bug reports
+
+Use a present-tense subject that explains what changes for a user. Put the
+reasoning for subtle fixes in the body so it remains discoverable in history.
+
+For a bug report, include:
+
+- `agentswap doctor` output;
+- the CLI and version involved;
+- whether the accounts are subscriptions, API keys, or third-party providers;
+- the command that failed and the relevant sanitized logs.
+
+If a report involves a rejected or leaked credential, do not open a public
+issue. Follow [SECURITY.md](SECURITY.md) instead.

@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   release:
@@ -25,8 +26,23 @@ jobs:
         with:
           go-version: stable
 
+      - name: validate tag
+        env:
+          VERSION: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          case "$VERSION" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "release tags must look like v1.2.3: $VERSION" >&2; exit 1 ;;
+          esac
+          test "$(git rev-list -n 1 "$VERSION")" = "$(git rev-parse HEAD)" || {
+            echo "$VERSION does not point at the checked-out commit" >&2
+            exit 1
+          }
+
       # A release that cannot pass its own tests is not a release.
-      - run: go test ./...
+      - name: test
+        run: make check
 
       - name: build
         env:
@@ -65,6 +81,15 @@ jobs:
           TARGETS
 
           (cd dist && sha256sum ./*.tar.gz ./*.zip > SHA256SUMS)
+
+          # The Homebrew formula is an ordinary release asset. It selects the
+          # right archive for Apple Silicon versus Intel at install time and
+          # embeds the same checksums published above.
+          scripts/generate-homebrew-formula.sh "$VERSION" dist dist/agentswap.rb
+
+          # Fail before publishing if an archive or checksum is malformed.
+          test "$(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l | tr -d ' ')" -eq 7
+          (cd dist && sha256sum -c SHA256SUMS)
           ls -la dist
 
       - name: publish
@@ -93,7 +118,20 @@ jobs:
             fi
           } > "$notes"
 
-          gh release create "${VERSION}" \
-            --title "${VERSION}" \
-            --notes-file "$notes" \
-            dist/*
+          if gh release view "${VERSION}" >/dev/null 2>&1; then
+            gh release edit "${VERSION}" \
+              --title "${VERSION}" \
+              --notes-file "$notes"
+            gh release upload "${VERSION}" dist/* --clobber
+          else
+            gh release create "${VERSION}" \
+              --title "${VERSION}" \
+              --notes-file "$notes" \
+              dist/*
+          fi
+
+      - name: attest release assets
+        uses: actions/attest-build-provenance@v2
+        if: github.event.repository.private == false
+        with:
+          subject-path: 'dist/*'

@@ -3,6 +3,17 @@
 **Most people never open this file.** Every field has a working default, and
 the defaults are chosen for a laptop with two or three pooled accounts.
 
+Start with the effective configuration instead of editing a blank file:
+
+```sh
+agentswap config
+agentswap config --write
+```
+
+For account credentials and provider URLs, use the commands in
+[accounts.md](accounts.md). For a symptom-based explanation of a setting,
+start with [troubleshooting.md](troubleshooting.md).
+
 The three settings that people do change, and why:
 
 | Setting | Change it when |

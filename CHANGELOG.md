@@ -6,6 +6,19 @@ version moves for anything that changes behaviour.
 
 ## Unreleased
 
+### Added
+
+- **The public documentation now starts from the user problem.** The README
+  explains subscription limits, provider fallbacks, same-harness recovery, and
+  explicit Claude Code ↔ Codex/OpenCode/Kimi Code handoff. A dedicated session
+  guide and task-oriented documentation index make the commands easier to
+  discover.
+- **Release automation now publishes Homebrew metadata.** Tagged releases
+  build the supported archives, verify and publish `SHA256SUMS`, generate an
+  architecture-aware `agentswap.rb` formula for macOS and Linux, and attach
+  build-provenance attestations when the repository is public. CI also
+  smoke-tests formula generation and ShellCheck coverage for release scripts.
+
 ### Changed
 
 - **Session transfers now read naturally from source to target.**

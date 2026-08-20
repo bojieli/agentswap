@@ -1,7 +1,12 @@
-# Security
+# Security and privacy
 
 agentswap holds live OAuth tokens for your Anthropic and OpenAI accounts. That
 shapes everything below.
+
+Read this before exposing the daemon beyond loopback, adding a third-party
+base URL, or sharing a teleported session. For normal setup, start with the
+[README](README.md); for the transfer-specific data model, see
+[docs/sessions.md](docs/sessions.md).
 
 ## Reporting a vulnerability
 
@@ -20,43 +25,42 @@ Supported: the latest release. Fixes are not backported.
 
 **CodeQL** runs on every push and weekly, with the `security-and-quality`
 query set. It is skipped while the repository is private, because uploading
-results needs code scanning, and turns itself on when the repository is
-published.
+results needs code scanning. It turns on when the repository is published.
 
 **No third-party dependencies.** `go.sum` is empty and CI fails if it stops
 being. A dependency in this process is code with access to your tokens,
 published by someone who could change it tomorrow.
 
-**Loopback only.** The default listen address is `127.0.0.1:8420`. Binding
-anywhere else warns loudly at startup, because anything that can reach the port
+**Loopback only.** The default listen address is `127.0.0.1:8420`.
+Binding anywhere else warns loudly, because anything that can reach the port
 can spend your subscriptions.
 
-**Host header checking.** A web page you visit can point its own domain at
-127.0.0.1 and send requests to a local server — DNS rebinding. What it cannot
-do is forge the `Host` header, so agentswap refuses requests naming a host it
-does not recognise. Loopback names and the configured address are accepted;
-add anything else to `allowed_hosts`.
+**Host header checking.** A web page can point its own domain at `127.0.0.1`
+and send requests to a local server — DNS rebinding. It cannot forge the
+`Host` header, so agentswap refuses names it does not recognise.
+
+Loopback names and the configured address are accepted. Add another deliberate
+entry to `allowed_hosts` when reaching the proxy through a container or tunnel.
 
 **Credentials are replaced, never forwarded.** Whatever token the client sends
 is discarded and one from the pool is substituted. A token cannot leak from one
-configured CLI into another lane, and the placeholder in your Claude Code
-settings is not a secret.
+configured CLI into another lane, and the placeholder in Claude Code settings
+is not a secret.
 
 **Files are 0600 via atomic replace.** `accounts.json` and `state.json` are
-written to a temp file in the same directory, fsynced, then renamed, so an
+written to a temporary file in the same directory, fsynced, and renamed. An
 interrupted write cannot leave a half-file. The config directory is 0700, and
 an existing directory with looser permissions is tightened on open.
 
-**Credentials are never logged.** Accounts appear in logs through
-`Account.Display()`, which is an id or a human label — never a token. Error
-bodies from upstream are read into memory to classify them, capped at 64 KiB,
-and are not logged.
+**Credentials are never logged.** Accounts appear through `Account.Display()`,
+which is an id or human label — never a token. Upstream error bodies are read
+into memory for classification, capped at 64 KiB, and never logged.
 
 **A teleported session is sensitive local data.** It can contain prompts,
 proprietary source fragments, shell output, tool inputs, and error messages.
 File-backed target sessions are created in the target CLI's private session
 tree with 0600 files and staged before publication. The source is never opened
-for writing. Temporary OpenCode import payloads are 0600 and removed after its
+for writing. Temporary OpenCode import payloads are 0600 and removed after the
 native importer returns.
 
 **OpenCode owns its database.** agentswap does not link a SQLite driver or

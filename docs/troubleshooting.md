@@ -4,6 +4,10 @@ Start with `agentswap doctor`, and `agentswap config` when the question is
 "where is it even reading that from". It walks the chain in the order a request
 travels it, so the first failure it reports is the first thing to fix.
 
+If you are trying to move a task to another harness, see
+[sessions.md](sessions.md) first. If you are trying to add a login or provider,
+see [accounts.md](accounts.md).
+
 ```
 $ agentswap doctor
 [ok  ] anthropic lane has accounts (2)
@@ -133,7 +137,7 @@ tried to use your subscription, and the refusal is the feature working.
 on the vendor's own API:
 
 ```sh
-agentswap set corp --base-url https://llm.corp.example.com/v1
+agentswap set corp --base-url https://llm.corp.example.com
 agentswap set corp --base-url ""
 ```
 

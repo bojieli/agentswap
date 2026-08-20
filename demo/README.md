@@ -1,5 +1,11 @@
 # The README demo
 
+The demo is the small, deterministic companion to the user-facing
+[README](../README.md). It shows the account-failover path without spending a
+real account's quota. It is not a substitute for the
+[acceptance record](../docs/acceptance.md), which covers the full proxy,
+supervisor, provider, and session-transfer behavior.
+
 `docs/demo.svg` is generated, not drawn. Regenerate it after any change that
 alters what those commands print:
 

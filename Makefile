@@ -93,6 +93,15 @@ cross: ## compile every release target, to catch a platform-specific break early
 dev: ## run a daemon against a scratch pool, never your real credentials
 	AGENTSWAP_HOME=/tmp/agentswap-dev go run ./cmd/agentswap serve -v
 
+.PHONY: release-formula
+release-formula: ## generate a Homebrew formula from release archives (TAG=v1.2.3)
+	@test -n "$(TAG)" || { echo 'usage: make release-formula TAG=v1.2.3'; exit 2; }
+	scripts/generate-homebrew-formula.sh "$(TAG)" "$${DIST:-dist}" "$${OUTPUT:-$${DIST:-dist}/agentswap.rb}"
+
+.PHONY: release-formula-test
+release-formula-test: ## smoke-test Homebrew formula generation without a network
+	scripts/test-release-formula.sh
+
 .PHONY: clean
 clean:
 	rm -rf agentswap dist coverage.out .coverdata

@@ -1,4 +1,24 @@
-# Managing accounts and keys
+# Accounts, subscriptions, keys, and providers
+
+This guide answers the most common setup question: “How do I make all the
+capacity I already pay for available to agentswap without losing the provider
+settings my CLIs use?”
+
+The short version is:
+
+```sh
+agentswap import --dry-run  # inspect first
+agentswap import            # copy native logins and active provider overrides
+agentswap list               # check the pool
+agentswap install            # route Claude Code and Codex through it
+```
+
+The importer preserves a native subscription and an active same-protocol
+provider as separate entries. For example, a Codex login and a Krill AI
+OpenAI-compatible provider can both be available to the OpenAI lane.
+
+Related pages: [command reference](commands.md#getting-credentials-in),
+[configuration](configuration.md), and [troubleshooting](troubleshooting.md).
 
 ## The whole picture
 
@@ -28,25 +48,25 @@ Nothing here needs you to open `accounts.json`.
 ## A whole setup, start to finish
 
 ```sh
-# 1. Adopt the login you already have.
+### 1. Adopt the login you already have
 agentswap import
 
-# 2. Pool a second and third account. Each one: sign in, then this.
+### 2. Pool a second and third account
 agentswap login --id work
 agentswap login --id side-project
 
-# 3. Add a metered key as the last resort, entered at a prompt.
+### 3. Add a metered key as the last resort
 agentswap add-key anthropic --id backup
 
-# 4. Add a company gateway that speaks the same protocol.
+### 4. Add a company gateway that speaks the same protocol
 agentswap add-key anthropic --id corp \
   --base-url https://llm.corp.example.com --priority 150
 
-# 5. Point your CLIs at agentswap, and run it.
+### 5. Point your CLIs at agentswap, and run it
 agentswap install
 agentswap serve
 
-# 6. Check it.
+### 6. Check it
 agentswap list
 agentswap doctor
 ```

@@ -3,6 +3,18 @@
 Every command, with the flags that matter. `agentswap <command> -h` prints the
 same flags at the terminal.
 
+If you are setting up for the first time, use this order:
+
+```sh
+agentswap import
+agentswap install
+agentswap service install
+agentswap doctor
+```
+
+For recovery examples, read [Keep a session moving](sessions.md). For account
+choices, read [Accounts, subscriptions, keys, and providers](accounts.md).
+
 Commands that read or write the pool use the config directory, which is
 `AGENTSWAP_HOME`, else `XDG_CONFIG_HOME/agentswap`, else `~/.config/agentswap`.
 

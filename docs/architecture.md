@@ -5,6 +5,10 @@ design follows from one constraint: the client is a coding agent that treats
 any error as a reason to stop, so the interesting work is deciding what *not*
 to pass through.
 
+This page is for contributors and maintainers. Users looking for a recovery
+command should start with [sessions.md](sessions.md); users setting up accounts
+should start with [accounts.md](accounts.md).
+
 ## The path of a request
 
 ```

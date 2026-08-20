@@ -1,5 +1,9 @@
 # Code of Conduct
 
+This project welcomes bug reports, documentation improvements, tests, and new
+harness adapters. The [contributing guide](CONTRIBUTING.md) explains the
+technical boundaries; this page explains how we work together.
+
 ## The short version
 
 Be decent. Assume the other person is trying to help. Argue about the code, not

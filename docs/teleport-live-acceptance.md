@@ -1,5 +1,9 @@
 # Live teleport acceptance
 
+This is an opt-in, credit-consuming compatibility test for maintainers. It is
+not required for normal `teleport` or `handoff` use. Read the user guide in
+[sessions.md](sessions.md) first.
+
 The opt-in harness at [`scripts/teleport-live-acceptance.sh`](../scripts/teleport-live-acceptance.sh)
 exercises real native sessions. It creates one source session in each harness,
 teleports every source to each of the other three targets, resumes every target
