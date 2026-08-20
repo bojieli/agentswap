@@ -292,13 +292,13 @@ func TestCodexRoundTrip(t *testing.T) {
 	assertRoundTrip(t, adapter, candidates[0])
 }
 
-func TestCodexWriterUsesAgentSwapProvider(t *testing.T) {
+func TestCodexWriterUsesConfiguredProvider(t *testing.T) {
 	isolatedHomes(t)
 	cwd := t.TempDir()
 	if err := os.MkdirAll(codexRoot(), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	config := "model_provider = 'krill' # the base provider must not override a handoff\n[model_providers.krill]\nbase_url = 'https://example.test/v1'\n"
+	config := "model_provider = 'krill' # preserve the target's configured provider\n[model_providers.krill]\nbase_url = 'https://example.test/v1'\n"
 	if err := os.WriteFile(filepath.Join(codexRoot(), "config.toml"), []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -318,10 +318,10 @@ func TestCodexWriterUsesAgentSwapProvider(t *testing.T) {
 	if err := json.NewDecoder(first).Decode(&record); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := record.Payload["model_provider"].(string); got != "agentswap" {
-		t.Fatalf("teleported model provider = %q, want agentswap", got)
+	if got, _ := record.Payload["model_provider"].(string); got != "krill" {
+		t.Fatalf("teleported model provider = %q, want krill", got)
 	}
-	wantResume := []string{"codex", "resume", result.ID, "--profile", "agentswap"}
+	wantResume := []string{"codex", "resume", result.ID}
 	if !reflect.DeepEqual(result.Resume, wantResume) {
 		t.Fatalf("Codex resume command = %#v, want %#v", result.Resume, wantResume)
 	}
@@ -629,7 +629,7 @@ func assertRoundTrip(t *testing.T, adapter Adapter, candidate Candidate) {
 	}
 }
 
-func TestClaudeReaderFailsClosedOnMedia(t *testing.T) {
+func TestClaudeReaderSupportsMedia(t *testing.T) {
 	root := isolatedHomes(t)
 	cwd := t.TempDir()
 	id := "11111111-1111-4111-8111-111111111111"
@@ -637,14 +637,42 @@ func TestClaudeReaderFailsClosedOnMedia(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	record := `{"type":"user","uuid":"u","sessionId":"` + id + `","cwd":` + quoteJSON(cwd) + `,"message":{"role":"user","content":[{"type":"image","source":{"type":"base64"}}]}}` + "\n"
+	record := `{"type":"user","uuid":"u","sessionId":"` + id + `","cwd":` + quoteJSON(cwd) + `,"message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}}]}}` + "\n"
 	path := filepath.Join(dir, id+".jsonl")
 	if err := os.WriteFile(path, []byte(record), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := (claudeAdapter{}).Read(context.Background(), Candidate{Agent: Claude, ID: id, CWD: cwd, Path: path})
-	if err == nil || !strings.Contains(err.Error(), "unsupported Claude conversation block") {
+	history, err := (claudeAdapter{}).Read(context.Background(), Candidate{Agent: Claude, ID: id, CWD: cwd, Path: path})
+	if err != nil {
 		t.Fatalf("media read error = %v", err)
+	}
+	if len(history.Events) != 1 || history.Events[0].Parts[0].Kind != Media || history.Events[0].Parts[0].MediaData != "AA==" {
+		t.Fatalf("media event = %#v", history.Events)
+	}
+}
+
+func TestClaudeReaderSupportsMediaAttachments(t *testing.T) {
+	root := isolatedHomes(t)
+	cwd := t.TempDir()
+	id := "11111111-1111-4111-8111-111111111111"
+	dir := filepath.Join(root, "claude", "projects", encodeClaudeProject(cwd))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := map[string]any{"type": "attachment", "uuid": "a", "cwd": cwd, "attachment": map[string]any{
+		"type": "file", "filename": "attached.png", "content": map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": "AA=="}},
+	}}
+	b, _ := json.Marshal(record)
+	path := filepath.Join(dir, id+".jsonl")
+	if err := os.WriteFile(path, append(b, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	history, err := (claudeAdapter{}).Read(context.Background(), Candidate{Agent: Claude, ID: id, CWD: cwd, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Events) != 1 || history.Events[0].Parts[0].Kind != Media || history.Events[0].Parts[0].Filename != "attached.png" {
+		t.Fatalf("attachment event = %#v", history.Events)
 	}
 }
 
@@ -705,7 +733,7 @@ func TestReadJSONLRejectsOversizedRecord(t *testing.T) {
 	}
 }
 
-func TestCodexReaderFailsClosedOnMedia(t *testing.T) {
+func TestCodexReaderSupportsMedia(t *testing.T) {
 	isolate := isolatedHomes(t)
 	cwd := t.TempDir()
 	id := "77777777-7777-4777-8777-777777777777"
@@ -723,9 +751,57 @@ func TestCodexReaderFailsClosedOnMedia(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body.String()), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := (codexAdapter{}).Read(context.Background(), Candidate{Agent: Codex, ID: id, CWD: cwd, Path: path})
-	if err == nil || !strings.Contains(err.Error(), "unsupported Codex image content") {
+	history, err := (codexAdapter{}).Read(context.Background(), Candidate{Agent: Codex, ID: id, CWD: cwd, Path: path})
+	if err != nil {
 		t.Fatalf("media read error = %v", err)
+	}
+	if len(history.Events) != 1 || history.Events[0].Parts[0].Kind != Media {
+		t.Fatalf("media event = %#v", history.Events)
+	}
+}
+
+func TestMediaRoundTripAcrossFileTargets(t *testing.T) {
+	isolatedHomes(t)
+	cwd := t.TempDir()
+	history := sampleHistory(t, cwd)
+	history.Events = append(history.Events,
+		Event{Kind: Message, Role: "user", Parts: []Part{{Kind: Media, MediaType: "image/png", MediaData: "AA==", Filename: "input.png"}}},
+		Event{Kind: Message, Role: "assistant", Parts: []Part{{Kind: Media, MediaType: "image/png", MediaData: "AQ==", Filename: "output.png"}}},
+		Event{Kind: Message, Role: "assistant", Parts: []Part{{Kind: ToolCall, CallID: "image-call", ToolName: "inspect", Data: json.RawMessage(`{"path":"input.png"}`)}}},
+		Event{Kind: Message, Role: "tool", Parts: []Part{{Kind: Media, CallID: "image-call", MediaType: "image/png", MediaData: "Ag==", Filename: "result.png"}}},
+	)
+	if err := history.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []struct {
+		name    string
+		adapter Adapter
+		format  string
+	}{{"claude", claudeAdapter{}, "claude-jsonl"}, {"codex", codexAdapter{}, "codex-rollout"}, {"kimi", kimiAdapter{}, "kimi-code-wire"}} {
+		t.Run(target.name, func(t *testing.T) {
+			result, err := target.adapter.Write(context.Background(), history, WriteOptions{CWD: cwd})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := target.adapter.Read(context.Background(), Candidate{Agent: target.adapter.Agent(), ID: result.ID, CWD: cwd, Path: result.Path, Format: target.format})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := got.Validate(); err != nil {
+				t.Fatalf("media round-trip validation: %v events=%#v", err, got.Events)
+			}
+			var media int
+			for _, event := range got.Events {
+				for _, part := range event.Parts {
+					if part.Kind == Media {
+						media++
+					}
+				}
+			}
+			if media < 3 {
+				t.Fatalf("media parts = %d, events = %#v", media, got.Events)
+			}
+		})
 	}
 }
 
@@ -764,7 +840,7 @@ func TestOpenCodeReaderFailsClosedOnAttachmentsAndDelegation(t *testing.T) {
 	}
 }
 
-func TestKimiReadersFailClosedOnMedia(t *testing.T) {
+func TestKimiReadersSupportMedia(t *testing.T) {
 	root := isolatedHomes(t)
 	cwd := t.TempDir()
 	history := sampleHistory(t, cwd)
@@ -784,9 +860,12 @@ func TestKimiReadersFailClosedOnMedia(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = (kimiAdapter{}).Read(context.Background(), Candidate{Agent: Kimi, ID: result.ID, CWD: cwd, Path: result.Path, Format: "kimi-code-wire"})
-		if err == nil || !strings.Contains(err.Error(), "unsupported Kimi context block") {
+		got, err := (kimiAdapter{}).Read(context.Background(), Candidate{Agent: Kimi, ID: result.ID, CWD: cwd, Path: result.Path, Format: "kimi-code-wire"})
+		if err != nil {
 			t.Fatalf("modern Kimi media error = %v", err)
+		}
+		if len(got.Events) < 2 || got.Events[len(got.Events)-1].Parts[0].Kind != Media {
+			t.Fatalf("modern Kimi media events = %#v", got.Events)
 		}
 	})
 	t.Run("legacy", func(t *testing.T) {
@@ -805,9 +884,20 @@ func TestKimiReadersFailClosedOnMedia(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = (kimiAdapter{}).Read(context.Background(), Candidate{Agent: Kimi, ID: result.ID, CWD: cwd, Path: result.Path, Format: "kimi-cli-v1"})
-		if err == nil || !strings.Contains(err.Error(), "unsupported legacy Kimi content block") {
+		got, err := (kimiAdapter{}).Read(context.Background(), Candidate{Agent: Kimi, ID: result.ID, CWD: cwd, Path: result.Path, Format: "kimi-cli-v1"})
+		if err != nil {
 			t.Fatalf("legacy Kimi media error = %v", err)
+		}
+		found := false
+		for _, event := range got.Events {
+			for _, part := range event.Parts {
+				if part.Kind == Media {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("legacy Kimi media events = %#v", got.Events)
 		}
 	})
 	if _, err := os.Stat(root); err != nil {

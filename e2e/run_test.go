@@ -51,9 +51,9 @@ exit 0
 	mustContain(t, got, "ANTHROPIC_AUTH_TOKEN=", "child environment")
 }
 
-// Codex has no equivalent of Claude Code's automatic settings pickup, so
-// without the profile the run silently bypasses the proxy entirely.
-func TestRunAddsTheCodexProfile(t *testing.T) {
+// The supervisor passes native Codex arguments through unchanged. Provider
+// routing belongs in Codex's own configuration, not in an injected profile.
+func TestRunLeavesCodexArgumentsNative(t *testing.T) {
 	e := newEnv(t)
 	dir := t.TempDir()
 	log := filepath.Join(dir, "args.log")
@@ -63,7 +63,9 @@ exit 0
 
 	e.mustRun("run", "--", cli, "exec", "fix the tests")
 
-	mustContain(t, readFile(t, log), "--profile agentswap", "codex invocation")
+	if got := readFile(t, log); got != "exec fix the tests\n" {
+		t.Fatalf("codex invocation = %q, want native arguments", got)
+	}
 }
 
 func TestRunKeepsAProfileTheUserChose(t *testing.T) {

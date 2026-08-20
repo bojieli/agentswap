@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,8 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/bojieli/agentswap/internal/install"
 )
 
 type codexAdapter struct{}
@@ -18,6 +17,53 @@ func newCodexAdapter() Adapter    { return codexAdapter{} }
 func (codexAdapter) Agent() Agent { return Codex }
 
 func codexRoot() string { return envDir("CODEX_HOME", filepath.Join(homeDir(), ".codex")) }
+
+// codexConfiguredModelProvider returns the provider Codex uses when a resume
+// is launched without an explicit profile. A teleported rollout must carry
+// that same provider in its session metadata; otherwise Codex tries to resolve
+// a provider that only existed in the source environment (for example the
+// agentswap provider) and refuses to bootstrap the session.
+func codexConfiguredModelProvider() string {
+	path := filepath.Join(codexRoot(), "config.toml")
+	f, err := os.Open(path)
+	if err != nil {
+		return "openai"
+	}
+	defer f.Close()
+
+	section := ""
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") {
+			section = line
+			continue
+		}
+		if section != "" {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(key) != "model_provider" {
+			continue
+		}
+		value = strings.TrimSpace(strings.SplitN(value, "#", 2)[0])
+		if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+			var provider string
+			if err := json.Unmarshal([]byte(value), &provider); err == nil && provider != "" {
+				return provider
+			}
+		}
+		if len(value) >= 2 && value[0] == '\'' && value[len(value)-1] == '\'' {
+			if provider := value[1 : len(value)-1]; provider != "" {
+				return provider
+			}
+		}
+	}
+	return "openai"
+}
 
 func (codexAdapter) Discover(_ context.Context, cwd string) ([]Candidate, error) {
 	canonical, err := canonicalPath(cwd)
@@ -192,8 +238,18 @@ func readCodexResponse(history *Session, payload map[string]any, ts time.Time) e
 				} else if text != "" {
 					event.Parts = append(event.Parts, Part{Kind: Text, Text: text})
 				}
-			case "input_image", "output_image", "image_url":
-				return fmt.Errorf("unsupported Codex image content (media cannot be teleported safely)")
+			case "input_image", "output_image", "image_url", "computer_screenshot", "input_file", "output_file", "file_url":
+				media, err := mediaPartFromValue(block["image_url"], stringValue(block["media_type"]), stringValue(block["filename"]))
+				if err != nil {
+					media, err = mediaPartFromValue(block["file_url"], stringValue(block["media_type"]), stringValue(block["filename"]))
+				}
+				if err != nil && block["url"] != nil {
+					media, err = mediaPartFromValue(block["url"], stringValue(block["media_type"]), stringValue(block["filename"]))
+				}
+				if err != nil {
+					return fmt.Errorf("Codex image content: %w", err)
+				}
+				event.Parts = append(event.Parts, media)
 			default:
 				return fmt.Errorf("unsupported Codex message block %q", blockType)
 			}
@@ -221,12 +277,15 @@ func readCodexResponse(history *Session, payload map[string]any, ts time.Time) e
 		history.Events = append(history.Events, Event{Kind: Message, Role: "assistant", Timestamp: ts, Parts: []Part{{Kind: ToolCall, ID: stringValue(payload["id"]), CallID: callID, ToolName: name, Data: data}}})
 	case "function_call_output", "custom_tool_call_output":
 		callID, _ := payload["call_id"].(string)
-		text, err := stringifyOutput(payload["output"])
+		parts, err := codexOutputParts(payload["output"], callID)
 		if err != nil {
 			return err
 		}
 		isError, _ := payload["agentswap_error"].(bool)
-		history.Events = append(history.Events, Event{Kind: Message, Role: "tool", Timestamp: ts, Parts: []Part{{Kind: ToolResult, CallID: callID, Text: text, Error: isError}}})
+		for i := range parts {
+			parts[i].Error = isError
+		}
+		history.Events = append(history.Events, Event{Kind: Message, Role: "tool", Timestamp: ts, Parts: parts})
 	case "reasoning":
 		var texts []string
 		if summary, ok := payload["summary"].([]any); ok {
@@ -254,6 +313,51 @@ func readCodexResponse(history *Session, payload map[string]any, ts time.Time) e
 		return fmt.Errorf("unsupported Codex response item %q", kind)
 	}
 	return nil
+}
+
+func codexOutputParts(value any, callID string) ([]Part, error) {
+	if value == nil {
+		return []Part{{Kind: ToolResult, CallID: callID}}, nil
+	}
+	if text, ok := value.(string); ok {
+		return []Part{{Kind: ToolResult, CallID: callID, Text: text}}, nil
+	}
+	items, ok := value.([]any)
+	if !ok {
+		text, err := stringifyOutput(value)
+		if err != nil {
+			return nil, err
+		}
+		return []Part{{Kind: ToolResult, CallID: callID, Text: text}}, nil
+	}
+	var parts []Part
+	for _, item := range items {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("Codex tool output contains a non-object block")
+		}
+		kind := stringValue(obj["type"])
+		switch kind {
+		case "text", "output_text", "input_text":
+			parts = append(parts, Part{Kind: ToolResult, CallID: callID, Text: stringValue(obj["text"])})
+		case "input_image", "output_image", "image_url", "computer_screenshot", "image", "input_file", "output_file", "file_url", "file":
+			media, err := mediaPartFromValue(obj["image_url"], stringValue(obj["media_type"]), stringValue(obj["filename"]))
+			if err != nil {
+				media, err = mediaPartFromValue(obj, stringValue(obj["media_type"]), stringValue(obj["filename"]))
+			}
+			if err != nil {
+				return nil, err
+			}
+			media.CallID = callID
+			parts = append(parts, media)
+		default:
+			return nil, fmt.Errorf("unsupported Codex tool output block %q", kind)
+		}
+	}
+	if len(parts) == 0 {
+		parts = append(parts, Part{Kind: ToolResult, CallID: callID})
+	}
+	return parts, nil
 }
 
 func codexInputJSON(value any) (json.RawMessage, error) {
@@ -323,7 +427,10 @@ func (codexAdapter) Write(_ context.Context, history *Session, opts WriteOptions
 	dir := filepath.Join(codexRoot(), "sessions", now.Format("2006"), now.Format("01"), now.Format("02"))
 	name := "rollout-" + now.Format("2006-01-02T15-04-05") + "-" + id + ".jsonl"
 	final := filepath.Join(dir, name)
-	result = Result{Agent: Codex, ID: id, Path: final, Resume: []string{"codex", "resume", id, "--profile", install.ProfileName}, Files: []string{final}}
+	// The agentswap provider is configured in Codex's own config by
+	// `agentswap install`. Keep the resume command native: callers should not
+	// need an agentswap-specific profile flag just to open a teleported session.
+	result = Result{Agent: Codex, ID: id, Path: final, Resume: []string{"codex", "resume", id}, Files: []string{final}}
 	if opts.DryRun {
 		return result, nil
 	}
@@ -352,7 +459,7 @@ func (codexAdapter) Write(_ context.Context, history *Session, opts WriteOptions
 	meta := map[string]any{
 		"id": id, "session_id": id, "timestamp": now.Format(time.RFC3339Nano),
 		"cwd": canonical, "originator": "agentswap", "cli_version": "agentswap",
-		"source": "cli", "thread_source": "user", "model_provider": install.ProfileName,
+		"source": "cli", "thread_source": "user", "model_provider": codexConfiguredModelProvider(),
 		"model": history.Model,
 		"agentswap_source": map[string]any{
 			"agent": history.Source, "session_id": history.SourceID,
@@ -365,7 +472,7 @@ func (codexAdapter) Write(_ context.Context, history *Session, opts WriteOptions
 	results := make(map[string]bool)
 	for _, event := range history.Events {
 		for _, part := range event.Parts {
-			if part.Kind == ToolResult {
+			if part.Kind == ToolResult || (part.Kind == Media && part.CallID != "") {
 				results[part.CallID] = true
 			}
 		}
@@ -387,6 +494,7 @@ func (codexAdapter) Write(_ context.Context, history *Session, opts WriteOptions
 			continue
 		}
 		role := event.Role
+		toolEvent := role == "tool"
 		if role == "tool" {
 			role = "user"
 		}
@@ -427,6 +535,51 @@ func (codexAdapter) Write(_ context.Context, history *Session, opts WriteOptions
 				if part.Kind == Reasoning {
 					result.Warnings = appendUnique(result.Warnings, "recorded reasoning was stored as assistant text because reasoning signatures are provider-specific")
 				}
+			case Media:
+				mediaType := "input_image"
+				if !strings.HasPrefix(strings.ToLower(part.MediaType), "image/") {
+					mediaType = "input_file"
+				}
+				if role == "assistant" {
+					if mediaType == "input_image" {
+						mediaType = "output_image"
+					} else {
+						mediaType = "output_file"
+					}
+				}
+				if toolEvent && part.CallID != "" {
+					if err := flushMessage(); err != nil {
+						return Result{}, err
+					}
+					outID, err := shortID("fco_")
+					if err != nil {
+						return Result{}, err
+					}
+					block := map[string]any{"type": mediaType, "media_type": part.MediaType, "filename": part.Filename}
+					if strings.HasPrefix(strings.ToLower(part.MediaType), "image/") {
+						block["image_url"] = mediaDataURL(part)
+					} else {
+						block["file_url"] = mediaDataURL(part)
+					}
+					output := []any{block}
+					if err := write("response_item", event.Timestamp, map[string]any{"type": "function_call_output", "id": outID, "call_id": part.CallID, "output": output, "agentswap_error": part.Error}); err != nil {
+						return Result{}, err
+					}
+					continue
+				}
+				block := map[string]any{"type": mediaType}
+				if strings.HasPrefix(strings.ToLower(part.MediaType), "image/") {
+					block["image_url"] = mediaDataURL(part)
+				} else {
+					block["file_url"] = mediaDataURL(part)
+				}
+				if part.MediaType != "" {
+					block["media_type"] = part.MediaType
+				}
+				if part.Filename != "" {
+					block["filename"] = part.Filename
+				}
+				content = append(content, block)
 			case ToolCall:
 				if err := flushMessage(); err != nil {
 					return Result{}, err
@@ -456,7 +609,11 @@ func (codexAdapter) Write(_ context.Context, history *Session, opts WriteOptions
 				if err != nil {
 					return Result{}, err
 				}
-				if err := write("response_item", event.Timestamp, map[string]any{"type": "function_call_output", "id": outID, "call_id": part.CallID, "output": part.Text, "agentswap_error": part.Error}); err != nil {
+				output := any(part.Text)
+				if part.Kind == Media {
+					output = []any{map[string]any{"type": "output_image", "image_url": mediaDataURL(part), "media_type": part.MediaType, "filename": part.Filename}}
+				}
+				if err := write("response_item", event.Timestamp, map[string]any{"type": "function_call_output", "id": outID, "call_id": part.CallID, "output": output, "agentswap_error": part.Error}); err != nil {
 					return Result{}, err
 				}
 			}

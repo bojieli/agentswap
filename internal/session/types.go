@@ -66,18 +66,27 @@ const (
 	Reasoning  PartKind = "reasoning"
 	ToolCall   PartKind = "tool_call"
 	ToolResult PartKind = "tool_result"
+	// Media is inline binary content such as an image. MediaData stores the
+	// base64 payload without a data-URL prefix; MediaURL is used for a remote
+	// URL (or a source URL that cannot be decoded locally).
+	Media PartKind = "media"
 )
 
 // Part is one observable, ordered unit inside a message. Data contains a tool
 // input as JSON. Text contains text, recorded reasoning, or a tool result.
+// Media carries an inline binary payload or a source URL.
 type Part struct {
-	Kind     PartKind        `json:"kind"`
-	ID       string          `json:"id,omitempty"`
-	CallID   string          `json:"call_id,omitempty"`
-	ToolName string          `json:"tool_name,omitempty"`
-	Text     string          `json:"text,omitempty"`
-	Data     json.RawMessage `json:"data,omitempty"`
-	Error    bool            `json:"error,omitempty"`
+	Kind      PartKind        `json:"kind"`
+	ID        string          `json:"id,omitempty"`
+	CallID    string          `json:"call_id,omitempty"`
+	ToolName  string          `json:"tool_name,omitempty"`
+	Text      string          `json:"text,omitempty"`
+	Data      json.RawMessage `json:"data,omitempty"`
+	Error     bool            `json:"error,omitempty"`
+	MediaType string          `json:"media_type,omitempty"`
+	MediaData string          `json:"media_data,omitempty"`
+	MediaURL  string          `json:"media_url,omitempty"`
+	Filename  string          `json:"filename,omitempty"`
 }
 
 type EventKind string
@@ -163,6 +172,8 @@ func (s *Session) Validate() error {
 	}
 	calls := make(map[string]struct{})
 	results := make(map[string]struct{})
+	toolResults := make(map[string]struct{})
+	toolResultEvents := make(map[string]int)
 	for ei, event := range s.Events {
 		switch event.Kind {
 		case Message:
@@ -215,10 +226,33 @@ func (s *Session) Validate() error {
 				if _, exists := calls[part.CallID]; !exists {
 					return fmt.Errorf("tool result %q appears before its matching call", part.CallID)
 				}
-				if _, exists := results[part.CallID]; exists {
+				if previous, exists := toolResultEvents[part.CallID]; exists && previous != ei {
 					return fmt.Errorf("duplicate result for tool call %q", part.CallID)
 				}
+				toolResults[part.CallID] = struct{}{}
+				toolResultEvents[part.CallID] = ei
 				results[part.CallID] = struct{}{}
+			case Media:
+				if event.Role == "tool" && part.CallID == "" {
+					return fmt.Errorf("event %d part %d has media in a tool message without a call id", ei+1, pi+1)
+				}
+				if part.MediaData == "" && part.MediaURL == "" {
+					return fmt.Errorf("event %d part %d has media without data or URL", ei+1, pi+1)
+				}
+				if part.MediaData != "" {
+					if _, err := decodeMediaBase64(part.MediaData); err != nil {
+						return fmt.Errorf("event %d part %d has invalid base64 media: %w", ei+1, pi+1, err)
+					}
+				}
+				if strings.TrimSpace(part.MediaType) == "" {
+					return fmt.Errorf("event %d part %d has media without a MIME type", ei+1, pi+1)
+				}
+				if part.CallID != "" {
+					if _, exists := calls[part.CallID]; !exists {
+						return fmt.Errorf("media %q appears before its matching call", part.CallID)
+					}
+					results[part.CallID] = struct{}{}
+				}
 			default:
 				return fmt.Errorf("event %d part %d has unsupported kind %q", ei+1, pi+1, part.Kind)
 			}

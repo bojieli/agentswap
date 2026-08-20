@@ -69,9 +69,6 @@ func Run(ctx context.Context, opts Options) error {
 
 	kind := DetectKind(opts.Args[0])
 	args := opts.Args
-	if kind == KindCodex {
-		args = ensureCodexProfile(args)
-	}
 
 	for attempt := 0; ; attempt++ {
 		started := time.Now()
@@ -110,10 +107,9 @@ func Run(ctx context.Context, opts Options) error {
 			fmt.Fprintf(opts.Out, "agentswap: could not clear ticket: %v\n", err)
 		}
 
-		// Rewrite the args we actually ran, not the user's original: the
-		// agentswap profile is added to the first invocation, and resuming from
-		// the original would drop it and quietly bypass the proxy from the
-		// second attempt on.
+		// Rewrite the args we actually ran, not the user's original. This keeps
+		// any explicit native Codex options the user supplied on the resumed
+		// invocation without adding agentswap-specific command-line flags.
 		args = resumeArgs(kind, args)
 		fmt.Fprintf(opts.Out, "agentswap: resuming %s\n\n", strings.Join(args, " "))
 	}
@@ -181,17 +177,6 @@ func firstOf(args []string, names ...string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-// ensureCodexProfile adds the agentswap profile when the user has not named
-// one. Codex has no equivalent of Claude Code's automatic settings pickup, so
-// without this the run silently bypasses the proxy entirely.
-func ensureCodexProfile(args []string) []string {
-	if _, _, ok := codexProfile(args); ok {
-		return args
-	}
-	out := append([]string{}, args...)
-	return append(out, "--profile", install.ProfileName)
 }
 
 // codexProfile finds an explicitly named profile and the spelling it was given

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -194,6 +195,105 @@ func jsonObject(raw json.RawMessage) json.RawMessage {
 	}
 	b, _ := json.Marshal(map[string]any{"value": json.RawMessage(raw)})
 	return b
+}
+
+// mediaPart converts a provider media URL into the canonical representation.
+// Data URLs are kept inline so a handoff never depends on a source-local file
+// or on the target having network access. Remote URLs remain URLs and are
+// emitted unchanged by writers that support them.
+func mediaPart(rawURL, mediaType, filename string) (Part, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	mediaType = strings.TrimSpace(mediaType)
+	if strings.HasPrefix(strings.ToLower(rawURL), "data:") {
+		header, payload, ok := strings.Cut(rawURL, ",")
+		if !ok {
+			return Part{}, fmt.Errorf("invalid media data URL")
+		}
+		meta := header
+		if len(meta) >= len("data:") && strings.EqualFold(meta[:len("data:")], "data:") {
+			meta = meta[len("data:"):]
+		}
+		pieces := strings.Split(meta, ";")
+		if mediaType == "" && len(pieces) > 0 && pieces[0] != "" {
+			mediaType = pieces[0]
+		}
+		encoded := false
+		for _, piece := range pieces[1:] {
+			if strings.EqualFold(piece, "base64") {
+				encoded = true
+			}
+		}
+		if !encoded {
+			return Part{}, fmt.Errorf("media data URL is not base64 encoded")
+		}
+		payload = strings.TrimSpace(payload)
+		if payload == "" {
+			return Part{}, fmt.Errorf("media data URL has empty payload")
+		}
+		if _, err := decodeMediaBase64(payload); err != nil {
+			return Part{}, fmt.Errorf("invalid media data URL payload: %w", err)
+		}
+		if mediaType == "" {
+			mediaType = "application/octet-stream"
+		}
+		return Part{Kind: Media, MediaType: mediaType, MediaData: payload, Filename: filename}, nil
+	}
+	if rawURL == "" {
+		return Part{}, fmt.Errorf("media has no URL")
+	}
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
+	return Part{Kind: Media, MediaType: mediaType, MediaURL: rawURL, Filename: filename}, nil
+}
+
+func decodeMediaBase64(value string) ([]byte, error) {
+	for _, encoding := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+		if decoded, err := encoding.DecodeString(value); err == nil {
+			return decoded, nil
+		}
+	}
+	return nil, fmt.Errorf("invalid base64 payload")
+}
+
+func mediaPartFromValue(value any, mediaType, filename string) (Part, error) {
+	if obj, ok := value.(map[string]any); ok {
+		if mediaType == "" {
+			mediaType = stringValue(obj["media_type"])
+			if mediaType == "" {
+				mediaType = stringValue(obj["mime"])
+			}
+			if mediaType == "" {
+				mediaType = stringValue(obj["mediaType"])
+			}
+			if mediaType == "" {
+				mediaType = stringValue(obj["mimeType"])
+			}
+		}
+		if filename == "" {
+			filename = stringValue(obj["filename"])
+		}
+		for _, key := range []string{"url", "image_url", "file_url", "file_data", "image_data", "image", "data"} {
+			if raw := stringValue(obj[key]); raw != "" {
+				return mediaPart(raw, mediaType, filename)
+			}
+			if nested, ok := obj[key].(map[string]any); ok {
+				return mediaPartFromValue(nested, mediaType, filename)
+			}
+		}
+	}
+	return mediaPart(stringValue(value), mediaType, filename)
+}
+
+func mediaDataURL(part Part) string {
+	if part.MediaData != "" {
+		mediaType := part.MediaType
+		if mediaType == "" {
+			mediaType = "application/octet-stream"
+		}
+		return "data:" + mediaType + ";base64," + part.MediaData
+	}
+	return part.MediaURL
 }
 
 func hash12(value string) string {

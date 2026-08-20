@@ -38,8 +38,8 @@ func TestResumeArgsDropsTheOriginalPrompt(t *testing.T) {
 		t.Errorf("claude resume = %v, want %v", got, want)
 	}
 
-	got = resumeArgs(KindCodex, []string{"codex", "exec", "fix tests", "--profile", "agentswap"})
-	want = []string{"codex", "exec", "resume", "--last", "--profile", "agentswap"}
+	got = resumeArgs(KindCodex, []string{"codex", "exec", "fix tests"})
+	want = []string{"codex", "exec", "resume", "--last"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("codex resume = %v, want %v", got, want)
 	}
@@ -99,30 +99,11 @@ func TestResumeArgsAreIdempotent(t *testing.T) {
 	}
 }
 
-// The injected profile is what routes Codex through the proxy at all. Dropping
-// it on resume would silently return the user to unpooled accounts, which is
-// the exact failure ensureCodexProfile exists to prevent.
-func TestResumeKeepsTheInjectedProfile(t *testing.T) {
-	args := ensureCodexProfile([]string{"codex", "exec", "fix tests"})
-	got := resumeArgs(KindCodex, args)
-
-	_, value, ok := codexProfile(got)
-	if !ok || value != "agentswap" {
-		t.Fatalf("resume args %v carry profile %q (ok=%v), want the agentswap profile", got, value, ok)
-	}
-}
-
-func TestEnsureCodexProfile(t *testing.T) {
-	// Without a profile Codex silently bypasses the proxy entirely, which
-	// looks like agentswap doing nothing at all.
-	got := ensureCodexProfile([]string{"codex", "exec", "hi"})
-	if len(got) < 2 || got[len(got)-2] != "--profile" {
-		t.Errorf("got %v, want a --profile appended", got)
-	}
-	// A profile the user chose must win.
-	orig := []string{"codex", "--profile", "mine", "exec"}
-	if got := ensureCodexProfile(orig); !reflect.DeepEqual(got, orig) {
-		t.Errorf("got %v, want the user's own profile untouched", got)
+func TestResumePreservesAnExplicitCodexProfile(t *testing.T) {
+	original := []string{"codex", "exec", "fix tests", "--profile", "mine"}
+	want := []string{"codex", "exec", "resume", "--last", "--profile", "mine"}
+	if got := resumeArgs(KindCodex, original); !reflect.DeepEqual(got, want) {
+		t.Errorf("resume args = %v, want %v", got, want)
 	}
 }
 

@@ -26,8 +26,8 @@ func TestActiveSessionIDUsesExplicitSource(t *testing.T) {
 }
 
 func TestShellJoin(t *testing.T) {
-	got := shellJoin([]string{"codex", "resume", "plain", "two words", "it's", "--profile", "agentswap"})
-	want := "codex resume plain 'two words' 'it'\\''s' --profile agentswap"
+	got := shellJoin([]string{"codex", "resume", "plain", "two words", "it's"})
+	want := "codex resume plain 'two words' 'it'\\''s'"
 	if got != want {
 		t.Fatalf("shellJoin = %q, want %q", got, want)
 	}
@@ -59,26 +59,24 @@ func TestParseHandoffArgsPassesTargetArgumentsUnchanged(t *testing.T) {
 	}
 }
 
-func TestParseHandoffArgsValidatesOwnedAndProtectedFlags(t *testing.T) {
+func TestParseHandoffArgsValidatesOwnedFlagsAndPassesTargetFlags(t *testing.T) {
 	for _, args := range [][]string{{"--session"}, {"--cwd="}} {
 		if _, _, _, err := parseHandoffArgs(args); err == nil || !strings.Contains(err.Error(), "requires") {
 			t.Fatalf("parseHandoffArgs(%q) error = %v", args, err)
 		}
 	}
-	for _, args := range [][]string{{"--profile", "mine"}, {"--profile=mine"}, {"-p=mine"}, {"-pmine"}} {
-		if err := validateTargetArgs(session.Codex, args); err == nil || !strings.Contains(err.Error(), "--profile agentswap") {
-			t.Fatalf("validateTargetArgs(%q) error = %v", args, err)
+	for _, args := range [][]string{{"--profile", "mine"}, {"--profile=mine"}, {"-p=mine"}, {"-pmine"}, {"--config", `model_provider="openai"`}} {
+		_, _, got, err := parseHandoffArgs(args)
+		if err != nil {
+			t.Fatalf("parseHandoffArgs(%q) error = %v", args, err)
 		}
-		if err := validateTargetArgs(session.Claude, args); err != nil {
-			t.Fatalf("Claude target rejected passthrough args %q: %v", args, err)
+		if !reflect.DeepEqual(got, args) {
+			t.Fatalf("parseHandoffArgs(%q) target args = %v, want unchanged", args, got)
 		}
-	}
-	if err := validateTargetArgs(session.Codex, []string{"--", "--profile", "literal prompt text"}); err == nil {
-		t.Fatal("Codex target profile override after the separator was accepted")
 	}
 }
 
-func TestValidateTargetArgsRejectsCodexProviderOverrides(t *testing.T) {
+func TestValidateTargetArgsPassesCodexOverrides(t *testing.T) {
 	for _, args := range [][]string{
 		{"--oss"},
 		{"--local-provider=ollama"},
@@ -87,8 +85,8 @@ func TestValidateTargetArgsRejectsCodexProviderOverrides(t *testing.T) {
 		{"-c", `model_providers={}`},
 		{"-cmodel_provider=\"openai\""},
 	} {
-		if err := validateTargetArgs(session.Codex, args); err == nil || !strings.Contains(err.Error(), "agentswap provider") {
-			t.Errorf("validateTargetArgs(%q) = %v, want agentswap provider error", args, err)
+		if err := validateTargetArgs(session.Codex, args); err != nil {
+			t.Errorf("validateTargetArgs(%q) = %v, want target args accepted", args, err)
 		}
 	}
 	for _, args := range [][]string{

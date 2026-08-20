@@ -213,7 +213,7 @@ func TestEnvPrintsUsableExports(t *testing.T) {
 	}
 	// Codex cannot be configured through the environment, and saying so here
 	// saves someone an hour.
-	mustContain(t, out, "codex --profile", "env")
+	mustContain(t, out, "then start it with: codex", "env")
 }
 
 func TestStatusWithoutAccounts(t *testing.T) {

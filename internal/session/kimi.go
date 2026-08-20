@@ -324,11 +324,22 @@ func readKimiCode(candidate Candidate) (*Session, error) {
 					return fmt.Errorf("Kimi context contains a non-object block")
 				}
 				blockType := stringValue(block["type"])
-				if blockType != "text" {
+				switch blockType {
+				case "text":
+					if text := stringValue(block["text"]); text != "" {
+						event.Parts = append(event.Parts, Part{Kind: Text, Text: text})
+					}
+				case "image", "input_image":
+					media, err := mediaPartFromValue(block["url"], stringValue(block["mime"]), stringValue(block["filename"]))
+					if err != nil {
+						media, err = mediaPartFromValue(block["image_url"], stringValue(block["mime"]), stringValue(block["filename"]))
+					}
+					if err != nil {
+						return fmt.Errorf("Kimi media block: %w", err)
+					}
+					event.Parts = append(event.Parts, media)
+				default:
 					return fmt.Errorf("unsupported Kimi context block %q", blockType)
-				}
-				if text := stringValue(block["text"]); text != "" {
-					event.Parts = append(event.Parts, Part{Kind: Text, Text: text})
 				}
 			}
 			if len(event.Parts) > 0 {
@@ -354,6 +365,15 @@ func readKimiCode(candidate Candidate) (*Session, error) {
 					if text := stringValue(part["think"]); text != "" {
 						history.Events = append(history.Events, Event{Kind: Message, Role: "assistant", Timestamp: ts, Parts: []Part{{Kind: Reasoning, ID: stringValue(event["uuid"]), Text: text}}})
 					}
+				case "image":
+					media, err := mediaPartFromValue(part["url"], stringValue(part["mime"]), stringValue(part["filename"]))
+					if err != nil {
+						media, err = mediaPartFromValue(part["image_url"], stringValue(part["mime"]), stringValue(part["filename"]))
+					}
+					if err != nil {
+						return fmt.Errorf("Kimi media part: %w", err)
+					}
+					history.Events = append(history.Events, Event{Kind: Message, Role: "assistant", Timestamp: ts, Parts: []Part{media}})
 				default:
 					return fmt.Errorf("unsupported Kimi content part %q", partType)
 				}
@@ -371,12 +391,15 @@ func readKimiCode(candidate Candidate) (*Session, error) {
 				if !ok {
 					return fmt.Errorf("tool.result has no result")
 				}
-				text, err := kimiOutputText(result["output"])
+				parts, err := kimiOutputParts(result["output"], stringValue(event["toolCallId"]))
 				if err != nil {
 					return err
 				}
 				isError, _ := result["isError"].(bool)
-				history.Events = append(history.Events, Event{Kind: Message, Role: "tool", Timestamp: ts, Parts: []Part{{Kind: ToolResult, CallID: stringValue(event["toolCallId"]), Text: text, Error: isError}}})
+				for i := range parts {
+					parts[i].Error = isError
+				}
+				history.Events = append(history.Events, Event{Kind: Message, Role: "tool", Timestamp: ts, Parts: parts})
 			case "step.begin", "step.end":
 			default:
 				return fmt.Errorf("unsupported Kimi loop event %q", eventType)
@@ -489,6 +512,51 @@ func kimiOutputText(output any) (string, error) {
 	return stringifyOutput(output)
 }
 
+func kimiOutputParts(output any, callID string) ([]Part, error) {
+	if text, ok := output.(string); ok {
+		return []Part{{Kind: ToolResult, CallID: callID, Text: text}}, nil
+	}
+	if obj, ok := output.(map[string]any); ok {
+		if kind := stringValue(obj["type"]); kind == "image" || kind == "input_image" {
+			media, err := mediaPartFromValue(obj["url"], stringValue(obj["mime"]), stringValue(obj["filename"]))
+			if err != nil {
+				media, err = mediaPartFromValue(obj["image_url"], stringValue(obj["mime"]), stringValue(obj["filename"]))
+			}
+			if err != nil {
+				return nil, err
+			}
+			media.CallID = callID
+			return []Part{media}, nil
+		}
+	}
+	if blocks, ok := output.([]any); ok {
+		var parts []Part
+		for _, block := range blocks {
+			obj, ok := block.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("Kimi tool output contains a non-object block")
+			}
+			if stringValue(obj["type"]) == "image" || stringValue(obj["type"]) == "input_image" {
+				media, err := kimiOutputParts(obj, callID)
+				if err != nil {
+					return nil, err
+				}
+				parts = append(parts, media...)
+			} else {
+				parts = append(parts, Part{Kind: ToolResult, CallID: callID, Text: stringValue(obj["text"])})
+			}
+		}
+		if len(parts) > 0 {
+			return parts, nil
+		}
+	}
+	text, err := stringifyOutput(output)
+	if err != nil {
+		return nil, err
+	}
+	return []Part{{Kind: ToolResult, CallID: callID, Text: text}}, nil
+}
+
 func readKimiLegacy(candidate Candidate) (*Session, error) {
 	contextPath := filepath.Join(candidate.Path, "context.jsonl")
 	history := &Session{Source: Kimi, SourceID: candidate.ID, CWD: candidate.CWD, UpdatedAt: candidate.UpdatedAt}
@@ -527,6 +595,15 @@ func readKimiLegacy(candidate Candidate) (*Session, error) {
 						if text := stringValue(block["think"]); text != "" {
 							event.Parts = append(event.Parts, Part{Kind: Reasoning, Text: text})
 						}
+					case "image", "input_image":
+						media, err := mediaPartFromValue(block["url"], stringValue(block["mime"]), stringValue(block["filename"]))
+						if err != nil {
+							media, err = mediaPartFromValue(block["image_url"], stringValue(block["mime"]), stringValue(block["filename"]))
+						}
+						if err != nil {
+							return fmt.Errorf("legacy Kimi media block: %w", err)
+						}
+						event.Parts = append(event.Parts, media)
 					default:
 						return fmt.Errorf("unsupported legacy Kimi content block %q", stringValue(block["type"]))
 					}
@@ -554,11 +631,11 @@ func readKimiLegacy(candidate Candidate) (*Session, error) {
 				history.Events = append(history.Events, event)
 			}
 		case "tool":
-			text, err := kimiOutputText(message["content"])
+			parts, err := kimiOutputParts(message["content"], stringValue(message["tool_call_id"]))
 			if err != nil {
 				return err
 			}
-			history.Events = append(history.Events, Event{Kind: Message, Role: "tool", Parts: []Part{{Kind: ToolResult, CallID: stringValue(message["tool_call_id"]), Text: text}}})
+			history.Events = append(history.Events, Event{Kind: Message, Role: "tool", Parts: parts})
 		default:
 			return fmt.Errorf("unsupported legacy Kimi role %q", role)
 		}
@@ -691,7 +768,7 @@ func writeKimiCode(history *Session, opts WriteOptions) (result Result, err erro
 	resultIDs := make(map[string]bool)
 	for _, event := range history.Events {
 		for _, part := range event.Parts {
-			if part.Kind == ToolResult {
+			if part.Kind == ToolResult || (part.Kind == Media && part.CallID != "") {
 				resultIDs[part.CallID] = true
 			}
 		}
@@ -705,7 +782,11 @@ func writeKimiCode(history *Session, opts WriteOptions) (result Result, err erro
 		if parent == "" {
 			return fmt.Errorf("Kimi tool result %s has no emitted call", part.CallID)
 		}
-		resultValue := map[string]any{"output": part.Text}
+		output := any(part.Text)
+		if part.Kind == Media {
+			output = map[string]any{"type": "image", "url": mediaDataURL(part), "mime": part.MediaType, "filename": part.Filename}
+		}
+		resultValue := map[string]any{"output": output}
 		if part.Error {
 			resultValue["isError"] = true
 		}
@@ -774,6 +855,8 @@ func writeKimiCode(history *Session, opts WriteOptions) (result Result, err erro
 				switch part.Kind {
 				case Text:
 					content = append(content, map[string]any{"type": "text", "text": part.Text})
+				case Media:
+					content = append(content, map[string]any{"type": "image", "url": mediaDataURL(part), "mime": part.MediaType, "filename": part.Filename})
 				case ToolResult:
 					if err := flushUser(); err != nil {
 						return Result{}, err
@@ -814,6 +897,8 @@ func writeKimiCode(history *Session, opts WriteOptions) (result Result, err erro
 					loop = map[string]any{"type": "content.part", "uuid": eventUUID, "turnId": turnID, "step": step, "stepUuid": stepUUID, "part": map[string]any{"type": "text", "text": part.Text}}
 				case Reasoning:
 					loop = map[string]any{"type": "content.part", "uuid": eventUUID, "turnId": turnID, "step": step, "stepUuid": stepUUID, "part": map[string]any{"type": "think", "think": part.Text}}
+				case Media:
+					loop = map[string]any{"type": "content.part", "uuid": eventUUID, "turnId": turnID, "step": step, "stepUuid": stepUUID, "part": map[string]any{"type": "image", "url": mediaDataURL(part), "mime": part.MediaType, "filename": part.Filename}}
 				case ToolCall:
 					var args map[string]any
 					if err := json.Unmarshal(jsonObject(part.Data), &args); err != nil {
@@ -848,7 +933,7 @@ func writeKimiCode(history *Session, opts WriteOptions) (result Result, err erro
 		}
 		if event.Role == "tool" {
 			for _, part := range event.Parts {
-				if part.Kind != ToolResult {
+				if part.Kind != ToolResult && part.Kind != Media {
 					return Result{}, fmt.Errorf("non-result part appeared in a tool event")
 				}
 				if err := emitToolResult(part, ts); err != nil {
@@ -958,18 +1043,22 @@ func writeKimiLegacy(history *Session, opts WriteOptions) (result Result, err er
 	resultIDs := make(map[string]bool)
 	for _, event := range history.Events {
 		for _, part := range event.Parts {
-			if part.Kind == ToolResult {
+			if part.Kind == ToolResult || (part.Kind == Media && part.CallID != "") {
 				resultIDs[part.CallID] = true
 			}
 		}
 	}
 	emitToolResult := func(part Part, ts time.Time) error {
-		if err := writeJSONLine(contextFile, map[string]any{"role": "tool", "content": part.Text, "tool_call_id": part.CallID}); err != nil {
+		content := any(part.Text)
+		if part.Kind == Media {
+			content = []any{map[string]any{"type": "image", "url": mediaDataURL(part), "mime": part.MediaType, "filename": part.Filename}}
+		}
+		if err := writeJSONLine(contextFile, map[string]any{"role": "tool", "content": content, "tool_call_id": part.CallID}); err != nil {
 			return err
 		}
 		payload := map[string]any{
 			"tool_call_id": part.CallID,
-			"return_value": map[string]any{"is_error": part.Error, "output": part.Text, "message": "", "display": []any{}},
+			"return_value": map[string]any{"is_error": part.Error, "output": content, "message": "", "display": []any{}},
 		}
 		return wire(ts, "ToolResult", payload)
 	}
@@ -1021,6 +1110,8 @@ func writeKimiLegacy(history *Session, opts WriteOptions) (result Result, err er
 				case Text:
 					blocks = append(blocks, map[string]any{"type": "text", "text": part.Text})
 					texts = append(texts, part.Text)
+				case Media:
+					blocks = append(blocks, map[string]any{"type": "image", "url": mediaDataURL(part), "mime": part.MediaType, "filename": part.Filename})
 				case ToolResult:
 					if err := flushUser(); err != nil {
 						return Result{}, err
@@ -1058,6 +1149,12 @@ func writeKimiLegacy(history *Session, opts WriteOptions) (result Result, err er
 					if err := wire(event.Timestamp, "ThinkPart", block); err != nil {
 						return Result{}, err
 					}
+				case Media:
+					block := map[string]any{"type": "image", "url": mediaDataURL(part), "mime": part.MediaType, "filename": part.Filename}
+					content = append(content, block)
+					if err := wire(event.Timestamp, "ImagePart", block); err != nil {
+						return Result{}, err
+					}
 				case ToolCall:
 					call := map[string]any{"type": "function", "id": part.CallID, "function": map[string]any{"name": part.ToolName, "arguments": string(jsonObject(part.Data))}}
 					calls = append(calls, call)
@@ -1088,7 +1185,7 @@ func writeKimiLegacy(history *Session, opts WriteOptions) (result Result, err er
 		}
 		if event.Role == "tool" {
 			for _, part := range event.Parts {
-				if part.Kind != ToolResult {
+				if part.Kind != ToolResult && part.Kind != Media {
 					return Result{}, fmt.Errorf("non-result part appeared in a legacy Kimi tool message")
 				}
 				if err := emitToolResult(part, event.Timestamp); err != nil {

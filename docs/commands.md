@@ -163,7 +163,8 @@ repeating the original instruction.
 | `--max-resumes N` | how many times to resume (default 10) |
 
 It also sets the environment itself, so it works on a machine you never ran
-`install` on, and adds `--profile agentswap` to Codex invocations.
+`install` on. Codex arguments remain native; its configured provider is used
+for the first invocation and any automatic resume.
 
 ### `agentswap teleport <source> <target>`
 
@@ -201,12 +202,9 @@ agentswap handoff claude codex --cwd ./project -- --cwd ./target-view
 ```
 
 Because launching is the defining behavior, use `teleport --dry-run` when only
-validation is wanted. Codex target arguments may not replace the profile or
-provider through `--profile`, `-p`, `--oss`, `--local-provider`, or a
-`model_provider`/`model_providers` config override. Agent Swap unconditionally
-supplies `--profile agentswap` and refuses provider overrides rather than
-allowing a handoff to bypass the managed provider. Model, approval, sandbox,
-reasoning, and prompt options remain pass-through arguments.
+validation is wanted. All target arguments are passed through unchanged,
+including Codex profile, provider, model, approval, sandbox, reasoning, and
+prompt options.
 
 Run it from the project directory. Discovery compares canonical filesystem
 paths, including symlink equivalence, but deliberately does not fall back to
@@ -233,23 +231,21 @@ The success output always includes the new id and exact resume command:
 
 ```text
 Created Codex session 019...
-Resume: codex resume 019... --profile agentswap
+Resume: codex resume 019...
 ```
 
 The target commands are `claude --resume ID`,
-`codex resume ID --profile agentswap`,
+`codex resume ID`,
 `opencode --session ID`, current `kimi --session ID --model MODEL`, and legacy
 `kimi -r ID`.
 `handoff` uses the exact id; it never races against another terminal through
-`--last` or `--continue`. The Codex profile is not user-selectable here:
-Agent Swap always supplies its own profile so the continued target cannot
-silently bypass the managed provider.
+`--last` or `--continue`. Codex's configured provider is copied into the
+teleported session metadata so the native resume command can bootstrap it.
 
-Codex target rollouts record `model_provider = "agentswap"` in their
-`session_meta` because Codex uses that field during resume. This keeps the
-native metadata aligned with the generated command's unconditional
-`--profile agentswap`; a user's unrelated top-level provider cannot make a
-handoff silently bypass the managed provider.
+Codex target rollouts record the target installation's configured
+`model_provider` in `session_meta` because Codex uses that field during resume.
+This keeps native metadata aligned with the generated command without forcing
+an agentswap-specific provider or profile.
 
 Teleport preserves recorded messages and message order, text, recorded
 reasoning, tool names/call ids/JSON inputs/results/error state, plan revisions,
@@ -272,8 +268,10 @@ unrecorded system instructions and hidden reasoning, provider-encrypted or
 signed reasoning state, credentials, approvals, live processes, background
 jobs, and in-memory plugin/MCP state. Recorded reasoning is retained as visible
 content if the target cannot reuse its provider signature. Text-file context is
-retained as visible text with a warning. Media, branched subagent transcripts,
-and unknown conversation-bearing native blocks currently fail closed.
+retained as visible text with a warning. Inline media (including images) is
+transferred as native content (remote URLs remain URLs). Unsupported media forms,
+branched subagent transcripts, and unknown conversation-bearing native blocks
+currently fail closed.
 
 Kimi Code has two incompatible local formats. Current releases use
 `~/.kimi-code` with per-session state and versioned wire event logs; the
@@ -316,10 +314,9 @@ eval "$(agentswap env)"
 ```
 
 Useful for a one-off shell, a CI job, or trying agentswap without changing
-anything. Codex reads a config file rather than the environment, so it still
-needs `install` and `--profile agentswap`. Modern Codex loads that profile from
-`$CODEX_HOME/agentswap.config.toml`; older releases that only understand the
-legacy `[profiles.agentswap]` table should be upgraded before using handoff.
+anything. Codex reads a config file rather than the environment. If you want
+Codex requests routed through agentswap, run `agentswap install --only codex`;
+native handoff and resume commands do not add a profile flag.
 
 ### `agentswap version`
 Prints the version. Release builds carry the tag; a build from source says

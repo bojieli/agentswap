@@ -23,20 +23,17 @@ makes the exit code non-zero.
 
 **`agentswap status` shows no requests, and the daemon logs nothing.**
 
-For Codex, the usual cause is a missing profile. Codex has no equivalent of
-Claude Code's automatic settings pickup, so `codex` on its own quietly uses
-your original account and bypasses the proxy entirely:
+For Codex, check the provider in its own config. Codex does not read the
+Claude-style environment settings, so `agentswap install --only codex` is the
+way to route requests through the proxy:
 
 ```sh
-codex --profile agentswap
+agentswap install --only codex
 ```
 
-If Codex reports that the profile is a legacy `[profiles.agentswap]` table,
-upgrade Codex and rerun `agentswap install`. Current Codex reads the managed
-profile from `$CODEX_HOME/agentswap.config.toml`; agentswap leaves your base
-`config.toml` and unrelated profile files intact.
-
-`agentswap run -- codex ...` adds this for you.
+`agentswap handoff` and `agentswap run` leave Codex's command-line profile and
+provider options unchanged. A teleported session records the provider already
+configured in the target Codex installation.
 
 For Claude Code, check that the settings file was actually picked up. Anything
 that sets `ANTHROPIC_BASE_URL` in your shell overrides what `install` wrote,

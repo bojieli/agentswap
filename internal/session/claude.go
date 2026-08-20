@@ -207,20 +207,35 @@ func (claudeAdapter) Read(_ context.Context, candidate Candidate) (*Session, err
 				}
 			case "file":
 				content, ok := attachment["content"].(map[string]any)
-				if !ok || stringValue(content["type"]) != "text" {
+				if !ok {
 					return fmt.Errorf("unsupported Claude file attachment (media cannot be teleported safely)")
 				}
-				file, ok := content["file"].(map[string]any)
-				if !ok {
-					return fmt.Errorf("Claude text attachment has no file object")
+				contentType := stringValue(content["type"])
+				if contentType == "image" || contentType == "document" {
+					media, mediaErr := mediaPartFromValue(content["source"], stringValue(content["media_type"]), stringValue(attachment["filename"]))
+					if mediaErr != nil {
+						media, mediaErr = mediaPartFromValue(content, stringValue(content["media_type"]), stringValue(attachment["filename"]))
+					}
+					if mediaErr != nil {
+						return fmt.Errorf("Claude media attachment: %w", mediaErr)
+					}
+					history.Events = append(history.Events, Event{Kind: Message, ID: stringValue(record["uuid"]), ParentID: stringValue(record["parentUuid"]), Role: "user", Timestamp: timestamp, Parts: []Part{media}})
+				} else {
+					if contentType != "text" {
+						return fmt.Errorf("unsupported Claude file attachment (media cannot be teleported safely)")
+					}
+					file, ok := content["file"].(map[string]any)
+					if !ok {
+						return fmt.Errorf("Claude text attachment has no file object")
+					}
+					name := stringValue(attachment["filename"])
+					if name == "" {
+						name = stringValue(file["filePath"])
+					}
+					text := fmt.Sprintf("[Claude text attachment: %s]\n%s", name, stringValue(file["content"]))
+					history.Events = append(history.Events, Event{Kind: Message, ID: stringValue(record["uuid"]), ParentID: stringValue(record["parentUuid"]), Role: "user", Timestamp: timestamp, Parts: []Part{{Kind: Text, Text: text}}})
+					history.Warnings = appendUnique(history.Warnings, "a Claude text-file attachment was retained as user-visible text")
 				}
-				name := stringValue(attachment["filename"])
-				if name == "" {
-					name = stringValue(file["filePath"])
-				}
-				text := fmt.Sprintf("[Claude text attachment: %s]\n%s", name, stringValue(file["content"]))
-				history.Events = append(history.Events, Event{Kind: Message, ID: stringValue(record["uuid"]), ParentID: stringValue(record["parentUuid"]), Role: "user", Timestamp: timestamp, Parts: []Part{{Kind: Text, Text: text}}})
-				history.Warnings = appendUnique(history.Warnings, "a Claude text-file attachment was retained as user-visible text")
 			case "edited_text_file":
 				name := stringValue(attachment["filename"])
 				text := fmt.Sprintf("[Claude edited-file context: %s]\n%s", name, stringValue(attachment["snippet"]))
@@ -286,6 +301,26 @@ func (claudeAdapter) Read(_ context.Context, candidate Candidate) (*Session, err
 					if text != "" {
 						event.Parts = append(event.Parts, Part{Kind: Reasoning, Text: text})
 					}
+				case "image", "document":
+					source, ok := block["source"].(map[string]any)
+					if !ok {
+						return fmt.Errorf("Claude image block has no source")
+					}
+					sourceType := stringValue(source["type"])
+					var media Part
+					var mediaErr error
+					switch sourceType {
+					case "base64":
+						media, mediaErr = mediaPart("data:"+stringValue(source["media_type"])+";base64,"+stringValue(source["data"]), stringValue(source["media_type"]), stringValue(block["filename"]))
+					case "url":
+						media, mediaErr = mediaPart(stringValue(source["url"]), stringValue(source["media_type"]), stringValue(block["filename"]))
+					default:
+						mediaErr = fmt.Errorf("unsupported Claude image source %q", sourceType)
+					}
+					if mediaErr != nil {
+						return mediaErr
+					}
+					event.Parts = append(event.Parts, media)
 				case "tool_use", "server_tool_use":
 					id, _ := block["id"].(string)
 					name, _ := block["name"].(string)
@@ -306,12 +341,12 @@ func (claudeAdapter) Read(_ context.Context, candidate Candidate) (*Session, err
 					}
 				case "tool_result":
 					id, _ := block["tool_use_id"].(string)
-					text, err := claudeResultText(block["content"])
+					isError, _ := block["is_error"].(bool)
+					parts, err := claudeResultParts(block["content"], id, isError)
 					if err != nil {
 						return fmt.Errorf("tool result %s: %w", id, err)
 					}
-					isError, _ := block["is_error"].(bool)
-					event.Parts = append(event.Parts, Part{Kind: ToolResult, CallID: id, Text: text, Error: isError})
+					event.Parts = append(event.Parts, parts...)
 				default:
 					return fmt.Errorf("unsupported Claude conversation block %q", kind)
 				}
@@ -357,29 +392,77 @@ func (claudeAdapter) Read(_ context.Context, candidate Candidate) (*Session, err
 }
 
 func claudeResultText(content any) (string, error) {
+	parts, err := claudeResultParts(content, "", false)
+	if err != nil {
+		return "", err
+	}
+	var texts []string
+	for _, part := range parts {
+		if part.Kind == Text || part.Kind == ToolResult {
+			texts = append(texts, part.Text)
+		}
+	}
+	return strings.Join(texts, "\n"), nil
+}
+
+func claudeResultParts(content any, callID string, isError bool) ([]Part, error) {
 	switch value := content.(type) {
 	case nil:
-		return "", nil
+		return []Part{{Kind: ToolResult, CallID: callID, Error: isError}}, nil
 	case string:
-		return value, nil
+		return []Part{{Kind: ToolResult, CallID: callID, Text: value, Error: isError}}, nil
 	case []any:
-		var parts []string
+		var parts []Part
 		for _, item := range value {
 			block, ok := item.(map[string]any)
 			if !ok {
-				return "", fmt.Errorf("contains a non-object content block")
+				return nil, fmt.Errorf("contains a non-object content block")
 			}
 			kind, _ := block["type"].(string)
-			if kind != "text" {
-				return "", fmt.Errorf("unsupported content block %q (media cannot be teleported safely)", kind)
+			switch kind {
+			case "text":
+				text, _ := block["text"].(string)
+				parts = append(parts, Part{Kind: ToolResult, CallID: callID, Text: text, Error: isError})
+			case "image", "document":
+				source, ok := block["source"].(map[string]any)
+				if !ok {
+					return nil, fmt.Errorf("image block has no source")
+				}
+				var media Part
+				var err error
+				switch stringValue(source["type"]) {
+				case "base64":
+					media, err = mediaPart("data:"+stringValue(source["media_type"])+";base64,"+stringValue(source["data"]), stringValue(source["media_type"]), stringValue(block["filename"]))
+				case "url":
+					media, err = mediaPart(stringValue(source["url"]), stringValue(source["media_type"]), stringValue(block["filename"]))
+				default:
+					err = fmt.Errorf("unsupported image source %q", stringValue(source["type"]))
+				}
+				if err != nil {
+					return nil, err
+				}
+				media.CallID, media.Error = callID, isError
+				parts = append(parts, media)
+			default:
+				return nil, fmt.Errorf("unsupported content block %q (media cannot be teleported safely)", kind)
 			}
-			text, _ := block["text"].(string)
-			parts = append(parts, text)
 		}
-		return strings.Join(parts, "\n"), nil
+		return parts, nil
 	default:
-		return "", fmt.Errorf("unsupported content type %T", content)
+		return nil, fmt.Errorf("unsupported content type %T", content)
 	}
+}
+
+func claudeMediaBlock(part Part, source map[string]any) map[string]any {
+	kind := "image"
+	if !strings.HasPrefix(strings.ToLower(part.MediaType), "image/") {
+		kind = "document"
+	}
+	block := map[string]any{"type": kind, "source": source}
+	if part.Filename != "" {
+		block["filename"] = part.Filename
+	}
+	return block
 }
 
 func hasOnlyToolResults(parts []Part) bool {
@@ -387,7 +470,7 @@ func hasOnlyToolResults(parts []Part) bool {
 		return false
 	}
 	for _, part := range parts {
-		if part.Kind != ToolResult {
+		if part.Kind != ToolResult && !(part.Kind == Media && part.CallID != "") {
 			return false
 		}
 	}
@@ -456,7 +539,7 @@ func (claudeAdapter) Write(_ context.Context, history *Session, opts WriteOption
 	results := make(map[string]bool)
 	for _, event := range history.Events {
 		for _, part := range event.Parts {
-			if part.Kind == ToolResult {
+			if part.Kind == ToolResult || (part.Kind == Media && part.CallID != "") {
 				results[part.CallID] = true
 			}
 		}
@@ -530,6 +613,21 @@ func (claudeAdapter) Write(_ context.Context, history *Session, opts WriteOption
 				assistant = append(assistant, map[string]any{"type": "tool_use", "id": part.CallID, "name": part.ToolName, "input": jsonObject(part.Data)})
 				if !results[part.CallID] {
 					dangling = append(dangling, part.CallID)
+				}
+			case Media:
+				var source map[string]any
+				if part.MediaData != "" {
+					source = map[string]any{"type": "base64", "media_type": part.MediaType, "data": part.MediaData}
+				} else {
+					source = map[string]any{"type": "url", "url": part.MediaURL}
+				}
+				block := claudeMediaBlock(part, source)
+				if event.Role == "assistant" {
+					assistant = append(assistant, block)
+				} else if part.CallID != "" {
+					user = append(user, map[string]any{"type": "tool_result", "tool_use_id": part.CallID, "content": []any{block}, "is_error": part.Error})
+				} else {
+					user = append(user, block)
 				}
 			case ToolResult:
 				user = append(user, map[string]any{"type": "tool_result", "tool_use_id": part.CallID, "content": part.Text, "is_error": part.Error})

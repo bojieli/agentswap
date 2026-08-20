@@ -173,13 +173,13 @@ func (openCodeAdapter) Read(ctx context.Context, candidate Candidate) (*Session,
 				}
 				history.Events = append(history.Events, Event{Kind: Message, Role: "assistant", Timestamp: ts, Parts: []Part{{Kind: ToolCall, ID: stringValue(part["id"]), CallID: callID, ToolName: name, Data: jsonObject(input)}}})
 				status := stringValue(state["status"])
-				var output string
+				var output any
 				var isError bool
 				switch status {
 				case "completed":
-					output = stringValue(state["output"])
+					output = state["output"]
 				case "error":
-					output = stringValue(state["error"])
+					output = state["error"]
 					isError = true
 				case "pending", "running":
 					history.Warnings = appendUnique(history.Warnings, fmt.Sprintf("OpenCode tool call %s was %s when recorded", callID, status))
@@ -187,11 +187,27 @@ func (openCodeAdapter) Read(ctx context.Context, candidate Candidate) (*Session,
 				default:
 					return nil, fmt.Errorf("OpenCode tool %s has unsupported state %q", callID, status)
 				}
-				history.Events = append(history.Events, Event{Kind: Message, Role: "tool", Timestamp: ts, Parts: []Part{{Kind: ToolResult, CallID: callID, Text: output, Error: isError}}})
+				parts, err := openCodeOutputParts(output, callID)
+				if err != nil {
+					return nil, err
+				}
+				for i := range parts {
+					parts[i].Error = isError
+				}
+				history.Events = append(history.Events, Event{Kind: Message, Role: "tool", Timestamp: ts, Parts: parts})
 			case "step-start", "step-finish", "snapshot", "patch", "retry", "compaction":
 				// Execution/UI bookkeeping. Conversation-bearing text, reasoning and
 				// tools are represented by their own parts and retained above.
-			case "file", "agent", "subtask":
+			case "file":
+				media, err := mediaPartFromValue(part["url"], stringValue(part["mime"]), stringValue(part["filename"]))
+				if err != nil {
+					media, err = mediaPartFromValue(part["source"], stringValue(part["mime"]), stringValue(part["filename"]))
+				}
+				if err != nil {
+					return nil, fmt.Errorf("unsupported OpenCode file media: %w", err)
+				}
+				event.Parts = append(event.Parts, media)
+			case "agent", "subtask":
 				return nil, fmt.Errorf("unsupported OpenCode %s part (attachments and agent delegation cannot be teleported safely)", kind)
 			default:
 				return nil, fmt.Errorf("unsupported OpenCode conversation part %q", kind)
@@ -203,6 +219,33 @@ func (openCodeAdapter) Read(ctx context.Context, candidate Candidate) (*Session,
 		history.Title = firstText(history)
 	}
 	return history, nil
+}
+
+func openCodeOutputParts(output any, callID string) ([]Part, error) {
+	if text, ok := output.(string); ok {
+		return []Part{{Kind: ToolResult, CallID: callID, Text: text}}, nil
+	}
+	if obj, ok := output.(map[string]any); ok {
+		if kind := stringValue(obj["type"]); kind == "image" || kind == "input_image" {
+			media, err := mediaPartFromValue(obj["url"], stringValue(obj["mime"]), stringValue(obj["filename"]))
+			if err != nil {
+				media, err = mediaPartFromValue(obj["image_url"], stringValue(obj["mime"]), stringValue(obj["filename"]))
+			}
+			if err != nil {
+				return nil, err
+			}
+			media.CallID = callID
+			return []Part{media}, nil
+		}
+	}
+	if output == nil {
+		return []Part{{Kind: ToolResult, CallID: callID}}, nil
+	}
+	text, err := stringifyOutput(output)
+	if err != nil {
+		return nil, err
+	}
+	return []Part{{Kind: ToolResult, CallID: callID, Text: text}}, nil
 }
 
 func (openCodeAdapter) Write(ctx context.Context, history *Session, opts WriteOptions) (result Result, err error) {
@@ -243,7 +286,7 @@ func (openCodeAdapter) Write(ctx context.Context, history *Session, opts WriteOp
 	toolResults := make(map[string]recordedToolResult)
 	for _, event := range history.Events {
 		for _, part := range event.Parts {
-			if part.Kind == ToolResult {
+			if part.Kind == ToolResult || (part.Kind == Media && part.CallID != "") {
 				toolResults[part.CallID] = recordedToolResult{part: part, time: event.Timestamp}
 			}
 		}
@@ -270,6 +313,12 @@ func (openCodeAdapter) Write(ctx context.Context, history *Session, opts WriteOp
 			case Reasoning:
 				start := timestampOr(event.Timestamp, now).UnixMilli()
 				parts = append(parts, map[string]any{"id": partID, "sessionID": id, "type": "reasoning", "text": part.Text, "time": map[string]any{"start": start, "end": start}})
+			case Media:
+				file := map[string]any{"id": partID, "sessionID": id, "type": "file", "mime": part.MediaType, "url": mediaDataURL(part)}
+				if part.Filename != "" {
+					file["filename"] = part.Filename
+				}
+				parts = append(parts, file)
 			case ToolCall:
 				stateTime := timestampOr(event.Timestamp, now).UnixMilli()
 				input := map[string]any{}
@@ -279,10 +328,14 @@ func (openCodeAdapter) Write(ctx context.Context, history *Session, opts WriteOp
 				state := map[string]any{"status": "error", "input": input, "error": "[Tool execution was interrupted before teleport]", "time": map[string]any{"start": stateTime, "end": stateTime}}
 				if recorded, ok := toolResults[part.CallID]; ok {
 					endTime := timestampOr(recorded.time, timestampOr(event.Timestamp, now)).UnixMilli()
+					output := any(recorded.part.Text)
+					if recorded.part.Kind == Media {
+						output = map[string]any{"type": "image", "url": mediaDataURL(recorded.part), "mime": recorded.part.MediaType, "filename": recorded.part.Filename}
+					}
 					if recorded.part.Error {
 						state = map[string]any{"status": "error", "input": input, "error": recorded.part.Text, "time": map[string]any{"start": stateTime, "end": endTime}}
 					} else {
-						state = map[string]any{"status": "completed", "input": input, "output": recorded.part.Text, "title": part.ToolName, "metadata": map[string]any{}, "time": map[string]any{"start": stateTime, "end": endTime}}
+						state = map[string]any{"status": "completed", "input": input, "output": output, "title": part.ToolName, "metadata": map[string]any{}, "time": map[string]any{"start": stateTime, "end": endTime}}
 					}
 				}
 				parts = append(parts, map[string]any{"id": partID, "sessionID": id, "type": "tool", "callID": part.CallID, "tool": part.ToolName, "state": state})

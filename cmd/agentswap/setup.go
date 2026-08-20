@@ -31,7 +31,7 @@ func cmdEnv(args []string) error {
 		fmt.Printf("export %s=%q\n", k, v)
 	}
 	fmt.Printf("# Codex reads config files, not the environment. Run `agentswap install`,\n")
-	fmt.Printf("# then start it with: codex --profile %s\n", install.ProfileName)
+	fmt.Printf("# then start it with: codex\n")
 	return nil
 }
 
@@ -69,7 +69,7 @@ func cmdInstall(args []string) error {
 	}
 	fmt.Printf("\nDone. Start the daemon with `agentswap serve`, then:\n")
 	fmt.Printf("  %-28s # picks up the settings automatically\n", "claude")
-	fmt.Printf("  %-28s # Codex needs the profile flag\n", "codex --profile "+install.ProfileName)
+	fmt.Printf("  %-28s # uses Codex's configured provider\n", "codex")
 	return nil
 }
 
@@ -219,9 +219,7 @@ func cmdDoctor(args []string) error {
 	reportWiring("Claude Code", claudeAddr, "claude")
 	reportWiring("Codex", codexReadyAddr, "codex")
 	if codexReadyAddr == addr {
-		// Codex has no equivalent of Claude Code's automatic pickup, so a
-		// correct config still needs the flag at the call site.
-		fmt.Printf("       start Codex with: codex --profile %s\n", install.ProfileName)
+		fmt.Printf("       start Codex with: codex\n")
 	}
 
 	// 4. Report anything the pool already knows is broken.

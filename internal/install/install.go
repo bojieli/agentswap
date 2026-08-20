@@ -267,7 +267,7 @@ func CodexBlock(addr string) string {
 	var b strings.Builder
 	b.WriteString(beginMarker + "\n")
 	b.WriteString("# Added by `agentswap install`. Remove with `agentswap uninstall`.\n")
-	b.WriteString("# Use it with:  codex --profile " + ProfileName + "\n")
+	b.WriteString("# Select it explicitly with:  codex --profile " + ProfileName + "\n")
 	fmt.Fprintf(&b, "[model_providers.%s]\n", ProfileName)
 	fmt.Fprintf(&b, "name = %q\n", ProfileName)
 	fmt.Fprintf(&b, "base_url = \"http://%s/openai\"\n", addr)

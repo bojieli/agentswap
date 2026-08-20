@@ -46,7 +46,8 @@ It also includes:
   errors, five plan revisions, and dangling calls that require interrupted
   results;
 - a JSONL safety-limit case larger than 64 MiB;
-- fail-closed cases for media, subagent/agent/subtask records, malformed and
+- image-media round trips plus fail-closed cases for unsupported media,
+  subagent/agent/subtask records, malformed and
   unknown conversation-bearing blocks, duplicate/orphaned results, and empty
   canonical records;
 - post-publication rollback for legacy Kimi metadata corruption and no-artifact
@@ -95,7 +96,7 @@ drives the binary through a real pseudo-terminal. It verifies terminal
 behavior matches scripts: default current-directory discovery selects the
 latest named-source session without prompting, `--session` selects an exact
 non-latest source, a missing id writes no target, and Codex output retains the
-mandatory `--profile agentswap`.
+native `codex resume ID` command without an injected profile.
 
 ## Real credential failover
 

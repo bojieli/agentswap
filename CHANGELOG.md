@@ -17,11 +17,11 @@ version moves for anything that changes behaviour.
   native model, permission, sandbox, prompt, and UI options remain available.
   The old target-first `--from`, `--latest`, and `--launch` forms remain
   temporarily available with deprecation warnings.
-- **Every generated Codex continuation uses the Agent Swap profile.** Codex
-  targets now print and launch `codex resume ID --profile agentswap`, preventing
-  a handoff from silently returning to an unmanaged provider. The generated
-  rollout's `session_meta.model_provider` is aligned to the same profile so
-  Codex's resume-time metadata cannot override that routing choice.
+- **Codex handoffs now use native target configuration.** Generated targets
+  print and launch `codex resume ID` without injecting `--profile agentswap`.
+  The rollout's `session_meta.model_provider` is read from the target Codex
+  configuration, preventing a resume from referring to a provider that is not
+  present in that installation.
 
 ### Fixed
 

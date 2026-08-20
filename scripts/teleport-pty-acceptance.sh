@@ -70,7 +70,8 @@ export AGENTSWAP_PTY_LOG="$latest_log"
 
 rg -Fq "Claude Code $newer_id -> Codex ($canonical_project)" "$latest_log" || fail "PTY default did not use the latest source"
 rg -Fq "Created Codex session" "$latest_log" || fail "latest-source PTY teleport created no target"
-rg -Fq -- "--profile agentswap" "$latest_log" || fail "Codex resume command omitted the agentswap profile"
+rg -Fq -- "Resume: codex resume " "$latest_log" || fail "Codex resume command was not reported"
+if rg -Fq -- "--profile" "$latest_log"; then fail "Codex resume command unexpectedly injected a profile"; fi
 if rg -Fq "Choose [" "$latest_log"; then fail "PTY unexpectedly opened a session picker"; fi
 
 exact_log="$logs/exact.log"
@@ -116,6 +117,6 @@ target_count=$(find "$codex_home/sessions" -type f -name '*.jsonl' | wc -l | tr 
 echo "PASS: a real PTY selected the latest cwd-scoped source without prompting"
 echo "PASS: --session selected an exact non-latest source"
 echo "PASS: a missing session failed without writing a target"
-echo "PASS: Codex resume output included --profile agentswap"
+echo "PASS: Codex resume output used the native command"
 echo "acceptance summary: $logs/acceptance-summary.txt"
 echo "acceptance artifacts retained at $acceptance_root"

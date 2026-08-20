@@ -72,9 +72,10 @@ func TestTeleportClaudeToCodex(t *testing.T) {
 	sourceBefore := readFile(t, source)
 
 	r := e.mustRun("teleport", "claude", "codex", "--cwd", project)
-	for _, want := range []string{"Created Codex session", "codex resume", "--profile agentswap", "Claude Code " + sourceID + " -> Codex"} {
+	for _, want := range []string{"Created Codex session", "codex resume", "Claude Code " + sourceID + " -> Codex"} {
 		mustContain(t, r.out(), want, "teleport output")
 	}
+	mustNotContain(t, r.out(), "--profile", "teleport output")
 	if got := readFile(t, source); got != sourceBefore {
 		t.Fatal("teleport modified the source session")
 	}
@@ -165,9 +166,9 @@ exit "${FAKE_LAUNCH_EXIT:-0}"
 		t.Fatalf("handoff exited %d:\n%s", r.code, r.out())
 	}
 	lines := strings.Split(strings.TrimSpace(readFile(t, capture)), "\n")
-	if len(lines) != 7 || lines[1] != "<resume>" || lines[3] != "<--profile>" || lines[4] != "<agentswap>" ||
-		lines[5] != "<--dangerously-bypass-approvals-and-sandbox>" || lines[6] != "<continue here>" {
-		t.Fatalf("handoff capture = %#v, want cwd, resume, exact id, agentswap profile, and unchanged target args", lines)
+	if len(lines) != 5 || lines[1] != "<resume>" ||
+		lines[3] != "<--dangerously-bypass-approvals-and-sandbox>" || lines[4] != "<continue here>" {
+		t.Fatalf("handoff capture = %#v, want cwd, resume, exact id, and unchanged target args", lines)
 	}
 	canonical, err := filepath.EvalSymlinks(project)
 	if err != nil {
@@ -179,8 +180,8 @@ exit "${FAKE_LAUNCH_EXIT:-0}"
 	targetID := strings.TrimSuffix(strings.TrimPrefix(lines[2], "<"), ">")
 	for _, want := range []string{
 		"Created Codex session " + targetID,
-		"Resume: codex resume " + targetID + " --profile agentswap --dangerously-bypass-approvals-and-sandbox 'continue here'",
-		"Launching: codex resume " + targetID + " --profile agentswap --dangerously-bypass-approvals-and-sandbox 'continue here'",
+		"Resume: codex resume " + targetID + " --dangerously-bypass-approvals-and-sandbox 'continue here'",
+		"Launching: codex resume " + targetID + " --dangerously-bypass-approvals-and-sandbox 'continue here'",
 	} {
 		mustContain(t, r.out(), want, "handoff")
 	}
@@ -227,8 +228,6 @@ func TestTeleportSelectionEnvironmentAndInputValidation(t *testing.T) {
 		{name: "handoff needs both agents", args: []string{"handoff", "codex"}, want: "source and target agents are required"},
 		{name: "same source and target", args: []string{"teleport", "claude", "claude", "--cwd", project}, want: "source and target agents are the same"},
 		{name: "launch dry run", args: []string{"teleport", "claude", "codex", "--cwd", project, "--launch", "--dry-run"}, want: "--launch cannot be combined"},
-		{name: "Codex profile protected", args: []string{"handoff", "claude", "codex", "--cwd", project, "--profile", "mine"}, want: "always uses --profile agentswap"},
-		{name: "Codex provider protected", args: []string{"handoff", "claude", "codex", "--cwd", project, "-c", `model_provider="openai"`}, want: "always uses the agentswap provider"},
 		{name: "unknown source", args: []string{"teleport", "other", "codex", "--cwd", project}, want: "source: unknown agent"},
 		{name: "unknown target", args: []string{"teleport", "claude", "other", "--cwd", project}, want: "target: unknown agent"},
 		{name: "positional and from", args: []string{"teleport", "claude", "codex", "--from", "kimi", "--cwd", project}, want: "--from cannot be combined"},

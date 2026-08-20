@@ -223,8 +223,11 @@ run_pair() {
   target_id=$(sed -nE 's/^Created .* session ([^ ]+)$/\1/p' "$teleport_log" | sed -n '1p')
   [[ -n $target_id ]] || fail "$pair did not create a target id"
   if [[ $target == codex ]]; then
-    rg -Fq "Resume: codex resume $target_id --profile agentswap" "$teleport_log" || \
-      fail "$pair did not report the mandatory Codex agentswap profile"
+    rg -Fq "Resume: codex resume $target_id" "$teleport_log" || \
+      fail "$pair did not report the native Codex resume command"
+    if rg -Fq -- "Resume: codex resume $target_id --profile" "$teleport_log"; then
+      fail "$pair unexpectedly injected a Codex profile"
+    fi
   fi
 
   local prompt

@@ -50,7 +50,7 @@ Then use your CLIs exactly as before:
 
 ```sh
 claude                          # picks up the settings automatically
-codex --profile agentswap       # Codex needs the profile flag
+codex                           # uses Codex's configured provider
 ```
 
 That is one account, which is not yet failover. Sign in as another and pool it:
@@ -156,8 +156,8 @@ agentswap run -- codex exec "fix the failing tests"
 ```
 
 `run` also sets the environment itself, so it works on a machine you never ran
-`install` on, and adds `--profile agentswap` to Codex invocations — without it,
-Codex silently bypasses the proxy.
+`install` on. It leaves Codex's command-line options unchanged and relies on
+Codex's configured provider for both the first invocation and any resume.
 
 ## Moving a session to another coding agent
 
@@ -182,13 +182,13 @@ formats are supported as sources. All four are supported as targets. Discovery
 uses an exact, symlink-aware match of the current directory, so worktrees and
 neighboring packages in a monorepo do not get mixed. The newest session from
 the named source is selected by default; `--session` selects an exact source id.
-When Codex is the target, the generated and launched command always includes
-`--profile agentswap`, so the continued session stays on the managed provider.
-Other `handoff` arguments are passed unchanged to the target CLI, allowing its
-normal model, permission, sandbox, prompt, and UI options. Codex profile and
-provider overrides are the exception: they are refused so the managed route
-cannot be silently bypassed. Agent Swap consumes only `--session` and `--cwd`;
-use `--` first if the target itself needs an option with either of those names.
+When Codex is the target, the generated and launched command uses Codex's
+native `codex resume ID` form. The target's configured provider is recorded in
+the teleported rollout metadata, so no agentswap-specific profile flag is
+required. Other `handoff` arguments are passed unchanged to the target CLI,
+including model, provider, permission, sandbox, prompt, and UI options. Agent
+Swap consumes only `--session` and `--cwd`; use `--` first if the target itself
+needs an option with either of those names.
 
 Teleport translates the recorded structure — messages, recorded reasoning,
 tool calls, call ids, JSON inputs, results and errors, plans, timestamps, and
@@ -207,10 +207,11 @@ This is a continuation, not process migration. Provider KV caches, hidden or
 encrypted reasoning, unrecorded system prompts, credentials, approvals, live
 shell processes, background tasks, and in-memory plugin state cannot move.
 Provider-signed reasoning becomes ordinary recorded content where necessary,
-with a warning. Text-file context is retained as visible text; media, branched
-subagent transcripts, or an unknown conversation-bearing schema fail closed
-rather than creating a target that only looks resumable. See the exact command
-and format contract in [docs/commands.md](docs/commands.md#agentswap-teleport-source-target).
+with a warning. Text-file context is retained as visible text; inline media
+(including images) is transferred as native content (remote URLs remain URLs), while
+branched subagent transcripts or an unknown conversation-bearing schema fail
+closed rather than creating a target that only looks resumable. See the exact
+command and format contract in [docs/commands.md](docs/commands.md#agentswap-teleport-source-target).
 For a real four-harness acceptance matrix, see
 [docs/teleport-live-acceptance.md](docs/teleport-live-acceptance.md).
 The complete credential, supervisor, platform, stress, fuzz, PTY, and legacy
@@ -298,16 +299,17 @@ permitted is your call about your own accounts.
 - Predictive rotation is Anthropic-only. Codex reports its quota inside the SSE
   stream rather than in headers, so that lane learns an account is spent from
   the 429.
-- Codex needs `--profile agentswap`; it has no equivalent of Claude Code's
-  automatic settings pickup. `agentswap install` creates the current
-  `$CODEX_HOME/agentswap.config.toml` profile overlay for it.
+- Codex uses its own configured provider. `agentswap install` can add the
+  agentswap provider and profile overlay, but handoff and supervised resume do
+  not inject `--profile` on the command line.
 - Automatic resume needs `agentswap run`. A bare `claude` gets the 503 and
   stops, because nothing is supervising it.
 - agentswap has no OAuth flow of its own, so `agentswap login` guides a sign-in
   and adopts the result rather than signing you in.
 - Session teleportation cannot transfer hidden provider/runtime state, active
-  processes, credentials, or approvals. Unsupported conversation-bearing media
-  fails closed, and every representational degradation is printed.
+  processes, credentials, or approvals. Inline image media is transferred when
+  the source records it; unsupported conversation-bearing media fails closed,
+  and every representational degradation is printed.
 - OpenCode must be installed when it is a source or non-dry-run target, because
   its native import/export commands are the compatibility boundary.
 
