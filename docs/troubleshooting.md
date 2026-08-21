@@ -211,12 +211,60 @@ Codex sends a bare `/responses`.
 validated on load precisely so a typo fails at startup rather than behaving
 strangely under load.
 
+## A teleported session is too long for the harness I moved it to
+
+Harnesses do not share a context window, so a session the source held
+comfortably can be more than the target can load. `teleport` and `handoff`
+measure the thread and warn before this happens:
+
+```text
+warning: the transferred thread is about 384k tokens, which is more than Codex
+is likely to hold; re-run with --compact to abridge it and archive the full
+history
+```
+
+Re-run the transfer with `--compact`, optionally naming a budget. The source is
+read-only, so the earlier target can simply be abandoned:
+
+```sh
+agentswap handoff claude codex --compact
+agentswap handoff claude codex --budget 80k
+```
+
+The complete history is written to `<config dir>/archives/<id>/` as plain text
+that the resumed agent can read, and every elision in the transferred thread
+carries an inline marker naming the exact file. See
+[Keep a session moving](sessions.md#when-the-target-cannot-hold-the-whole-history).
+
+## The resumed agent says it cannot read the archive
+
+That directory is outside the project, and a coding agent is normally confined
+to its working directory. Grant the access when it asks, or put the archive
+inside the project so no grant is needed:
+
+```sh
+agentswap handoff claude codex --compact --archive-dir ./.agentswap
+```
+
+A non-interactive resume — `claude -p`, `codex exec` — cannot ask for access at
+all, so use `--archive-dir` when the target will not have a human at the
+keyboard. Add the directory to `.gitignore`.
+
+If `--compact` reports that it reached its floor and is *still* above the
+budget, the conversation itself is the size — usually one very large pasted
+message. Ask the source harness to compact it (`/compact` in Claude Code) and
+transfer the shortened session instead.
+
 ## Starting over
 
 ```sh
 agentswap uninstall              # restores the CLI config files
 rm -rf ~/.config/agentswap       # forgets the pool and its state
 ```
+
+That also forgets every session archive `--compact` wrote. Remove them on their
+own with `rm -rf ~/.config/agentswap/archives`; an archive is a complete copy
+of a session, so treat one as sensitive.
 
 `uninstall` only removes values it recognises as its own, and every edit it
 ever made was preceded by a timestamped backup next to the original file.

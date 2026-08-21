@@ -204,6 +204,21 @@ agentswap handoff kimi claude --session <source-id>
 agentswap teleport codex opencode --cwd ~/src/project
 ```
 
+Harnesses do not share a context window, so a session one held comfortably can
+be more than the target can load. agentswap says so before you find out the
+hard way, and `--compact` abridges the thread until it fits:
+
+```sh
+agentswap handoff claude codex --compact
+agentswap teleport claude codex --compact --budget 80k
+```
+
+The reduction is mechanical — no model is asked to summarize anything — and
+everything it removes is written to a plain-text archive the resumed agent can
+read, with an inline marker at each elision naming the exact file. Add
+`--archive-dir ./.agentswap` when the target will run with its normal
+permissions, so the archive is inside the project it is allowed to read.
+
 See the user guide in [docs/sessions.md](docs/sessions.md) and the exact flag
 reference in [docs/commands.md](docs/commands.md).
 

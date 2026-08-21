@@ -6,6 +6,41 @@ version moves for anything that changes behaviour.
 
 ## Unreleased
 
+### Added
+
+- **A transfer can be abridged to fit a smaller context window.** Harnesses do
+  not share a window, so a session Claude Code carried comfortably could be
+  more than the target could load — and the transfer looked successful right up
+  to the moment the resumed session failed. `teleport` and `handoff` now
+  measure what they are about to hand over and warn when it will not fit, and
+  `--compact` (with an optional `--budget 120k`) reduces the thread until it
+  does. The reduction is mechanical and offline: recorded reasoning first, then
+  long tool results and messages truncated to their opening and closing lines,
+  then inline attachments, and only last the collapse of whole earlier turns.
+  Nothing asks a model to summarize the history, which would make a transfer
+  non-deterministic, put it back on the network, and give it a credential.
+  What replaces a summary is a digest derived from the events themselves: the
+  original request, the files the recorded tool calls wrote, the commands they
+  ran, the latest plan, and any call that never came back. Everything removed
+  is written to `<config dir>/archives/<id>/`, or wherever `--archive-dir`
+  says, as plain files — `INDEX.md`,
+  `transcript.txt`, `history.json`, `manifest.json`, and one file per elided
+  payload — because a resumed agent can always open a file but cannot always be
+  granted permission to run a command. Each elision carries an inline marker
+  naming the exact file. Delegated agent runs are left alone: the main model
+  never read them and resuming the main thread does not load them, so removing
+  one would cost fidelity and save nothing. The archive is written before the
+  target and removed again if the target write fails; `--dry-run` reports the
+  reduction and writes neither. Live checks against Claude Code confirmed that a
+  resumed session follows a marker to the exact file, for both a truncated tool
+  result and a collapsed run of turns — and that under default permissions it
+  cannot, because the archive sits outside the project directory the agent is
+  confined to. `--archive-dir` places the archive inside the project for that
+  case, and `teleport` now prints a hint naming it whenever the archive lands
+  out of reach. If you would rather have a written summary,
+  `/compact` in the source harness before transferring still works and is now
+  documented.
+
 ### Fixed
 
 - **Four end-to-end tests failed on any machine already running agentswap.**
@@ -94,7 +129,10 @@ version moves for anything that changes behaviour.
   the standard in-band events and error types exactly like their HTTP-status
   equivalents: an overload retries in place, quota exhaustion rotates, a
   refused credential refreshes, and anything else is handed back
-  byte-for-byte.
+  byte-for-byte. The sampling itself is guarded by a 5-second watchdog: if
+  the upstream sends headers but stalls before the first byte, the probe
+  times out and the body is relayed unchanged, so no latency is added to
+  healthy streams that respond quickly.
 
 - **Claude sessions could fail when a later event changed directories.** A
   transcript may legitimately record a process CWD outside its project root;

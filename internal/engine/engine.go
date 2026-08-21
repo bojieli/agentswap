@@ -241,10 +241,17 @@ func (e *Engine) Execute(ctx context.Context, laneID store.LaneID, req *http.Req
 		// the lane can classify those exactly like their HTTP-status
 		// equivalents, which is safe precisely because nothing has reached
 		// the client yet.
+		//
+		// For 2xx responses, probeHead spawns a goroutine that is the sole
+		// reader of resp.Body and pipes everything through so there is no
+		// concurrent access. It returns the sampled head for classification
+		// and a replacement body that delivers the complete stream.
+		//
+		// For ≥300 responses the body is small; we read it all at once.
 		var sample []byte
-		sampled := resp.StatusCode >= 200 && resp.StatusCode < 300
-		if sampled {
-			sample = readHead(resp.Body)
+		is2xx := resp.StatusCode >= 200 && resp.StatusCode < 300
+		if is2xx {
+			sample, resp.Body = probeHead(resp.Body)
 		} else {
 			sample, _ = io.ReadAll(io.LimitReader(resp.Body, errorBodyLimit))
 			_ = resp.Body.Close()
@@ -254,29 +261,28 @@ func (e *Engine) Execute(ctx context.Context, laneID store.LaneID, req *http.Req
 
 		switch outcome.Action {
 		case lane.ActionRelay:
-			if len(sample) > 0 {
-				resp.Body = prefixBody(sample, resp.Body)
+			// resp.Body is already the pipe for 2xx; for ≥300 this should not
+			// be reached (Classify returns Fatal), but handle it safely.
+			if !is2xx {
+				resp.Body = io.NopCloser(bytes.NewReader(sample))
 			}
 			e.markSuccess(acct, convKey)
 			return &Result{Response: resp, Account: acct, Attempts: attempts}, nil
 
 		case lane.ActionFatal:
-			// Hand the client its own error back, body included. An in-band
-			// failure on a 2xx is relayed as the standard event it arrived
-			// as, which the client understands natively.
-			if sampled {
-				resp.Body = prefixBody(sample, resp.Body)
-			} else {
+			// Hand the client its own error back. For 2xx the pipe body is
+			// already set. For ≥300 the whole body is in sample.
+			if !is2xx {
 				resp.Body = io.NopCloser(bytes.NewReader(sample))
 			}
 			return &Result{Response: resp, Account: acct, Attempts: attempts}, nil
 		}
 
-		// Every remaining action retries with a fresh request, so this
-		// response is dead weight; closing it returns the connection.
-		if sampled {
-			_ = resp.Body.Close()
-		}
+		// Every remaining action retries with a fresh request. For 2xx the
+		// pipe goroutine is the sole reader of the original body; closing the
+		// pipe signals it to stop and drain. For ≥300 the body is already
+		// consumed.
+		_ = resp.Body.Close()
 
 		switch outcome.Action {
 		case lane.ActionRefreshAuth:

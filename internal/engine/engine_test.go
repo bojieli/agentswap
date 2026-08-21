@@ -455,6 +455,9 @@ func TestContextCancellationStopsRetrying(t *testing.T) {
 
 var _ = fmt.Sprintf
 
+// A transport-level failure (connection error, reset) on a single-account pool
+// must be retried indefinitely, like a 529. Before the fix it fell through to
+// park() → unusable() and surfaced a 503 after three attempts.
 // An overload delivered in-band on a 200 — a standard terminal stream event
 // instead of a status code — must be absorbed exactly like a 529.
 func TestInBandOverloadRetriesUntilSuccess(t *testing.T) {

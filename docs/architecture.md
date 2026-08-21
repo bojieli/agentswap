@@ -113,6 +113,21 @@ provider signatures are not reused across trust domains. Validation happens
 before `Write`, so an unknown conversation block or orphan result cannot leave
 a plausible-looking but broken target.
 
+Compaction sits between that validation and the write, as one manager-level
+step no adapter knows about. It exists because harnesses do not share a context
+window, and it stays inside the same constraints as the translation around it:
+mechanical, offline, credential-free. A ladder of reductions is applied to the
+pristine source — never to the previous step's output, so a marker is never
+written over a marker — and the first step whose offline token estimate fits
+the budget wins. What replaces a model-written summary is a digest derived from
+the events themselves: the opening request, the paths the tool calls wrote, the
+commands they ran, the latest plan, and the calls that never came back.
+Everything removed goes to an archive of plain files that the target reads
+without agentswap's help, written before the target session and removed again
+if that write fails. The compacted session is validated a second time, and a
+step that produced an invalid one is an error rather than a warning: that would
+be a defect in the reduction, not a property of the source.
+
 Discovery is adapter-specific and uses each native format's project/session
 index to scope candidates to the requested canonical path. Claude's encoded
 project directory and its initial session CWD are used for discovery; later
