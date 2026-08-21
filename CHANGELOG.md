@@ -4,7 +4,7 @@ Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html); until 1.0 the minor
 version moves for anything that changes behaviour.
 
-## Unreleased
+## v0.3.0 — 2026-08-21
 
 ### Added
 
