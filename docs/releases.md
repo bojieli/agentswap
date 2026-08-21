@@ -37,9 +37,13 @@ agentswap service install
 ```
 
 The formula is committed at [`Formula/agentswap.rb`](../Formula/agentswap.rb)
-and is also generated as a release asset. Its version and four platform
-archive checksums must change together for every tag; CI and the release
-workflow verify the generated file before publishing.
+and is also generated as a release asset. Its version and four platform archive
+checksums change together for every tag. Those checksums exist only once the
+release archives are built, so the release workflow writes the committed
+formula itself: after publishing, it copies the generated formula onto the
+default branch and pushes that one-line commit. Do not hand-edit the file, and
+do not try to update it before tagging — a tag off the default branch leaves it
+untouched.
 
 GitHub does not serve private release assets anonymously. If this repository is
 private, users need repository access and should download the formula and

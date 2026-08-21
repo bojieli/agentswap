@@ -42,8 +42,12 @@ version moves for anything that changes behaviour.
   build-provenance attestations when the repository is public. CI also
   smoke-tests formula generation and ShellCheck coverage for release scripts.
 - The generated formula is also committed under `Formula/agentswap.rb`, so the
-  public repository can be used directly as a Homebrew tap. The release job
-  refuses to publish when the committed formula and release checksums differ.
+  public repository can be used directly as a Homebrew tap. After publishing,
+  the release job writes that file itself and pushes it to the default branch,
+  so the tap always describes the newest release. It previously refused to
+  publish when the committed formula and the release checksums differed, which
+  no tag could satisfy: those checksums do not exist until the workflow has
+  built the archives. A tag off the default branch leaves the formula alone.
 
 ### Changed
 

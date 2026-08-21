@@ -88,17 +88,6 @@ jobs:
           # embeds the same checksums published above.
           scripts/generate-homebrew-formula.sh "$VERSION" dist dist/agentswap.rb
 
-          # Keep the in-repository tap usable between releases. A release
-          # cannot safely publish a formula whose checksums differ from the
-          # formula users get from `brew tap`.
-          if [ -f Formula/agentswap.rb ]; then
-            cmp -s Formula/agentswap.rb dist/agentswap.rb || {
-              echo 'Formula/agentswap.rb is stale; update it before tagging' >&2
-              diff -u Formula/agentswap.rb dist/agentswap.rb || true
-              exit 1
-            }
-          fi
-
           # Fail before publishing if an archive or checksum is malformed.
           test "$(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l | tr -d ' ')" -eq 7
           (cd dist && sha256sum -c SHA256SUMS)
@@ -141,6 +130,40 @@ jobs:
               --notes-file "$notes" \
               dist/*
           fi
+
+      # `brew tap` serves Formula/agentswap.rb from the default branch, so it has
+      # to describe the release that was just published. Its checksums exist only
+      # once the archives are built, which is why the formula is written here
+      # rather than gating the build on a file nobody could have written before
+      # the tag.
+      - name: point the tap at this release
+        env:
+          VERSION: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          branch=${{ github.event.repository.default_branch }}
+          branch=${branch:-main}
+          git fetch --quiet origin "$branch"
+          # A tag off the default branch describes a release the tap should not
+          # follow, so leave the committed formula alone.
+          if ! git merge-base --is-ancestor HEAD "origin/$branch"; then
+            echo "::notice::$VERSION is not on $branch; Formula/agentswap.rb was left unchanged"
+            exit 0
+          fi
+          work=$(mktemp -d)
+          git worktree add --quiet --detach "$work" "origin/$branch"
+          mkdir -p "$work/Formula"
+          cp dist/agentswap.rb "$work/Formula/agentswap.rb"
+          cd "$work"
+          if git diff --quiet -- Formula/agentswap.rb; then
+            echo "the tap formula already describes $VERSION"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Formula/agentswap.rb
+          git commit --quiet -m "Point the Homebrew tap at $VERSION"
+          git push --quiet origin "HEAD:$branch"
 
       - name: attest release assets
         uses: actions/attest-build-provenance@v2
