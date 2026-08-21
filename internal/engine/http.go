@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -110,7 +111,7 @@ func probeHead(rc io.ReadCloser) (sample []byte, body io.ReadCloser) {
 			return
 		}
 		if phase1Err != nil {
-			if phase1Err == io.EOF {
+			if errors.Is(phase1Err, io.EOF) {
 				phase1Err = nil
 			}
 			pw.CloseWithError(phase1Err)
@@ -140,21 +141,8 @@ func probeHead(rc io.ReadCloser) (sample []byte, body io.ReadCloser) {
 // forwardAll copies src into pw, mapping io.EOF to nil for pw.CloseWithError.
 func forwardAll(src io.Reader, pw *io.PipeWriter) error {
 	_, err := io.Copy(pw, src)
-	if err == io.EOF {
+	if errors.Is(err, io.EOF) {
 		return nil
 	}
 	return err
-}
-
-// prefixBody returns a body that yields head and then the remainder of rest.
-// Used for ≥300 responses where the error body was already read into a []byte.
-// For 2xx bodies probeHead handles byte forwarding without copying.
-func prefixBody(head []byte, rest io.ReadCloser) io.ReadCloser {
-	if len(head) == 0 {
-		return rest
-	}
-	return struct {
-		io.Reader
-		io.Closer
-	}{io.MultiReader(bytes.NewReader(head), rest), rest}
 }
