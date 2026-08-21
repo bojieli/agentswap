@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/bojieli/agentswap/internal/session"
 )
@@ -37,6 +38,9 @@ func cmdTransfer(args []string, handoff bool) error {
 	cwdValue := fs.String("cwd", "", "project directory (default: current directory)")
 	latest := fs.Bool("latest", false, "deprecated: the newest source session is now selected by default")
 	dryRun := fs.Bool("dry-run", false, "validate and show the migration without writing it")
+	compact := fs.Bool("compact", false, "abridge the history to fit the target, archiving the full session")
+	budget := fs.String("budget", "", "token budget for the abridged transcript (implies --compact)")
+	archiveDir := fs.String("archive-dir", "", "parent directory for the archive (default: <project>/"+session.DefaultArchiveDirName+")")
 	launch := fs.Bool("launch", false, "deprecated: use agentswap handoff to launch the target")
 	fs.Usage = func() {
 		if handoff {
@@ -67,6 +71,13 @@ func cmdTransfer(args []string, handoff bool) error {
 		fmt.Fprintln(os.Stderr, "Flags:")
 		fmt.Fprintln(os.Stderr, "  --cwd path     project directory (default: current directory)")
 		fmt.Fprintln(os.Stderr, "  --session id   exact source session id (default: newest source session)")
+		fmt.Fprintln(os.Stderr, "  --compact      abridge the history to fit the target's context window,")
+		fmt.Fprintln(os.Stderr, "                 archiving the complete session where the target can read it")
+		fmt.Fprintln(os.Stderr, "  --budget n     token budget for the abridged transcript, such as 120k;")
+		fmt.Fprintln(os.Stderr, "                 implies --compact (default: a per-target budget)")
+		fmt.Fprintln(os.Stderr, "  --archive-dir path")
+		fmt.Fprintln(os.Stderr, "                 parent directory for the archive, which defaults to")
+		fmt.Fprintln(os.Stderr, "                 <project>/"+session.DefaultArchiveDirName+" so the target can read it")
 		if handoff {
 			fmt.Fprintln(os.Stderr, "\nOther arguments are passed unchanged to the target CLI. Use -- before")
 			fmt.Fprintln(os.Stderr, "target arguments when the target itself needs a --cwd or --session option.")
@@ -100,11 +111,13 @@ func cmdTransfer(args []string, handoff bool) error {
 		if legacy {
 			return errors.New("source and target agents are required; usage: agentswap handoff <source> <target> [target args...]")
 		}
-		var parseErr error
-		*sessionID, *cwdValue, targetArgs, parseErr = parseHandoffArgs(flagArgs)
+		owned, parseErr := parseHandoffArgs(flagArgs)
 		if parseErr != nil {
 			return parseErr
 		}
+		*sessionID, *cwdValue, *compact, *budget = owned.sessionID, owned.cwd, owned.compact, owned.budget
+		*archiveDir = owned.archiveDir
+		targetArgs = owned.target
 	} else {
 		if err := fs.Parse(flagArgs); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
@@ -168,6 +181,10 @@ func cmdTransfer(args []string, handoff bool) error {
 	if chosenID == "" {
 		chosenID = activeSessionID(from)
 	}
+	compactOptions, err := compactOptions(*compact, *budget, *archiveDir)
+	if err != nil {
+		return err
+	}
 	ctx := context.Background()
 	manager := session.NewManager()
 	candidates, err := manager.Discover(ctx, session.DiscoverOptions{Target: target, From: from, CWD: cwd})
@@ -179,7 +196,10 @@ func cmdTransfer(args []string, handoff bool) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "%s %s -> %s (%s)\n", selected.Agent.Display(), selected.ID, target.Display(), cwd)
-	result, history, err := manager.Teleport(ctx, selected, target, session.WriteOptions{CWD: cwd, DryRun: *dryRun})
+	result, history, err := manager.Teleport(ctx, selected, target, session.TransferOptions{
+		WriteOptions: session.WriteOptions{CWD: cwd, DryRun: *dryRun},
+		Compact:      compactOptions,
+	})
 	if err != nil {
 		return err
 	}
@@ -193,6 +213,22 @@ func cmdTransfer(args []string, handoff bool) error {
 		fmt.Fprintf(os.Stdout, "Created %s session %s\n", target.Display(), result.ID)
 		if result.Path != "" {
 			fmt.Fprintf(os.Stdout, "Location: %s\n", result.Path)
+		}
+	}
+	if report := result.Compaction; report != nil {
+		fmt.Fprintf(os.Stdout, "Compacted: %s\n", report.Summary())
+		if detail := report.Detail(); detail != "" {
+			fmt.Fprintf(os.Stdout, "  %s\n", detail)
+		}
+		if result.ArchivePath == "" {
+			// Nothing was removed, so there is no archive to point at.
+		} else if *dryRun {
+			fmt.Fprintf(os.Stdout, "Archive would be written to: %s\n", result.ArchivePath)
+		} else {
+			fmt.Fprintf(os.Stdout, "Archive: %s\n", result.ArchivePath)
+		}
+		if hint := archiveReachHint(result.ArchivePath, cwd); hint != "" {
+			fmt.Fprintln(os.Stdout, hint)
 		}
 	}
 	if len(history.Branches) > 0 {
@@ -211,39 +247,104 @@ func cmdTransfer(args []string, handoff bool) error {
 	return nil
 }
 
-// parseHandoffArgs consumes the two options owned by agentswap and leaves all
-// other tokens byte-for-byte for the target CLI. `--` is supported when the
-// target itself has a --cwd or --session flag that must not be consumed here.
-func parseHandoffArgs(args []string) (sessionID, cwd string, targetArgs []string, err error) {
+// handoffArgs are the options agentswap owns on a handoff command line.
+// Everything else is left byte-for-byte for the target CLI.
+type handoffArgs struct {
+	sessionID  string
+	cwd        string
+	compact    bool
+	budget     string
+	archiveDir string
+	target     []string
+}
+
+// parseHandoffArgs consumes only the options agentswap owns and leaves all
+// other tokens untouched for the target CLI. `--` is supported when the target
+// itself has an option that must not be consumed here.
+func parseHandoffArgs(args []string) (handoffArgs, error) {
+	var out handoffArgs
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
-			targetArgs = append(targetArgs, args[i+1:]...)
+			out.target = append(out.target, args[i+1:]...)
 			break
 		}
 		name, value, hasValue := strings.Cut(arg, "=")
 		switch name {
-		case "--session", "-session", "--cwd", "-cwd":
+		case "--compact", "-compact":
+			// --compact takes no value, so a budget written as --compact=120k
+			// is a mistake worth naming rather than passing to the target.
+			if hasValue {
+				return handoffArgs{}, fmt.Errorf("%s takes no value; use --budget %s", name, value)
+			}
+			out.compact = true
+		case "--session", "-session", "--cwd", "-cwd", "--budget", "-budget", "--archive-dir", "-archive-dir":
 			if !hasValue {
 				if i+1 >= len(args) {
-					return "", "", nil, fmt.Errorf("%s requires a value", name)
+					return handoffArgs{}, fmt.Errorf("%s requires a value", name)
 				}
 				i++
 				value = args[i]
 			}
 			if value == "" {
-				return "", "", nil, fmt.Errorf("%s requires a non-empty value", name)
+				return handoffArgs{}, fmt.Errorf("%s requires a non-empty value", name)
 			}
-			if name == "--session" || name == "-session" {
-				sessionID = value
-			} else {
-				cwd = value
+			switch name {
+			case "--session", "-session":
+				out.sessionID = value
+			case "--cwd", "-cwd":
+				out.cwd = value
+			case "--budget", "-budget":
+				out.budget = value
+			default:
+				out.archiveDir = value
 			}
 		default:
-			targetArgs = append(targetArgs, arg)
+			out.target = append(out.target, arg)
 		}
 	}
-	return sessionID, cwd, targetArgs, nil
+	return out, nil
+}
+
+// archiveReachHint warns when --archive-dir has put the archive outside the
+// project the target will run in. A coding agent is normally confined to its
+// working directory, so it has to be granted access before it can follow an
+// elision marker — and a non-interactive resume has nobody to ask.
+func archiveReachHint(archive, cwd string) string {
+	if archive == "" || cwd == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(cwd, archive)
+	if err == nil && !strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	return "  This archive is outside the project, so the target must be granted access\n" +
+		"  before it can read it. Drop --archive-dir to keep it inside the project."
+}
+
+// compactOptions turns the user-facing flags into a compaction request. Either
+// of --budget and --archive-dir implies --compact on its own, because naming a
+// size or a destination is already saying the history should be abridged.
+func compactOptions(compact bool, budget, archiveDir string) (*session.CompactOptions, error) {
+	if !compact && budget == "" && archiveDir == "" {
+		return nil, nil
+	}
+	tokens := 0
+	if budget != "" {
+		parsed, err := session.ParseBudget(budget)
+		if err != nil {
+			return nil, err
+		}
+		tokens = parsed
+	}
+	if archiveDir != "" {
+		abs, err := filepath.Abs(archiveDir)
+		if err != nil {
+			return nil, fmt.Errorf("archive directory: %w", err)
+		}
+		archiveDir = abs
+	}
+	return &session.CompactOptions{Budget: tokens, ArchiveRoot: archiveDir, Version: version, Now: time.Now()}, nil
 }
 
 // validateTargetArgs is retained for compatibility with older package-level

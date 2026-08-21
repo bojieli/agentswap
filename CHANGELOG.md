@@ -22,7 +22,7 @@ version moves for anything that changes behaviour.
   What replaces a summary is a digest derived from the events themselves: the
   original request, the files the recorded tool calls wrote, the commands they
   ran, the latest plan, and any call that never came back. Everything removed
-  is written to `<config dir>/archives/<id>/`, or wherever `--archive-dir`
+  is written to `<project>/.agentswap/<id>/`, or wherever `--archive-dir`
   says, as plain files — `INDEX.md`,
   `transcript.txt`, `history.json`, `manifest.json`, and one file per elided
   payload — because a resumed agent can always open a file but cannot always be
@@ -33,11 +33,15 @@ version moves for anything that changes behaviour.
   target and removed again if the target write fails; `--dry-run` reports the
   reduction and writes neither. Live checks against Claude Code confirmed that a
   resumed session follows a marker to the exact file, for both a truncated tool
-  result and a collapsed run of turns — and that under default permissions it
-  cannot, because the archive sits outside the project directory the agent is
-  confined to. `--archive-dir` places the archive inside the project for that
-  case, and `teleport` now prints a hint naming it whenever the archive lands
-  out of reach. If you would rather have a written summary,
+  result and a collapsed run of turns — and that it cannot when the archive sits
+  outside the project directory the agent is confined to, because reading it
+  needs a grant and a non-interactive resume has nobody to ask. That is why the
+  archive lives beside the code rather than in agentswap's own directory; each
+  one carries a `.gitignore` matching everything, itself included, so it stays
+  out of version control without agentswap editing a `.gitignore` you maintain.
+  `--archive-dir` moves archives elsewhere, and `teleport` then warns that the
+  target will need to be granted access. If you would rather have a written
+  summary,
   `/compact` in the source harness before transferring still works and is now
   documented.
 

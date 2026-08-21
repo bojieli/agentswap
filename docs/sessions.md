@@ -19,6 +19,7 @@ recovery path that matches what you want to preserve.
 | Another harness has usable capacity | `agentswap handoff <source> <target>` | A target session is created and launched. |
 | You want to inspect the target before launching it | `agentswap teleport <source> <target>` | A target session is created; the source is unchanged. |
 | You only want to validate compatibility | `agentswap teleport ... --dry-run` | The source is read and validated without writing a target. |
+| The session is too large for the target's context window | `agentswap handoff <source> <target> --compact` | The thread is abridged to fit, and the full history is archived where the target can read it. |
 
 ## Resume in the same harness
 
@@ -178,6 +179,119 @@ OpenCode is the exception on the read side. It keeps a delegated run in a
 separate child session, and neither `opencode export` nor
 `opencode session list` exposes the link to it. The delegation itself is
 retained as visible text, with a warning; the child session stays where it is.
+
+## When the target cannot hold the whole history
+
+Harnesses do not share a context window. A session Claude Code carried
+comfortably can be more than the target can load, and the transfer then looks
+successful right up to the moment the resumed session fails. agentswap measures
+what it is about to hand over and says so:
+
+```text
+warning: the transferred thread is about 384k tokens, which is more than Codex
+is likely to hold; re-run with --compact to abridge it and archive the full
+history
+```
+
+The warning is only a warning. Nothing is abridged unless you ask:
+
+```sh
+agentswap teleport claude codex --compact
+agentswap handoff claude codex --compact --budget 80k
+```
+
+`--budget` sets the token budget for the replayed conversation and implies
+`--compact`. Without it, each target gets a default budget that sits well below
+any supported harness's window, because the target also needs room for its
+system prompt, its tool definitions, and the work you are resuming it to do.
+The token count is an estimate: agentswap cannot know which model the target
+will select, so it counts conservatively and lets you override the number.
+
+### What compaction does
+
+The reduction is mechanical and offline. Nothing asks a model to summarize the
+history, which would make a transfer non-deterministic, put it back on the
+network, and give it a credential. agentswap works down a ladder instead,
+stopping at the first step that fits:
+
+1. recorded reasoning, which the target cannot use anyway;
+2. long tool results, truncated to their opening and closing lines;
+3. long pasted messages, truncated the same way;
+4. inline attachments, replaced by a pointer to the file holding them;
+5. whole earlier turns, replaced by one note in the place they were removed.
+
+Most sessions stop at step 2 or 3, because nearly all of a coding session's
+bytes are tool output rather than conversation. Delegated agent runs are left
+alone at every step: the main model never read them and resuming the main
+thread does not load them, so removing one would cost fidelity and save
+nothing.
+
+What replaces a summary is a digest placed in front of the abridged thread,
+derived entirely from the recorded events: the original request, the files the
+tool calls wrote, the commands they ran, the latest plan, and any tool call
+that never came back.
+
+### The archive
+
+Everything removed is written to `<project>/.agentswap/<id>/`:
+
+| File | What it holds |
+| --- | --- |
+| `INDEX.md` | what was removed, and which file holds each piece |
+| `transcript.txt` | the entire original conversation as plain text |
+| `history.json` | the same conversation, machine readable |
+| `manifest.json` | the source and target sessions, the reduction, and a checksum per file |
+| `events/`, `media/` | the full payload behind each inline marker |
+
+The archive is plain files on purpose. A resumed agent can open a file in its
+own working process; it cannot always be granted permission to run a new
+command. Wherever content was removed the transcript carries an inline marker
+naming the exact file:
+
+```text
+[agentswap:elided 12k bytes, about 402 lines; full text:
+ /Users/you/src/project/.agentswap/25a5.../events/0002-tool-result-call-000.txt]
+```
+
+The archive is written before the target session and removed again if writing
+the target fails, so a target never points at an archive that is not there.
+`--dry-run` reports the reduction and writes neither.
+
+### Why the archive lives in the project
+
+A coding agent is normally confined to its working directory. An archive kept
+anywhere else has to be granted access before the target can follow a marker —
+and a non-interactive resume has nobody to ask. Live checks against Claude Code
+showed exactly that: with the archive outside the project and ordinary
+permissions, the resumed session read the digest, found the marker, tried the
+file, was denied, named the path it needed, and declined to guess. Inside the
+project, the same question was answered without any grant.
+
+Each archive gets its own directory under `.agentswap/`, so several can
+coexist, and each carries a `.gitignore` matching everything — itself included
+— so the whole directory stays out of version control without agentswap editing
+a `.gitignore` you maintain.
+
+`--archive-dir` moves the parent somewhere else, which is useful for keeping
+archives out of a working tree entirely:
+
+```sh
+agentswap handoff claude codex --compact --archive-dir ~/agentswap-archives
+```
+
+That is a deliberate trade: `teleport` prints a hint saying the target will now
+have to be granted access before it can read anything the transfer removed.
+
+Treat an archive as sensitive wherever it lives: it holds whatever the tool
+output contained. Nothing removes one automatically.
+
+### Compacting in the source harness instead
+
+If you would rather have a written summary than a mechanical reduction, ask the
+source harness for one before transferring — `/compact` in Claude Code, or the
+target's own equivalent — and then teleport the shortened session. That uses
+the source model's own summarizer, which agentswap deliberately does not do on
+your behalf.
 
 ## What the transfer cannot preserve
 

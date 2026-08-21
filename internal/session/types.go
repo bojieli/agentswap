@@ -169,6 +169,11 @@ type Result struct {
 	Warnings    []string
 	Files       []string
 	ExternalCLI bool
+
+	// ArchivePath and Compaction are filled by the manager, not by a writer.
+	// They are empty on a transfer that carried the whole history.
+	ArchivePath string
+	Compaction  *CompactionReport
 }
 
 type Adapter interface {

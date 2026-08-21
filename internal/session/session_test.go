@@ -24,6 +24,7 @@ func isolatedHomes(t *testing.T) string {
 	t.Setenv("KIMI_CODE_HOME", filepath.Join(root, "kimi-code"))
 	t.Setenv("KIMI_SHARE_DIR", filepath.Join(root, "kimi-legacy"))
 	t.Setenv("AGENTSWAP_KIMI_MODEL", "test/kimi")
+	t.Setenv("AGENTSWAP_HOME", filepath.Join(root, "agentswap"))
 	return root
 }
 

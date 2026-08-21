@@ -231,24 +231,18 @@ agentswap handoff claude codex --compact
 agentswap handoff claude codex --budget 80k
 ```
 
-The complete history is written to `<config dir>/archives/<id>/` as plain text
+The complete history is written to `<project>/.agentswap/<id>/` as plain text
 that the resumed agent can read, and every elision in the transferred thread
 carries an inline marker naming the exact file. See
 [Keep a session moving](sessions.md#when-the-target-cannot-hold-the-whole-history).
 
 ## The resumed agent says it cannot read the archive
 
-That directory is outside the project, and a coding agent is normally confined
-to its working directory. Grant the access when it asks, or put the archive
-inside the project so no grant is needed:
-
-```sh
-agentswap handoff claude codex --compact --archive-dir ./.agentswap
-```
-
-A non-interactive resume — `claude -p`, `codex exec` — cannot ask for access at
-all, so use `--archive-dir` when the target will not have a human at the
-keyboard. Add the directory to `.gitignore`.
+Something moved the archive outside the project, and a coding agent is normally
+confined to its working directory. If you passed `--archive-dir`, drop it so the
+archive goes back to `<project>/.agentswap/`, or grant the access when the agent
+asks. A non-interactive resume — `claude -p`, `codex exec` — cannot ask for
+access at all, so the in-project default is the only thing that works there.
 
 If `--compact` reports that it reached its floor and is *still* above the
 budget, the conversation itself is the size — usually one very large pasted
@@ -262,9 +256,9 @@ agentswap uninstall              # restores the CLI config files
 rm -rf ~/.config/agentswap       # forgets the pool and its state
 ```
 
-That also forgets every session archive `--compact` wrote. Remove them on their
-own with `rm -rf ~/.config/agentswap/archives`; an archive is a complete copy
-of a session, so treat one as sensitive.
+Session archives are not in there: `--compact` writes them to `.agentswap/`
+inside each project. Remove them with `rm -rf .agentswap` from the project. An
+archive is a complete copy of a session, so treat one as sensitive.
 
 `uninstall` only removes values it recognises as its own, and every edit it
 ever made was preceded by a timestamped backup next to the original file.

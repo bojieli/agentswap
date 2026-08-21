@@ -34,44 +34,44 @@ func TestShellJoin(t *testing.T) {
 }
 
 func TestParseHandoffArgsPassesTargetArgumentsUnchanged(t *testing.T) {
-	sourceID, cwd, targetArgs, err := parseHandoffArgs([]string{
+	owned, err := parseHandoffArgs([]string{
 		"--session", "source-id", "--cwd=/tmp/project",
 		"--dangerously-bypass-approvals-and-sandbox", "continue here",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sourceID != "source-id" || cwd != "/tmp/project" {
-		t.Fatalf("handoff options = session %q cwd %q", sourceID, cwd)
+	if owned.sessionID != "source-id" || owned.cwd != "/tmp/project" {
+		t.Fatalf("handoff options = session %q cwd %q", owned.sessionID, owned.cwd)
 	}
 	want := []string{"--dangerously-bypass-approvals-and-sandbox", "continue here"}
-	if !reflect.DeepEqual(targetArgs, want) {
-		t.Fatalf("target args = %#v, want %#v", targetArgs, want)
+	if !reflect.DeepEqual(owned.target, want) {
+		t.Fatalf("target args = %#v, want %#v", owned.target, want)
 	}
 
-	_, _, targetArgs, err = parseHandoffArgs([]string{"--session=source-id", "--", "--cwd", "target-cwd", "--session", "target-id"})
+	owned, err = parseHandoffArgs([]string{"--session=source-id", "--", "--cwd", "target-cwd", "--session", "target-id"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	want = []string{"--cwd", "target-cwd", "--session", "target-id"}
-	if !reflect.DeepEqual(targetArgs, want) {
-		t.Fatalf("separated target args = %#v, want %#v", targetArgs, want)
+	if !reflect.DeepEqual(owned.target, want) {
+		t.Fatalf("separated target args = %#v, want %#v", owned.target, want)
 	}
 }
 
 func TestParseHandoffArgsValidatesOwnedFlagsAndPassesTargetFlags(t *testing.T) {
 	for _, args := range [][]string{{"--session"}, {"--cwd="}} {
-		if _, _, _, err := parseHandoffArgs(args); err == nil || !strings.Contains(err.Error(), "requires") {
+		if _, err := parseHandoffArgs(args); err == nil || !strings.Contains(err.Error(), "requires") {
 			t.Fatalf("parseHandoffArgs(%q) error = %v", args, err)
 		}
 	}
 	for _, args := range [][]string{{"--profile", "mine"}, {"--profile=mine"}, {"-p=mine"}, {"-pmine"}, {"--config", `model_provider="openai"`}} {
-		_, _, got, err := parseHandoffArgs(args)
+		owned, err := parseHandoffArgs(args)
 		if err != nil {
 			t.Fatalf("parseHandoffArgs(%q) error = %v", args, err)
 		}
-		if !reflect.DeepEqual(got, args) {
-			t.Fatalf("parseHandoffArgs(%q) target args = %v, want unchanged", args, got)
+		if !reflect.DeepEqual(owned.target, args) {
+			t.Fatalf("parseHandoffArgs(%q) target args = %v, want unchanged", args, owned.target)
 		}
 	}
 }
@@ -174,4 +174,71 @@ func launchHelperProcess() {
 		os.Exit(12)
 	}
 	os.Exit(0)
+}
+
+func TestParseHandoffArgsOwnsEveryCompactionFlag(t *testing.T) {
+	owned, err := parseHandoffArgs([]string{
+		"--compact", "--budget", "80k", "--archive-dir", "./.agentswap",
+		"--session=src", "--model", "gpt-5.6", "keep going",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !owned.compact || owned.budget != "80k" || owned.archiveDir != "./.agentswap" || owned.sessionID != "src" {
+		t.Fatalf("owned options = %+v", owned)
+	}
+	if want := []string{"--model", "gpt-5.6", "keep going"}; !reflect.DeepEqual(owned.target, want) {
+		t.Fatalf("target args = %#v, want %#v", owned.target, want)
+	}
+	// A value written onto --compact is a mistake worth naming, not something
+	// to hand to the target CLI.
+	if _, err := parseHandoffArgs([]string{"--compact=80k"}); err == nil || !strings.Contains(err.Error(), "--budget 80k") {
+		t.Fatalf("--compact=80k error = %v", err)
+	}
+	for _, args := range [][]string{{"--budget"}, {"--archive-dir"}, {"--archive-dir", ""}} {
+		if _, err := parseHandoffArgs(args); err == nil || !strings.Contains(err.Error(), "requires") {
+			t.Errorf("parseHandoffArgs(%q) error = %v", args, err)
+		}
+	}
+}
+
+func TestCompactOptionsFromFlags(t *testing.T) {
+	if opts, err := compactOptions(false, "", ""); opts != nil || err != nil {
+		t.Fatalf("no flags = %+v, %v; want no compaction", opts, err)
+	}
+	// Naming a size or a destination is already asking for compaction.
+	for _, tc := range []struct{ budget, dir string }{{"80k", ""}, {"", "./.agentswap"}} {
+		opts, err := compactOptions(false, tc.budget, tc.dir)
+		if err != nil || opts == nil {
+			t.Fatalf("compactOptions(false, %q, %q) = %+v, %v", tc.budget, tc.dir, opts, err)
+		}
+	}
+	opts, err := compactOptions(true, "80k", "relative/dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Budget != 80_000 {
+		t.Fatalf("budget = %d", opts.Budget)
+	}
+	if !filepath.IsAbs(opts.ArchiveRoot) {
+		t.Fatalf("archive root %q was not made absolute; a target resumed elsewhere could not find it", opts.ArchiveRoot)
+	}
+	if _, err := compactOptions(true, "not-a-number", ""); err == nil {
+		t.Fatal("an unparseable budget was accepted")
+	}
+}
+
+func TestArchiveReachHintFiresOnlyOutsideTheProject(t *testing.T) {
+	cwd := filepath.Join(string(filepath.Separator), "src", "project")
+	if hint := archiveReachHint(filepath.Join(cwd, ".agentswap", "abc"), cwd); hint != "" {
+		t.Fatalf("an in-project archive produced a hint: %q", hint)
+	}
+	outside := filepath.Join(string(filepath.Separator), "home", "me", "shared-archives", "abc")
+	hint := archiveReachHint(outside, cwd)
+	if !strings.Contains(hint, "Drop --archive-dir") {
+		t.Fatalf("an out-of-project archive produced %q", hint)
+	}
+	if hint := archiveReachHint("", cwd); hint != "" {
+		t.Fatalf("no archive produced a hint: %q", hint)
+	}
 }

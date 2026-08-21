@@ -214,10 +214,10 @@ agentswap teleport claude codex --compact --budget 80k
 ```
 
 The reduction is mechanical — no model is asked to summarize anything — and
-everything it removes is written to a plain-text archive the resumed agent can
-read, with an inline marker at each elision naming the exact file. Add
-`--archive-dir ./.agentswap` when the target will run with its normal
-permissions, so the archive is inside the project it is allowed to read.
+everything it removes is written to a plain-text archive under
+`<project>/.agentswap/`, with an inline marker at each elision naming the exact
+file. It goes in the project because that is where a coding agent is allowed to
+read, and it carries a `.gitignore` so it never becomes a commit.
 
 See the user guide in [docs/sessions.md](docs/sessions.md) and the exact flag
 reference in [docs/commands.md](docs/commands.md).

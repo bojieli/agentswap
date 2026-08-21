@@ -232,7 +232,34 @@ so it appears in the target's native resume picker.
 | --- | --- |
 | `--session ID` | select an exact source id in this directory |
 | `--cwd PATH` | use a directory other than the current one |
+| `--compact` | abridge the history to fit the target, archiving the full session |
+| `--budget N` | token budget for the abridged transcript, such as `120k`; implies `--compact` |
+| `--archive-dir PATH` | parent directory for the archive, default `<project>/.agentswap`; implies `--compact` |
 | `--dry-run` | with `teleport`, read, validate, and report without writing a target |
+
+`--compact` exists because harnesses do not share a context window: a session
+that Claude Code held comfortably can be too large for the target to load. It
+reduces the transferred thread mechanically — no model is asked to summarize
+anything — and writes everything it removed to an archive under
+`<project>/.agentswap/<id>/`. See
+[Keep a session moving](sessions.md#when-the-target-cannot-hold-the-whole-history)
+for what the archive contains and what the target is told about it.
+
+```sh
+agentswap teleport claude codex --compact
+agentswap teleport claude codex --compact --dry-run
+agentswap handoff claude codex --budget 80k
+agentswap handoff claude codex --compact --archive-dir ~/agentswap-archives
+```
+
+The archive defaults into the project because a coding agent confined to the
+project directory cannot read one outside it without being granted access, and
+a non-interactive resume cannot ask. Each archive carries a `.gitignore` that
+keeps it out of version control. `--archive-dir` moves them elsewhere;
+`teleport` then prints a hint saying the target will need to be granted access.
+
+All three flags belong to agentswap on a `handoff` command line and are not
+forwarded to the target CLI.
 
 Selection precedence is an explicit `--session`, an active-session environment
 id for the named source harness, then the newest exact-directory source

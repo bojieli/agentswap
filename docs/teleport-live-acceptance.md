@@ -8,7 +8,8 @@ The opt-in harness at [`scripts/teleport-live-acceptance.sh`](../scripts/telepor
 exercises real native sessions. It creates one source session in each harness,
 teleports every source to each of the other three targets, resumes every target
 with the native CLI, and checks the resulting tool call. It does not replace a
-transcript with a summary prompt.
+transcript with a summary prompt. It does not cover `--compact`, which is
+checked separately below.
 
 ## Verified run
 
@@ -99,6 +100,52 @@ retained logs are intentionally raw for debugging; do not publish them because
 native session logs can contain conversation content.
 
 The test is an acceptance check for the currently installed CLI versions.
+
+## Compaction check
+
+`--compact` has one property no unit test can settle: whether a resumed agent
+actually *opens* the archive when the transcript tells it to. The reduction
+itself is covered offline — `internal/session` asserts that a compacted session
+still validates at any budget, that markers name files that exist, and that the
+archive holds the complete original — but a model ignoring a pointer looks
+exactly like a model that had no pointer.
+
+The following ran on 2026-08-21 against Claude Code 2.1.238. Each case built a
+real Claude Code session, planted a unique token deep inside a tool result,
+compacted the transfer hard enough to remove it, **deleted the local file the
+token came from** so the archive was the only remaining copy, and then resumed
+the target and asked for the token.
+
+Deleting the source file is the part that makes the check mean anything. A
+first attempt left it in place, and the resumed model answered correctly by
+simply re-running `cat build.log` — a pass that proved nothing.
+
+| Case | Reduction | Archive location | Permissions | Result |
+| --- | --- | --- | --- | --- |
+| Truncated tool result, Claude → Codex → Claude | 6.9k → 1.1k tokens, one result truncated | outside the project | `bypassPermissions` | PASS — read the exact shard named by the marker |
+| Collapsed turns, Claude → Codex → Claude | 7.3k → 1.4k tokens, 12 results truncated and 19 turns collapsed | outside the project | `bypassPermissions` | PASS — followed the collapse brief into the archive |
+| Collapsed turns | same | outside the project | default | **Read denied** — the model explained the elision, named the archive path, asked for access, and refused to guess |
+| Collapsed turns | same | `<project>/.agentswap` | default | PASS — read the shard with no extra permission |
+| Truncated tool result | 6.9k → 1.1k tokens | `<project>/.agentswap` | default | PASS — went straight to the archived shard |
+
+The third row is the finding that shaped the feature, and the reason the archive
+now defaults into the project. A coding agent is normally confined to its
+working directory, so an archive kept in agentswap's own configuration directory
+cannot be read without the user granting access, and a non-interactive resume
+has nobody to ask. The behavior on denial was correct and careful — the model
+said what was missing, named the file, and declined to invent an answer — but
+the answer was still unavailable.
+
+The first two rows were run before that change, with the archive outside the
+project and permission checks bypassed; they establish that the marker itself is
+followed. The last two are the shipped default. `--archive-dir` still moves the
+archive elsewhere for anyone who wants it out of the working tree, and
+`teleport` prints a hint saying the target will need a grant when it does.
+
+Codex was used as an intermediate file format only, never resumed, so this
+check needs no Codex credentials. Kimi Code could not be included: the account
+reached its usage limit for the billing cycle, which is the condition agentswap
+is built for and not something the check can work around.
 
 ## Python-era Kimi round trip
 

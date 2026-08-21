@@ -17,7 +17,7 @@ toolchain declared by `go.mod`.
 
 `make check` passes and includes a clean build, `go vet`, formatting and
 dependency checks, and every unit and compiled-binary E2E test under the race
-detector. The repository currently has 316 top-level test or fuzz entry points,
+detector. The repository currently has 392 top-level test or fuzz entry points,
 many with table-driven subtests.
 
 The suite directly covers the credential lifecycle and request engine:
@@ -61,19 +61,35 @@ It also includes:
 - post-publication rollback for legacy Kimi metadata corruption and no-artifact
   guarantees when a target data root is unusable;
 - full round trips for Claude JSONL, Codex rollouts, current Kimi wire logs, and
-  Python-era Kimi context/wire logs, plus OpenCode import/export fixtures.
+  Python-era Kimi context/wire logs, plus OpenCode import/export fixtures;
+- compaction: a session that already fits is left untouched and gets no
+  archive; every rung of the reduction ladder produces a session that still
+  validates; a truncated payload keeps both ends and names a shard that exists
+  and matches its recorded checksum; a collapse never separates a tool result
+  from its call; the source is byte-identical afterwards; delegated runs are
+  neither counted against the budget nor archived; source-controlled call ids
+  and filenames cannot escape the archive directory; a dry run writes nothing;
+  a failed target write removes the archive it had already written; the
+  oversized-transfer warning fires without compacting on its own; and
+  the archive defaults into the project, carries a `.gitignore` matching
+  everything so it cannot be committed by accident, and makes every marker
+  resolve inside the project, while `--archive-dir` moves it and leaves the
+  default location unused.
 
 The most stateful packages (`internal/session`, `internal/engine`, and
 `internal/store`) passed 20 consecutive runs. The compiled-binary E2E suite
 passed five consecutive runs under the race detector in 184 seconds.
 
-Two persistent fuzz targets exercise canonical session validation and the
-bounded JSONL reader. A 30-second run of each processed approximately 5.6
-million canonical inputs and 71,000 file inputs without a crash or invariant
-violation. Fuzz seeds remain part of every ordinary test run.
+Three persistent fuzz targets exercise canonical session validation, the
+bounded JSONL reader, and compaction. A 30-second run of each processed
+approximately 5.6 million canonical inputs, 71,000 file inputs, and 9.0 million
+compaction inputs without a crash or invariant violation. The compaction target
+asserts the property every writer depends on: any session `Validate` accepts is
+still valid after being compacted at any budget. Fuzz seeds remain part of every
+ordinary test run.
 
-Merged unit and subprocess instrumentation reports 77.8% statement coverage;
-the command package reaches 80.2% after E2E coverage is merged. Coverage is a
+Merged unit and subprocess instrumentation reports 79.7% statement coverage;
+the command package reaches 80.0% after E2E coverage is merged. Coverage is a
 navigation aid, not the acceptance criterion.
 
 ## Real session continuation
@@ -135,6 +151,16 @@ so provider keys are neither printed nor retained.
   service into the developer's real login session.
 
 ## Deliberate limits of the evidence
+
+Compaction was checked live against Claude Code 2.1.238, with the local file the
+planted token came from deleted so the archive was its only remaining copy. A
+resumed Claude followed the elision marker to the exact shard for both a
+truncated tool result and a collapsed run of turns. With the archive outside the
+project and ordinary permissions the read was denied — the model named the path,
+asked for access, and refused to guess — which is why the archive now defaults
+into `<project>/.agentswap`; both cases pass there with no grant. Kimi Code was
+not covered: that account had reached its usage limit. The matrix is in
+[`teleport-live-acceptance.md`](teleport-live-acceptance.md#compaction-check).
 
 No acceptance run intentionally burns a valid paid account to zero merely to
 obtain a real quota-exhaustion 429. Exact Anthropic and OpenAI classification,
