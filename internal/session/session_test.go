@@ -252,25 +252,87 @@ func TestClaudeReaderPreservesQueuedPromptsAndPlanAttachments(t *testing.T) {
 	}
 }
 
-func TestClaudeReaderRejectsSubagentTranscripts(t *testing.T) {
+func TestClaudeReaderLoadsSubagentTranscripts(t *testing.T) {
 	root := isolatedHomes(t)
 	cwd := t.TempDir()
 	id := "11111111-1111-4111-8111-111111111111"
 	dir := filepath.Join(root, "claude", "projects", encodeClaudeProject(cwd))
-	if err := os.MkdirAll(filepath.Join(dir, id, "subagents"), 0o700); err != nil {
+	subagents := filepath.Join(dir, id, "subagents")
+	if err := os.MkdirAll(subagents, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, id+".jsonl")
-	record := `{"type":"user","uuid":"u","cwd":` + quoteJSON(cwd) + `,"message":{"role":"user","content":"hello"}}` + "\n"
-	if err := os.WriteFile(path, []byte(record), 0o600); err != nil {
+	main := `{"type":"user","uuid":"u","cwd":` + quoteJSON(cwd) + `,"message":{"role":"user","content":"hello"}}` + "\n" +
+		`{"type":"assistant","uuid":"a","cwd":` + quoteJSON(cwd) + `,"message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Task","input":{"prompt":"go"}}]}}` + "\n" +
+		`{"type":"user","uuid":"r","cwd":` + quoteJSON(cwd) + `,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"done"}]}}` + "\n"
+	if err := os.WriteFile(path, []byte(main), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, id, "subagents", "agent-0.jsonl"), []byte("{}\n"), 0o600); err != nil {
+	branch := `{"type":"user","uuid":"su","isSidechain":true,"agentId":"a0","message":{"role":"user","content":"sub prompt"}}` + "\n" +
+		`{"type":"assistant","uuid":"sa","isSidechain":true,"agentId":"a0","message":{"role":"assistant","content":[{"type":"text","text":"sub answer"}]}}` + "\n"
+	if err := os.WriteFile(filepath.Join(subagents, "agent-a0.jsonl"), []byte(branch), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := (claudeAdapter{}).Read(context.Background(), Candidate{Agent: Claude, ID: id, CWD: cwd, Path: path})
-	if err == nil || !strings.Contains(err.Error(), "subagent") {
-		t.Fatalf("subagent read error = %v", err)
+	meta := `{"agentType":"explorer","description":"look around","toolUseId":"toolu_1","spawnDepth":1}`
+	if err := os.WriteFile(filepath.Join(subagents, "agent-a0.meta.json"), []byte(meta), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	history, err := (claudeAdapter{}).Read(context.Background(), Candidate{Agent: Claude, ID: id, CWD: cwd, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := history.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Branches) != 1 {
+		t.Fatalf("branches = %#v", history.Branches)
+	}
+	branchRead := history.Branches[0]
+	if branchRead.CallID != "toolu_1" || branchRead.Name != "explorer" || branchRead.Description != "look around" {
+		t.Fatalf("branch metadata = %#v", branchRead)
+	}
+	if len(branchRead.Events) != 2 {
+		t.Fatalf("branch events = %#v", branchRead.Events)
+	}
+	// The delegated run must not leak into the thread the model actually saw.
+	encoded, err := json.Marshal(history.Events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "sub answer") {
+		t.Fatalf("subagent content leaked into the main thread: %s", encoded)
+	}
+}
+
+// An older Claude wrote delegated runs into the main log instead of a separate
+// transcript. Those records are not part of the thread the model saw.
+func TestClaudeReaderSplitsInlineSidechains(t *testing.T) {
+	root := isolatedHomes(t)
+	cwd := t.TempDir()
+	id := "11111111-1111-4111-8111-111111111112"
+	dir := filepath.Join(root, "claude", "projects", encodeClaudeProject(cwd))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, id+".jsonl")
+	records := `{"type":"user","uuid":"u","cwd":` + quoteJSON(cwd) + `,"message":{"role":"user","content":"main prompt"}}` + "\n" +
+		`{"type":"user","uuid":"s1","isSidechain":true,"agentId":"abc","message":{"role":"user","content":"branch prompt"}}` + "\n" +
+		`{"type":"assistant","uuid":"s2","isSidechain":true,"agentId":"abc","message":{"role":"assistant","content":[{"type":"text","text":"branch answer"}]}}` + "\n"
+	if err := os.WriteFile(path, []byte(records), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	history, err := (claudeAdapter{}).Read(context.Background(), Candidate{Agent: Claude, ID: id, CWD: cwd, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := history.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Events) != 1 {
+		t.Fatalf("main events = %#v", history.Events)
+	}
+	if len(history.Branches) != 1 || history.Branches[0].ID != "abc" || len(history.Branches[0].Events) != 2 {
+		t.Fatalf("branches = %#v", history.Branches)
 	}
 }
 
@@ -367,21 +429,30 @@ func TestKimiCodeRoundTrip(t *testing.T) {
 	assertRoundTrip(t, adapter, candidates[0])
 }
 
-func TestKimiCodeRejectsUnrepresentableSubagentHistory(t *testing.T) {
+func TestKimiCodeBranchRoundTrip(t *testing.T) {
 	isolatedHomes(t)
 	cwd := t.TempDir()
 	adapter := kimiAdapter{}
-	result, err := adapter.Write(context.Background(), sampleHistory(t, cwd), WriteOptions{CWD: cwd})
+	history := sampleHistory(t, cwd)
+	history.Branches = sampleBranches()
+	if err := history.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	result, err := adapter.Write(context.Background(), history, WriteOptions{CWD: cwd})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(result.Path, "agents", "agent-0"), 0o700); err != nil {
+	if _, err := os.Stat(filepath.Join(result.Path, "agents", "agent-0", "wire.jsonl")); err != nil {
+		t.Fatalf("subagent wire log was not published: %v", err)
+	}
+	got, err := adapter.Read(context.Background(), candidateForResult(Kimi, result, cwd))
+	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = adapter.Read(context.Background(), candidateForResult(Kimi, result, cwd))
-	if err == nil || !strings.Contains(err.Error(), "subagent") {
-		t.Fatalf("subagent read error = %v", err)
+	if err := got.Validate(); err != nil {
+		t.Fatal(err)
 	}
+	assertBranchesMatch(t, got.Branches, history.Branches)
 }
 
 func TestKimiLegacyRoundTrip(t *testing.T) {
@@ -600,6 +671,65 @@ func TestMultiplePlanRevisionsSurviveFileBackedTargets(t *testing.T) {
 	}
 }
 
+// sampleBranches pairs with sampleHistory: the first branch hangs off the
+// fixture's recorded tool call, the second hangs off the first, so nesting and
+// the parent link are both exercised.
+func sampleBranches() []Branch {
+	base := time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC)
+	return []Branch{
+		{
+			ID: "agent-0", CallID: "call-1", Name: "explorer", Description: "survey the parser",
+			Status: "completed", Model: "claude-sonnet-4-6", CreatedAt: base, UpdatedAt: base.Add(time.Minute),
+			Events: []Event{
+				{Kind: Message, Role: "user", Timestamp: base, Parts: []Part{{Kind: Text, Text: "Survey the parser."}}},
+				{Kind: Message, Role: "assistant", Timestamp: base.Add(time.Second), Parts: []Part{
+					{Kind: Text, Text: "Looking."},
+					{Kind: ToolCall, CallID: "branch-call-1", ToolName: "Grep", Data: json.RawMessage(`{"pattern":"func"}`)},
+				}},
+				{Kind: Message, Role: "tool", Timestamp: base.Add(2 * time.Second), Parts: []Part{{Kind: ToolResult, CallID: "branch-call-1", Text: "12 matches"}}},
+				{Kind: Message, Role: "assistant", Timestamp: base.Add(3 * time.Second), Parts: []Part{{Kind: Text, Text: "The parser has 12 functions."}}},
+			},
+		},
+		{
+			ID: "agent-1", ParentID: "agent-0", CallID: "branch-call-1", Name: "checker", Description: "nested run",
+			Status: "failed", CreatedAt: base.Add(time.Minute), UpdatedAt: base.Add(2 * time.Minute),
+			Events: []Event{
+				{Kind: Message, Role: "user", Timestamp: base.Add(time.Minute), Parts: []Part{{Kind: Text, Text: "Check the matches."}}},
+				{Kind: Message, Role: "assistant", Timestamp: base.Add(time.Minute + time.Second), Parts: []Part{{Kind: Text, Text: "All twelve look fine."}}},
+			},
+		},
+	}
+}
+
+func assertBranchesMatch(t *testing.T, got, want []Branch) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("branch count = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].CallID != want[i].CallID {
+			t.Errorf("branch %d call id = %q, want %q", i, got[i].CallID, want[i].CallID)
+		}
+		if got[i].Description != want[i].Description {
+			t.Errorf("branch %d description = %q, want %q", i, got[i].Description, want[i].Description)
+		}
+		if got[i].Name != want[i].Name {
+			t.Errorf("branch %d agent type = %q, want %q", i, got[i].Name, want[i].Name)
+		}
+		encoded, err := json.Marshal(got[i].Events)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range want[i].Events {
+			for _, part := range event.Parts {
+				if part.Text != "" && !strings.Contains(string(encoded), part.Text) {
+					t.Errorf("branch %d lost %q: %s", i, part.Text, encoded)
+				}
+			}
+		}
+	}
+}
+
 func candidateForResult(agent Agent, result Result, cwd string) Candidate {
 	format := map[Agent]string{Claude: "claude-jsonl", Codex: "codex-rollout", Kimi: "kimi-code-wire"}[agent]
 	return Candidate{Agent: agent, ID: result.ID, CWD: cwd, Path: result.Path, Format: format, UpdatedAt: time.Now()}
@@ -805,39 +935,81 @@ func TestMediaRoundTripAcrossFileTargets(t *testing.T) {
 	}
 }
 
-func TestOpenCodeReaderFailsClosedOnAttachmentsAndDelegation(t *testing.T) {
+func TestOpenCodeReaderFailsClosedOnUnknownParts(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake OpenCode executable is a POSIX shell script")
 	}
-	for _, kind := range []string{"file", "agent", "subtask", "future-conversation-part"} {
+	for _, kind := range []string{"file", "future-conversation-part"} {
 		t.Run(kind, func(t *testing.T) {
-			root := isolatedHomes(t)
-			cwd := t.TempDir()
-			exportPath := filepath.Join(root, "export.json")
-			exported := map[string]any{
-				"info": map[string]any{"id": "ses_source", "directory": cwd},
-				"messages": []any{map[string]any{
-					"info":  map[string]any{"id": "msg", "role": "user"},
-					"parts": []any{map[string]any{"id": "part", "type": kind}},
-				}},
-			}
-			b, _ := json.Marshal(exported)
-			if err := os.WriteFile(exportPath, b, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			script := filepath.Join(root, "opencode")
-			body := "#!/bin/sh\nset -eu\nif [ \"$1\" = export ]; then cat \"$FAKE_EXPORT\"; exit 0; fi\nexit 2\n"
-			if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			t.Setenv("AGENTSWAP_OPENCODE_BIN", script)
-			t.Setenv("FAKE_EXPORT", exportPath)
-			_, err := (openCodeAdapter{}).Read(context.Background(), Candidate{Agent: OpenCode, ID: "ses_source", CWD: cwd, Format: "opencode-export"})
+			_, err := readFakeOpenCodePart(t, map[string]any{"id": "part", "type": kind})
 			if err == nil || !strings.Contains(err.Error(), kind) {
 				t.Fatalf("OpenCode %s read error = %v", kind, err)
 			}
 		})
 	}
+}
+
+// OpenCode keeps a delegated run in a separate child session that its export
+// boundary does not reach, so the delegation is retained as visible text.
+func TestOpenCodeReaderRetainsDelegationAsText(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake OpenCode executable is a POSIX shell script")
+	}
+	part := map[string]any{
+		"id": "part", "type": "subtask", "agent": "explorer",
+		"description": "survey the repo", "prompt": "list every parser",
+	}
+	history, err := readFakeOpenCodePart(t, part)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := history.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(history.Events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"explorer", "survey the repo", "list every parser"} {
+		if !strings.Contains(string(encoded), want) {
+			t.Errorf("delegation lost %q: %s", want, encoded)
+		}
+	}
+	var warned bool
+	for _, warning := range history.Warnings {
+		if strings.Contains(warning, "delegation") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Fatalf("delegation was retained without a warning: %#v", history.Warnings)
+	}
+}
+
+func readFakeOpenCodePart(t *testing.T, part map[string]any) (*Session, error) {
+	t.Helper()
+	root := isolatedHomes(t)
+	cwd := t.TempDir()
+	exportPath := filepath.Join(root, "export.json")
+	exported := map[string]any{
+		"info": map[string]any{"id": "ses_source", "directory": cwd},
+		"messages": []any{map[string]any{
+			"info":  map[string]any{"id": "msg", "role": "user"},
+			"parts": []any{part},
+		}},
+	}
+	b, _ := json.Marshal(exported)
+	if err := os.WriteFile(exportPath, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(root, "opencode")
+	body := "#!/bin/sh\nset -eu\nif [ \"$1\" = export ]; then cat \"$FAKE_EXPORT\"; exit 0; fi\nexit 2\n"
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENTSWAP_OPENCODE_BIN", script)
+	t.Setenv("FAKE_EXPORT", exportPath)
+	return (openCodeAdapter{}).Read(context.Background(), Candidate{Agent: OpenCode, ID: "ses_source", CWD: cwd, Format: "opencode-export"})
 }
 
 func TestKimiReadersSupportMedia(t *testing.T) {
@@ -1266,4 +1438,228 @@ func bytesContainAll(value []byte, wants []string) bool {
 func quoteJSON(value string) string {
 	b, _ := json.Marshal(value)
 	return string(b)
+}
+
+func TestClaudeCodeBranchRoundTrip(t *testing.T) {
+	isolatedHomes(t)
+	cwd := t.TempDir()
+	adapter := claudeAdapter{}
+	history := sampleHistory(t, cwd)
+	history.Branches = sampleBranches()
+	if err := history.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	result, err := adapter.Write(context.Background(), history, WriteOptions{CWD: cwd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subagents := filepath.Join(strings.TrimSuffix(result.Path, ".jsonl"), "subagents")
+	entries, err := os.ReadDir(subagents)
+	if err != nil {
+		t.Fatalf("subagent transcripts were not published: %v", err)
+	}
+	if len(entries) != 4 {
+		t.Fatalf("subagent directory holds %d files, want a transcript and a meta file per branch", len(entries))
+	}
+	got, err := adapter.Read(context.Background(), candidateForResult(Claude, result, cwd))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	assertBranchesMatch(t, got.Branches, history.Branches)
+	// The nested run's parent is recoverable even though Claude's sidecar does
+	// not record an agent tree.
+	if got.Branches[1].ParentID != got.Branches[0].ID {
+		t.Errorf("nested branch parent = %q, want %q", got.Branches[1].ParentID, got.Branches[0].ID)
+	}
+	encoded, err := json.Marshal(got.Events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "All twelve look fine.") {
+		t.Fatalf("branch content leaked into the main thread: %s", encoded)
+	}
+}
+
+// A destination with no branch representation must say so rather than drop the
+// runs quietly.
+func TestWritersReportBranchesTheyCannotKeep(t *testing.T) {
+	for _, agent := range []Agent{Codex, Kimi} {
+		t.Run(string(agent), func(t *testing.T) {
+			root := isolatedHomes(t)
+			if agent == Kimi {
+				t.Setenv("KIMI_SHARE_DIR", filepath.Join(root, "legacy-only"))
+				t.Setenv("AGENTSWAP_KIMI_FORMAT", "legacy")
+			}
+			cwd := t.TempDir()
+			history := sampleHistory(t, cwd)
+			history.Branches = sampleBranches()
+			result, err := NewManager().adapters[agent].Write(context.Background(), history, WriteOptions{CWD: cwd, DryRun: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var reported bool
+			for _, warning := range result.Warnings {
+				if strings.Contains(warning, "delegated agent run") && strings.Contains(warning, "agent-0") {
+					reported = true
+				}
+			}
+			if !reported {
+				t.Fatalf("%s warnings = %#v", agent, result.Warnings)
+			}
+		})
+	}
+}
+
+func TestValidateChecksBranchesAsIndependentStreams(t *testing.T) {
+	cwd := t.TempDir()
+	base := func() *Session {
+		history := sampleHistory(t, cwd)
+		history.Branches = sampleBranches()
+		return history
+	}
+	t.Run("empty branch", func(t *testing.T) {
+		history := base()
+		history.Branches[0].Events = nil
+		if err := history.Validate(); err == nil || !strings.Contains(err.Error(), "agent-0") {
+			t.Fatalf("empty branch error = %v", err)
+		}
+	})
+	t.Run("duplicate id", func(t *testing.T) {
+		history := base()
+		history.Branches[1].ID = history.Branches[0].ID
+		if err := history.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate branch id") {
+			t.Fatalf("duplicate branch error = %v", err)
+		}
+	})
+	t.Run("orphaned result inside a branch", func(t *testing.T) {
+		history := base()
+		history.Branches[0].Events[2].Parts[0].CallID = "never-called"
+		err := history.Validate()
+		if err == nil || !strings.Contains(err.Error(), `branch "agent-0"`) || !strings.Contains(err.Error(), "never-called") {
+			t.Fatalf("orphaned branch result error = %v", err)
+		}
+	})
+	t.Run("main thread ids do not satisfy a branch", func(t *testing.T) {
+		history := base()
+		// call-1 exists in the main thread, never inside the branch itself.
+		history.Branches[0].Events[2].Parts[0].CallID = "call-1"
+		if err := history.Validate(); err == nil || !strings.Contains(err.Error(), "call-1") {
+			t.Fatalf("cross-stream call error = %v", err)
+		}
+	})
+	t.Run("unknown parent", func(t *testing.T) {
+		history := base()
+		history.Branches[1].ParentID = "agent-missing"
+		if err := history.Validate(); err == nil || !strings.Contains(err.Error(), "agent-missing") {
+			t.Fatalf("unknown parent error = %v", err)
+		}
+	})
+}
+
+// Kimi writes a task record only for a detached run, and never for a swarm
+// member. The delegating call and its result still identify what they started,
+// which is the only thing linking those branches to the conversation.
+func TestKimiCodeLinksBranchesWithoutTaskRecords(t *testing.T) {
+	isolatedHomes(t)
+	cwd := t.TempDir()
+	adapter := kimiAdapter{}
+	base := time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC)
+	history := &Session{
+		Source: Claude, SourceID: "source", CWD: cwd, Model: "test/model",
+		Events: []Event{
+			{Kind: Message, Role: "user", Timestamp: base, Parts: []Part{{Kind: Text, Text: "Delegate this."}}},
+			{Kind: Message, Role: "assistant", Timestamp: base.Add(time.Second), Parts: []Part{
+				{Kind: ToolCall, CallID: "call-agent", ToolName: "Agent", Data: json.RawMessage(`{"description":"survey the repo"}`)},
+				{Kind: ToolCall, CallID: "call-swarm", ToolName: "AgentSwarm", Data: json.RawMessage(`{"items":["ar","en"]}`)},
+			}},
+			{Kind: Message, Role: "tool", Timestamp: base.Add(2 * time.Second), Parts: []Part{
+				{Kind: ToolResult, CallID: "call-agent", Text: "agent_id: agent-0\nstatus: completed"},
+				{Kind: ToolResult, CallID: "call-swarm", Text: `<subagent agent_id="agent-1" item="ar"/>`},
+			}},
+		},
+	}
+	result, err := adapter.Write(context.Background(), history, WriteOptions{CWD: cwd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Add the subagent directories Kimi would have created, with no task record
+	// beside them, and label the swarm member the way its state entry does.
+	for _, name := range []string{"agent-0", "agent-1"} {
+		dir := filepath.Join(result.Path, "agents", name)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		wire := `{"type":"metadata","protocol_version":"1.5"}` + "\n" +
+			`{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"work on ` + name + `"}]}}` + "\n"
+		if err := os.WriteFile(filepath.Join(dir, "wire.jsonl"), []byte(wire), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	statePath := filepath.Join(result.Path, "state.json")
+	b, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(b, &state); err != nil {
+		t.Fatal(err)
+	}
+	agents := state["agents"].(map[string]any)
+	agents["agent-0"] = map[string]any{"type": "sub", "parentAgentId": "main"}
+	agents["agent-1"] = map[string]any{"type": "sub", "parentAgentId": "main", "labels": map[string]any{"swarmItem": "ar"}}
+	if err := writeJSONFile(statePath, state, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := adapter.Read(context.Background(), candidateForResult(Kimi, result, cwd))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Branches) != 2 {
+		t.Fatalf("branches = %#v", got.Branches)
+	}
+	if got.Branches[0].CallID != "call-agent" {
+		t.Errorf("agent branch call = %q, want call-agent", got.Branches[0].CallID)
+	}
+	// Without a task record the description also has to come from the call.
+	if got.Branches[0].Description != "survey the repo" {
+		t.Errorf("agent branch description = %q", got.Branches[0].Description)
+	}
+	if got.Branches[1].CallID != "call-swarm" {
+		t.Errorf("swarm branch call = %q, want call-swarm", got.Branches[1].CallID)
+	}
+	if got.Branches[1].Description != "swarm item ar" {
+		t.Errorf("swarm branch description = %q", got.Branches[1].Description)
+	}
+	for _, warning := range got.Warnings {
+		if strings.Contains(warning, "unattached") {
+			t.Errorf("branches were linked but still reported unattached: %q", warning)
+		}
+	}
+}
+
+// An id claimed by two delegating calls cannot be resolved, and guessing would
+// attach a run to a call that never made it.
+func TestKimiCodeLeavesAmbiguousBranchesUnattached(t *testing.T) {
+	branches := []Branch{{ID: "agent-0"}}
+	streams := [][]Event{{
+		{Kind: Message, Role: "assistant", Parts: []Part{
+			{Kind: ToolCall, CallID: "call-a", ToolName: "Agent", Data: json.RawMessage(`{}`)},
+			{Kind: ToolCall, CallID: "call-b", ToolName: "Agent", Data: json.RawMessage(`{}`)},
+		}},
+		{Kind: Message, Role: "tool", Parts: []Part{
+			{Kind: ToolResult, CallID: "call-a", Text: "agent_id: agent-0"},
+			{Kind: ToolResult, CallID: "call-b", Text: "agent_id: agent-0"},
+		}},
+	}}
+	attachKimiBranches(branches, streams, nil)
+	if branches[0].CallID != "" {
+		t.Fatalf("ambiguous branch was attached to %q", branches[0].CallID)
+	}
 }

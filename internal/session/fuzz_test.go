@@ -24,6 +24,25 @@ func FuzzSessionValidate(f *testing.F) {
 		"events":[{"kind":"message","role":"assistant","parts":[{"kind":"tool_call","call_id":"call-1","tool_name":"read","data":{}}]}]
 	}`))
 	f.Add([]byte(`{"source_id":"broken","cwd":"/tmp/project","events":[{"kind":"future"}]}`))
+	f.Add([]byte(`{
+		"source":"kimi","source_id":"branched","cwd":"/tmp/project",
+		"events":[
+			{"kind":"message","role":"assistant","parts":[{"kind":"tool_call","call_id":"call-1","tool_name":"Agent","data":{}}]},
+			{"kind":"message","role":"tool","parts":[{"kind":"tool_result","call_id":"call-1","text":"ok"}]}
+		],
+		"branches":[
+			{"id":"agent-0","call_id":"call-1","events":[
+				{"kind":"message","role":"user","parts":[{"kind":"text","text":"go"}]},
+				{"kind":"message","role":"assistant","parts":[{"kind":"tool_call","call_id":"call-1","tool_name":"read","data":{}}]}
+			]},
+			{"id":"100%s","parent_id":"agent-0","call_id":"call-1","events":[
+				{"kind":"message","role":"user","parts":[{"kind":"text","text":"nested"}]}
+			]}
+		]
+	}`))
+	f.Add([]byte(`{"source":"claude","source_id":"empty-branch","cwd":"/tmp/project",
+		"events":[{"kind":"message","role":"user","parts":[{"kind":"text","text":"hi"}]}],
+		"branches":[{"id":"agent-0","events":[]}]}`))
 	f.Add([]byte("not json"))
 
 	f.Fuzz(func(t *testing.T, data []byte) {

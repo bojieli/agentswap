@@ -8,6 +8,29 @@ version moves for anything that changes behaviour.
 
 ### Added
 
+- **Sessions that spawned subagents can be transferred.** A session containing
+  a delegated agent run — Claude's `Task`, Kimi's `Agent` and `AgentSwarm` —
+  was refused outright, which stranded exactly the long sessions a handoff is
+  for. Such a run is now carried as a branch beside the main thread, linked to
+  the tool call that spawned it, and validated as its own tool-call namespace
+  rather than folded into the conversation the model actually saw. Claude Code
+  and Kimi Code write branches natively, so a transfer between them keeps every
+  run: Claude gets `<session-id>/subagents/agent-*.jsonl` with a `.meta.json`
+  naming the spawning `toolUseId`, and Kimi gets `agents/agent-*/wire.jsonl`
+  with its `state.json` entry and task record. Codex, OpenCode, and the
+  Python-era Kimi layout have no equivalent; they receive the complete main
+  thread and a warning naming each run that could not come with it. A moved run
+  is readable but not resumable, so a Kimi run still marked running is recorded
+  as failed instead of being left for Kimi to poll. `teleport` and `handoff`
+  report the branch count and how much of it is still linked to a tool call.
+  Sidechain records that an older Claude inlined into the main log are split out
+  the same way, instead of contaminating the main thread.
+- **OpenCode agent delegation no longer fails closed.** OpenCode keeps a
+  delegated run in a separate child session, and neither `opencode export` nor
+  `opencode session list` exposes the link to it. The delegation itself is real
+  conversation content — for a `subtask` part the prompt is the turn — so it is
+  now retained as visible text with a warning, rather than blocking the
+  transfer.
 - **The public documentation now starts from the user problem.** The README
   explains subscription limits, provider fallbacks, same-harness recovery, and
   explicit Claude Code ↔ Codex/OpenCode/Kimi Code handoff. A dedicated session

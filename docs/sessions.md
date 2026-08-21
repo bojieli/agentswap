@@ -135,15 +135,49 @@ summary prompt. Depending on what the source recorded, the target retains:
 - user and assistant messages;
 - recorded reasoning and model metadata;
 - tool calls, results, errors, and call ids;
-- plans and timestamps; and
-- supported text and inline media.
+- plans and timestamps;
+- supported text and inline media; and
+- delegated agent runs, where the destination has a place to keep them.
 
 The source remains read-only. Validation completes before a target is written.
-Unknown conversation-bearing records and unsupported branched transcripts fail
-closed rather than producing a session that only looks resumable.
+Unknown conversation-bearing records fail closed rather than producing a session
+that only looks resumable.
 
 OpenCode's session database is accessed through its own `export` and `import`
 commands. agentswap does not write OpenCode's SQLite schema directly.
+
+### Delegated agent runs
+
+When a session spawns subagents — Claude's `Task`, Kimi's `Agent` and
+`AgentSwarm` — the delegated run is a separate transcript. The main model never
+read it: it saw only the delegating tool call and the result the harness
+recorded for that call. The main thread is therefore complete on its own, and
+the delegated transcript travels as archived detail linked to that call.
+
+Claude Code and Kimi Code both have a native place for one, so a transfer
+between them keeps every run:
+
+| Harness | Where a delegated run lives |
+| --- | --- |
+| Claude Code | `<session-id>/subagents/agent-*.jsonl` plus a `.meta.json` naming the spawning `toolUseId` |
+| Kimi Code | `agents/agent-*/wire.jsonl`, an entry in `state.json`, and a task record under the agent that spawned it |
+
+Codex rollouts and the OpenCode import boundary have no equivalent, and neither
+does the Python-era Kimi layout. Those targets receive the complete main thread
+and a warning naming each run that could not come with it.
+
+Two limits are worth knowing. A delegated run is readable in the target but
+cannot be resumed there, because resuming one needs live harness state that no
+transfer carries; a Kimi run still marked running is recorded as failed rather
+than left for Kimi to poll. And Kimi records no spawning call for a swarm
+member, so agentswap matches it by the swarm item it was given — if one item is
+claimed by more than one `AgentSwarm` call, that branch moves unattached and
+says so.
+
+OpenCode is the exception on the read side. It keeps a delegated run in a
+separate child session, and neither `opencode export` nor
+`opencode session list` exposes the link to it. The delegation itself is
+retained as visible text, with a warning; the child session stays where it is.
 
 ## What the transfer cannot preserve
 
@@ -153,7 +187,8 @@ A target is a new process. It does not receive:
 - provider KV caches;
 - hidden or encrypted reasoning that the source did not expose;
 - approvals, permission state, or sandbox state;
-- running shell processes, background jobs, or plugin memory; or
+- running shell processes, background jobs, or plugin memory;
+- a resumable delegated agent run, even where its transcript moved; or
 - a provider's internal system prompt when it was not recorded.
 
 Text-file context may become visible conversation text in a target that has no

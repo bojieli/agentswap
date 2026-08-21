@@ -207,7 +207,29 @@ func (openCodeAdapter) Read(ctx context.Context, candidate Candidate) (*Session,
 				}
 				event.Parts = append(event.Parts, media)
 			case "agent", "subtask":
-				return nil, fmt.Errorf("unsupported OpenCode %s part (attachments and agent delegation cannot be teleported safely)", kind)
+				// OpenCode records the delegation here and keeps the delegated
+				// run in a separate child session. `opencode export` returns one
+				// session and `opencode session list` does not expose parentage,
+				// so that run is out of reach across the supported boundary. The
+				// delegation itself is real conversation content — for a subtask
+				// the prompt is the turn — and is retained as visible text.
+				name := stringValue(part["agent"])
+				if name == "" {
+					name = stringValue(part["name"])
+				}
+				header := "[OpenCode delegated this turn"
+				if name != "" {
+					header += " to the " + name + " agent"
+				}
+				if description := stringValue(part["description"]); description != "" {
+					header += ": " + description
+				}
+				text := header + "]"
+				if prompt := stringValue(part["prompt"]); prompt != "" {
+					text += "\n" + prompt
+				}
+				event.Parts = append(event.Parts, Part{Kind: Text, ID: stringValue(part["id"]), Text: text})
+				history.Warnings = appendUnique(history.Warnings, "an OpenCode agent delegation was retained as visible text; the delegated run is a separate OpenCode session that `opencode export` does not include")
 			default:
 				return nil, fmt.Errorf("unsupported OpenCode conversation part %q", kind)
 			}
@@ -258,6 +280,11 @@ func (openCodeAdapter) Write(ctx context.Context, history *Session, opts WriteOp
 		return Result{}, err
 	}
 	result = Result{Agent: OpenCode, ID: id, Path: "OpenCode local database", Resume: []string{openCodeBinary(), "--session", id}, ExternalCLI: true}
+	if len(history.Branches) > 0 {
+		// OpenCode keeps a delegated run in a separate child session, and
+		// `opencode import` writes one session at a time.
+		result.Warnings = append(result.Warnings, branchesNotTransferred("The OpenCode import boundary", history.Branches))
+	}
 	if opts.DryRun {
 		return result, nil
 	}

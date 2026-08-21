@@ -51,9 +51,13 @@ It also includes:
   results;
 - a JSONL safety-limit case larger than 64 MiB;
 - image-media round trips plus fail-closed cases for unsupported media,
-  subagent/agent/subtask records, malformed and
-  unknown conversation-bearing blocks, duplicate/orphaned results, and empty
-  canonical records;
+  malformed and unknown conversation-bearing blocks, duplicate/orphaned
+  results, and empty canonical records;
+- delegated agent runs: Claude and Kimi branch round trips including a nested
+  run, the split of sidechain records an older Claude inlined into the main
+  log, per-branch validation as an independent tool-call namespace, OpenCode
+  delegation retained as text, and the warnings Codex and the Python-era Kimi
+  layout raise for runs they cannot keep;
 - post-publication rollback for legacy Kimi metadata corruption and no-artifact
   guarantees when a target data root is unusable;
 - full round trips for Claude JSONL, Codex rollouts, current Kimi wire logs, and

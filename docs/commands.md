@@ -285,9 +285,15 @@ signed reasoning state, credentials, approvals, live processes, background
 jobs, and in-memory plugin/MCP state. Recorded reasoning is retained as visible
 content if the target cannot reuse its provider signature. Text-file context is
 retained as visible text with a warning. Inline media (including images) is
-transferred as native content (remote URLs remain URLs). Unsupported media forms,
-branched subagent transcripts, and unknown conversation-bearing native blocks
-currently fail closed.
+transferred as native content (remote URLs remain URLs). Unsupported media forms
+and unknown conversation-bearing native blocks currently fail closed.
+
+Delegated agent runs travel as branches beside the main thread, each linked to
+the tool call that spawned it. Claude Code and Kimi Code write them natively;
+Codex, OpenCode, and the Python-era Kimi layout have no equivalent and report
+each run they could not keep. A moved run is readable but not resumable in the
+target. See [the session guide](sessions.md) for the layouts and the two
+sources whose linkage is approximate.
 
 Kimi Code has two incompatible local formats. Current releases use
 `~/.kimi-code` with per-session state and versioned wire event logs; the

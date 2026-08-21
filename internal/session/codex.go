@@ -431,6 +431,9 @@ func (codexAdapter) Write(_ context.Context, history *Session, opts WriteOptions
 	// `agentswap install`. Keep the resume command native: callers should not
 	// need an agentswap-specific profile flag just to open a teleported session.
 	result = Result{Agent: Codex, ID: id, Path: final, Resume: []string{"codex", "resume", id}, Files: []string{final}}
+	if len(history.Branches) > 0 {
+		result.Warnings = append(result.Warnings, branchesNotTransferred("A Codex rollout", history.Branches))
+	}
 	if opts.DryRun {
 		return result, nil
 	}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -252,14 +253,15 @@ func readKimiCode(candidate Candidate) (*Session, error) {
 		return nil, err
 	}
 	var state struct {
-		ID        string         `json:"id"`
-		Version   int            `json:"version"`
-		CWD       string         `json:"cwd"`
-		WorkDir   string         `json:"workDir"`
-		Title     string         `json:"title"`
-		CreatedAt any            `json:"createdAt"`
-		UpdatedAt any            `json:"updatedAt"`
-		Custom    map[string]any `json:"custom"`
+		ID        string                   `json:"id"`
+		Version   int                      `json:"version"`
+		CWD       string                   `json:"cwd"`
+		WorkDir   string                   `json:"workDir"`
+		Title     string                   `json:"title"`
+		CreatedAt any                      `json:"createdAt"`
+		UpdatedAt any                      `json:"updatedAt"`
+		Custom    map[string]any           `json:"custom"`
+		Agents    map[string]kimiAgentNode `json:"agents"`
 	}
 	if err := json.Unmarshal(b, &state); err != nil {
 		return nil, err
@@ -283,14 +285,65 @@ func readKimiCode(candidate Candidate) (*Session, error) {
 	if metadata, ok := state.Custom["agentswap"].(map[string]any); ok {
 		history.Model = stringValue(metadata["sourceModel"])
 	}
-	agentHome := filepath.Join(candidate.Path, "agents", "main")
-	if err := rejectKimiSubagents(filepath.Join(candidate.Path, "agents")); err != nil {
+	agentsDir := filepath.Join(candidate.Path, "agents")
+	agentHome := filepath.Join(agentsDir, "main")
+	main, err := parseKimiWire(filepath.Join(agentHome, "wire.jsonl"), agentHome)
+	if err != nil {
 		return nil, err
 	}
-	wire := filepath.Join(agentHome, "wire.jsonl")
-	seenMetadata := false
+	if !main.metadata {
+		return nil, fmt.Errorf("Kimi wire log has no metadata header")
+	}
+	history.Events = main.events
+	if main.model != "" {
+		history.Model = main.model
+	}
+	history.Warnings = append(history.Warnings, main.warnings...)
+	branches, warnings, err := readKimiBranches(agentsDir, state.Agents, main.tasks, main.events)
+	if err != nil {
+		return nil, err
+	}
+	history.Branches = branches
+	history.Warnings = append(history.Warnings, warnings...)
+	sortBranches(history.Branches, history.Events)
+	if history.Title == "" {
+		history.Title = firstText(history)
+	}
+	return history, nil
+}
+
+// kimiTask is the lifecycle record Kimi writes for a delegated run. It is the
+// only place the wire log links a subagent directory back to the tool call in
+// its parent that spawned it.
+type kimiTask struct {
+	TaskID       string `json:"taskId"`
+	Description  string `json:"description"`
+	Status       string `json:"status"`
+	Kind         string `json:"kind"`
+	AgentID      string `json:"agentId"`
+	SubagentType string `json:"subagentType"`
+	ParentCallID string `json:"parentToolCallId"`
+	Model        string `json:"model"`
+	StartedAt    any    `json:"startedAt"`
+	EndedAt      any    `json:"endedAt"`
+}
+
+// kimiWire is one parsed Kimi wire log: the main thread or a single subagent.
+type kimiWire struct {
+	events   []Event
+	model    string
+	warnings []string
+	tasks    []kimiTask
+	metadata bool
+}
+
+// parseKimiWire reads one agent's wire log into canonical events. agentHome
+// anchors plan-path resolution to the agent that recorded the revision, so a
+// subagent's plan cannot be read out of the main agent's directory.
+func parseKimiWire(wirePath, agentHome string) (*kimiWire, error) {
+	wire := &kimiWire{}
 	seenPlans := make(map[string]bool)
-	err = readJSONL(wire, func(_ int, raw json.RawMessage) error {
+	err := readJSONL(wirePath, func(_ int, raw json.RawMessage) error {
 		var record map[string]any
 		if err := json.Unmarshal(raw, &record); err != nil {
 			return err
@@ -299,10 +352,10 @@ func readKimiCode(candidate Candidate) (*Session, error) {
 		ts := parseFlexibleTime(record["time"])
 		switch kind {
 		case "metadata":
-			seenMetadata = true
+			wire.metadata = true
 		case "profile.bind":
 			if model := stringValue(record["modelAlias"]); model != "" {
-				history.Model = model
+				wire.model = model
 			}
 		case "context.append_message":
 			message, ok := record["message"].(map[string]any)
@@ -343,7 +396,7 @@ func readKimiCode(candidate Candidate) (*Session, error) {
 				}
 			}
 			if len(event.Parts) > 0 {
-				history.Events = append(history.Events, event)
+				wire.events = append(wire.events, event)
 			}
 		case "context.append_loop_event":
 			event, ok := record["event"].(map[string]any)
@@ -359,11 +412,11 @@ func readKimiCode(candidate Candidate) (*Session, error) {
 				switch partType := stringValue(part["type"]); partType {
 				case "text":
 					if text := stringValue(part["text"]); text != "" {
-						history.Events = append(history.Events, Event{Kind: Message, Role: "assistant", Timestamp: ts, Parts: []Part{{Kind: Text, ID: stringValue(event["uuid"]), Text: text}}})
+						wire.events = append(wire.events, Event{Kind: Message, Role: "assistant", Timestamp: ts, Parts: []Part{{Kind: Text, ID: stringValue(event["uuid"]), Text: text}}})
 					}
 				case "think":
 					if text := stringValue(part["think"]); text != "" {
-						history.Events = append(history.Events, Event{Kind: Message, Role: "assistant", Timestamp: ts, Parts: []Part{{Kind: Reasoning, ID: stringValue(event["uuid"]), Text: text}}})
+						wire.events = append(wire.events, Event{Kind: Message, Role: "assistant", Timestamp: ts, Parts: []Part{{Kind: Reasoning, ID: stringValue(event["uuid"]), Text: text}}})
 					}
 				case "image":
 					media, err := mediaPartFromValue(part["url"], stringValue(part["mime"]), stringValue(part["filename"]))
@@ -373,7 +426,7 @@ func readKimiCode(candidate Candidate) (*Session, error) {
 					if err != nil {
 						return fmt.Errorf("Kimi media part: %w", err)
 					}
-					history.Events = append(history.Events, Event{Kind: Message, Role: "assistant", Timestamp: ts, Parts: []Part{media}})
+					wire.events = append(wire.events, Event{Kind: Message, Role: "assistant", Timestamp: ts, Parts: []Part{media}})
 				default:
 					return fmt.Errorf("unsupported Kimi content part %q", partType)
 				}
@@ -385,7 +438,7 @@ func readKimiCode(candidate Candidate) (*Session, error) {
 				if string(input) == "null" {
 					input = []byte(`{}`)
 				}
-				history.Events = append(history.Events, Event{Kind: Message, Role: "assistant", Timestamp: ts, Parts: []Part{{Kind: ToolCall, ID: stringValue(event["uuid"]), CallID: stringValue(event["toolCallId"]), ToolName: stringValue(event["name"]), Data: jsonObject(input)}}})
+				wire.events = append(wire.events, Event{Kind: Message, Role: "assistant", Timestamp: ts, Parts: []Part{{Kind: ToolCall, ID: stringValue(event["uuid"]), CallID: stringValue(event["toolCallId"]), ToolName: stringValue(event["name"]), Data: jsonObject(input)}}})
 			case "tool.result":
 				result, ok := event["result"].(map[string]any)
 				if !ok {
@@ -399,7 +452,7 @@ func readKimiCode(candidate Candidate) (*Session, error) {
 				for i := range parts {
 					parts[i].Error = isError
 				}
-				history.Events = append(history.Events, Event{Kind: Message, Role: "tool", Timestamp: ts, Parts: parts})
+				wire.events = append(wire.events, Event{Kind: Message, Role: "tool", Timestamp: ts, Parts: parts})
 			case "step.begin", "step.end":
 			default:
 				return fmt.Errorf("unsupported Kimi loop event %q", eventType)
@@ -421,12 +474,30 @@ func readKimiCode(candidate Candidate) (*Session, error) {
 			if expected := stringValue(record["sha256"]); expected != "" && hashHex(plan) != expected {
 				return fmt.Errorf("Kimi plan %s failed its SHA-256 check", path)
 			}
-			history.Events = append(history.Events, Event{Kind: Plan, Role: "assistant", Timestamp: ts, PlanText: string(plan)})
+			wire.events = append(wire.events, Event{Kind: Plan, Role: "assistant", Timestamp: ts, PlanText: string(plan)})
 		case "context.apply_compaction", "full_compaction.begin", "full_compaction.complete":
-			history.Warnings = appendUnique(history.Warnings, "source contains Kimi compaction records; original observable wire events were retained")
-		case "config.update", "goal.clear", "goal.create", "goal.update", "interaction.request", "interaction.resolved", "interruptionReminder.recorded", "llm.request", "llm.tools_snapshot", "permission.record_approval_result", "permission.set_mode", "plan_mode.enter", "plan_mode.exit", "plugin.session_start", "prompt.accepted", "runtime.set_binding", "swarm_mode.enter", "swarm_mode.exit", "task.started", "task.terminated", "token_counting.measured", "tools.set_active_tools", "tools.update_store", "turn.cancel", "turn.ended", "turn.prompt", "turn.steer", "usage.record":
-			// UI, permission, usage, profile and task lifecycle records do not
-			// add model conversation content.
+			wire.warnings = appendUnique(wire.warnings, "source contains Kimi compaction records; original observable wire events were retained")
+		case "task.started", "task.terminated":
+			// Lifecycle only for the main thread, but the record carries the
+			// metadata that links a subagent directory to the call that spawned it.
+			info, ok := record["info"].(map[string]any)
+			if !ok {
+				return fmt.Errorf("%s has no info object", kind)
+			}
+			raw, err := json.Marshal(info)
+			if err != nil {
+				return err
+			}
+			var task kimiTask
+			if err := json.Unmarshal(raw, &task); err != nil {
+				return fmt.Errorf("parse Kimi %s info: %w", kind, err)
+			}
+			if task.Kind == "agent" && task.AgentID != "" {
+				wire.tasks = append(wire.tasks, task)
+			}
+		case "config.update", "goal.clear", "goal.create", "goal.update", "interaction.request", "interaction.resolved", "interruptionReminder.recorded", "llm.request", "llm.tools_snapshot", "permission.record_approval_result", "permission.set_mode", "plan_mode.enter", "plan_mode.exit", "plugin.session_start", "prompt.accepted", "runtime.set_binding", "swarm_mode.enter", "swarm_mode.exit", "token_counting.measured", "tools.set_active_tools", "tools.update_store", "turn.cancel", "turn.ended", "turn.prompt", "turn.steer", "usage.record":
+			// UI, permission, usage and profile records do not add model
+			// conversation content.
 		default:
 			return fmt.Errorf("unsupported Kimi wire record %q", kind)
 		}
@@ -435,13 +506,7 @@ func readKimiCode(candidate Candidate) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !seenMetadata {
-		return nil, fmt.Errorf("Kimi wire log has no metadata header")
-	}
-	if history.Title == "" {
-		history.Title = firstText(history)
-	}
-	return history, nil
+	return wire, nil
 }
 
 func safeChildPath(root, child string) (string, error) {
@@ -489,17 +554,269 @@ func resolveKimiPlanPath(agentHome, recorded string) (string, error) {
 	return "", fmt.Errorf("Kimi plan path %q is missing or outside the main agent directory", recorded)
 }
 
-func rejectKimiSubagents(agentsDir string) error {
+// kimiAgentNode is one entry of the agent tree Kimi keeps in state.json.
+type kimiAgentNode struct {
+	Type          string         `json:"type"`
+	ParentAgentID string         `json:"parentAgentId"`
+	Labels        map[string]any `json:"labels"`
+}
+
+// readKimiBranches reads every subagent directory beside the main thread.
+// mainTasks seeds the lifecycle metadata; each subagent's own log is parsed
+// too, both for its events and because a nested delegation is only recorded in
+// the log of the agent that made it.
+func readKimiBranches(agentsDir string, agents map[string]kimiAgentNode, mainTasks []kimiTask, mainEvents []Event) ([]Branch, []string, error) {
 	entries, err := os.ReadDir(agentsDir)
-	if err != nil {
-		return err
+	if os.IsNotExist(err) {
+		return nil, nil, nil
 	}
-	for _, entry := range entries {
-		if entry.IsDir() && entry.Name() != "main" {
-			return fmt.Errorf("Kimi session contains subagent %q; branched agent histories are not safely transferable yet", entry.Name())
+	if err != nil {
+		return nil, nil, err
+	}
+	type parsed struct {
+		name string
+		wire *kimiWire
+	}
+	var wires []parsed
+	tasks := make(map[string]kimiTask)
+	recordTasks := func(list []kimiTask) {
+		for _, task := range list {
+			// A terminated record supersedes the started one it repeats.
+			if existing, ok := tasks[task.AgentID]; ok && task.EndedAt == nil && existing.EndedAt != nil {
+				continue
+			}
+			tasks[task.AgentID] = task
 		}
 	}
-	return nil
+	recordTasks(mainTasks)
+	var warnings []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.IsDir() || name == "main" {
+			continue
+		}
+		if name == "." || name == ".." || strings.ContainsRune(name, filepath.Separator) {
+			return nil, nil, fmt.Errorf("unsafe Kimi agent directory %q", name)
+		}
+		home := filepath.Join(agentsDir, name)
+		wire, err := parseKimiWire(filepath.Join(home, "wire.jsonl"), home)
+		if os.IsNotExist(err) {
+			warnings = appendUnique(warnings, fmt.Sprintf("Kimi subagent %s has no wire log; it was skipped", name))
+			continue
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("read Kimi subagent %s: %w", name, err)
+		}
+		recordTasks(wire.tasks)
+		wires = append(wires, parsed{name: name, wire: wire})
+	}
+	// Kimi also persists each task as a file under the agent that spawned it,
+	// and that copy holds the final state, so it supersedes the wire records.
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		fileTasks, err := readKimiTaskFiles(filepath.Join(agentsDir, entry.Name(), "tasks"))
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, task := range fileTasks {
+			tasks[task.AgentID] = task
+		}
+	}
+	sort.SliceStable(wires, func(i, j int) bool { return naturalLess(wires[i].name, wires[j].name) })
+	var branches []Branch
+	swarmItems := make(map[string]string)
+	for _, item := range wires {
+		if len(item.wire.events) == 0 {
+			// Kimi creates the directory and binds a profile before the first
+			// turn, so an agent that never ran leaves a log with no content.
+			warnings = appendUnique(warnings, fmt.Sprintf("Kimi subagent %s recorded no messages (it never started or failed immediately); it was skipped", item.name))
+			continue
+		}
+		task := tasks[item.name]
+		node := agents[item.name]
+		parent := node.ParentAgentID
+		if parent == "main" {
+			parent = ""
+		}
+		branch := Branch{
+			ID: item.name, ParentID: parent, CallID: task.ParentCallID,
+			Name: task.SubagentType, Description: task.Description, Status: task.Status,
+			Model: task.Model, CreatedAt: parseFlexibleTime(task.StartedAt),
+			UpdatedAt: parseFlexibleTime(task.EndedAt), Events: item.wire.events,
+		}
+		if branch.Model == "" {
+			branch.Model = item.wire.model
+		}
+		// A swarm member is labelled by its item rather than by a task record.
+		if label := stringValue(node.Labels["swarmItem"]); label != "" {
+			swarmItems[branch.ID] = label
+			if branch.Description == "" {
+				branch.Description = "swarm item " + label
+			}
+		}
+		if branch.Status == "" {
+			branch.Status = "unknown"
+		}
+		for _, warning := range item.wire.warnings {
+			warnings = appendUnique(warnings, warning)
+		}
+		branches = append(branches, branch)
+	}
+	streams := make([][]Event, 0, len(branches)+1)
+	streams = append(streams, mainEvents)
+	for _, branch := range branches {
+		streams = append(streams, branch.Events)
+	}
+	attachKimiBranches(branches, streams, swarmItems)
+	linkBranchParents(branches)
+	var unattached []string
+	for _, branch := range branches {
+		if branch.CallID == "" {
+			unattached = append(unattached, branch.ID)
+		}
+	}
+	if len(unattached) > 0 {
+		warnings = appendUnique(warnings, fmt.Sprintf("Kimi recorded no spawning tool call for subagent %s; %s moved as unattached branches", strings.Join(unattached, ", "), plural(len(unattached), "it", "they")))
+	}
+	return branches, warnings, nil
+}
+
+// attachKimiBranches links a branch to the call that launched it when Kimi
+// recorded no parentToolCallId for it. Kimi writes a task record only for a
+// detached run, and never for a swarm member, so two other signals are used:
+// the delegating tool's own result names the agent ids it started, and a swarm
+// member carries the item label that appears in the AgentSwarm call's items
+// argument. A signal claimed by more than one call is ambiguous and is left
+// alone, so a branch is only ever linked to the one call that can own it.
+//
+// streams must include the main thread and every branch, because a nested
+// delegation is recorded in the branch that made it.
+func attachKimiBranches(branches []Branch, streams [][]Event, swarmItems map[string]string) {
+	delegating := make(map[string]bool)
+	described := make(map[string]string)
+	owners := make(map[string][]string)
+	claim := func(key, callID string) {
+		if key != "" {
+			owners[key] = appendUnique(owners[key], callID)
+		}
+	}
+	for _, events := range streams {
+		for _, event := range events {
+			for _, part := range event.Parts {
+				if part.Kind != ToolCall || (part.ToolName != "Agent" && part.ToolName != "AgentSwarm") {
+					continue
+				}
+				delegating[part.CallID] = true
+				var args struct {
+					Items       []string `json:"items"`
+					Description string   `json:"description"`
+				}
+				if json.Unmarshal(part.Data, &args) == nil {
+					described[part.CallID] = args.Description
+					for _, item := range args.Items {
+						claim(item, part.CallID)
+					}
+				}
+			}
+		}
+	}
+	for _, events := range streams {
+		for _, event := range events {
+			for _, part := range event.Parts {
+				if part.Kind != ToolResult || !delegating[part.CallID] {
+					continue
+				}
+				for _, id := range kimiResultAgentIDs(part.Text) {
+					claim(id, part.CallID)
+				}
+			}
+		}
+	}
+	for i := range branches {
+		if branches[i].CallID != "" {
+			continue
+		}
+		for _, key := range []string{branches[i].ID, swarmItems[branches[i].ID]} {
+			if callIDs := owners[key]; len(callIDs) == 1 {
+				branches[i].CallID = callIDs[0]
+				break
+			}
+		}
+	}
+	// Without a task record there is no description either, but the delegating
+	// call carried one; a swarm's shared call describes the swarm, not a member.
+	for i := range branches {
+		if branches[i].Description == "" && swarmItems[branches[i].ID] == "" {
+			branches[i].Description = described[branches[i].CallID]
+		}
+	}
+}
+
+// kimiResultAgentIDs pulls the subagent ids out of a delegating tool's result.
+// The Agent tool prints `agent_id: <id>` on its own line; AgentSwarm reports
+// one `agent_id="<id>"` attribute per member.
+func kimiResultAgentIDs(text string) []string {
+	if !strings.Contains(text, "agent_id") {
+		return nil
+	}
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		value, ok := strings.CutPrefix(strings.TrimSpace(line), "agent_id:")
+		if !ok {
+			continue
+		}
+		if id := strings.TrimSpace(value); id != "" {
+			out = appendUnique(out, id)
+		}
+	}
+	const attribute = `agent_id="`
+	for rest := text; ; {
+		index := strings.Index(rest, attribute)
+		if index < 0 {
+			return out
+		}
+		rest = rest[index+len(attribute):]
+		end := strings.Index(rest, `"`)
+		if end < 0 {
+			return out
+		}
+		if id := strings.TrimSpace(rest[:end]); id != "" {
+			out = appendUnique(out, id)
+		}
+		rest = rest[end+1:]
+	}
+}
+
+// readKimiTaskFiles reads the delegated-run records one agent recorded. Shell
+// tasks live here too and are skipped; only an agent task describes a branch.
+func readKimiTaskFiles(dir string) ([]kimiTask, error) {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []kimiTask
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		var task kimiTask
+		if err := json.Unmarshal(b, &task); err != nil {
+			return nil, fmt.Errorf("parse Kimi task %s: %w", entry.Name(), err)
+		}
+		if task.Kind == "agent" && task.AgentID != "" {
+			out = append(out, task)
+		}
+	}
+	return out, nil
 }
 
 func kimiOutputParts(output any, callID string) ([]Part, error) {
@@ -692,6 +1009,284 @@ func (kimiAdapter) Write(_ context.Context, history *Session, opts WriteOptions)
 	return writeKimiCode(history, opts)
 }
 
+// writeKimiBranches gives every delegated run its own agent directory, the way
+// Kimi records one natively: a wire log beside the main thread, an entry in the
+// session's agent tree, and a task record under the agent that spawned it so
+// the run stays linked to its call. Destination agent ids are renumbered from
+// zero because they are positional in Kimi and the source's numbering may not
+// survive skipped branches; the source id is kept in the task record.
+func writeKimiBranches(branches []Branch, agents map[string]any, stage, final string, now time.Time) (files []string, warnings []string, err error) {
+	if len(branches) == 0 {
+		return nil, nil, nil
+	}
+	destination := make(map[string]string, len(branches))
+	for i, branch := range branches {
+		destination[branch.ID] = fmt.Sprintf("agent-%d", i)
+	}
+	var unfinished []string
+	for _, branch := range branches {
+		name := destination[branch.ID]
+		parent := "main"
+		if name, ok := destination[branch.ParentID]; ok {
+			parent = name
+		}
+		stageAgent := filepath.Join(stage, "agents", name)
+		if err := ensureDir(stageAgent); err != nil {
+			return nil, nil, err
+		}
+		publishedAgent := filepath.Join(final, "agents", name)
+		planFiles, err := writeKimiWireLog(branch.Events, stageAgent, publishedAgent, now)
+		if err != nil {
+			return nil, nil, fmt.Errorf("write Kimi subagent %s: %w", branch.ID, err)
+		}
+		files = append(files, filepath.Join(publishedAgent, "wire.jsonl"))
+		files = append(files, planFiles...)
+		entry := map[string]any{"homedir": publishedAgent, "type": "sub", "parentAgentId": parent}
+		labels := map[string]any{"parentAgentId": parent, "agentswapSourceAgentId": branch.ID}
+		entry["labels"] = labels
+		agents[name] = entry
+
+		// Kimi polls a task it still believes is running, and nothing in the new
+		// session can service that. A run that never reached a terminal state is
+		// therefore recorded as failed rather than resurrected.
+		status := branch.Status
+		if status != "completed" && status != "failed" {
+			if status != "" && status != "unknown" {
+				unfinished = append(unfinished, branch.ID)
+			}
+			status = "failed"
+		}
+		taskSuffix, err := shortID("")
+		if err != nil {
+			return nil, nil, err
+		}
+		task := map[string]any{
+			"taskId": "agent-" + taskSuffix, "kind": "agent", "agentId": name,
+			"description": branch.Description, "status": status, "detached": false,
+			"parentToolCallId": branch.CallID, "subagentType": branch.Name,
+			"model": branch.Model, "agentswapSourceAgentId": branch.ID,
+		}
+		if !branch.CreatedAt.IsZero() {
+			task["startedAt"] = branch.CreatedAt.UnixMilli()
+		}
+		if !branch.UpdatedAt.IsZero() {
+			task["endedAt"] = branch.UpdatedAt.UnixMilli()
+		}
+		tasksDir := filepath.Join(stage, "agents", parent, "tasks")
+		if err := ensureDir(tasksDir); err != nil {
+			return nil, nil, err
+		}
+		if err := writeJSONFile(filepath.Join(tasksDir, stringValue(task["taskId"])+".json"), task, 0o600); err != nil {
+			return nil, nil, err
+		}
+		files = append(files, filepath.Join(final, "agents", parent, "tasks", stringValue(task["taskId"])+".json"))
+	}
+	warnings = append(warnings, fmt.Sprintf("%d delegated agent %s moved into Kimi subagent %s; the transcripts are readable but a subagent cannot be resumed in the new session", len(branches), plural(len(branches), "run", "runs"), plural(len(branches), "directory", "directories")))
+	if len(unfinished) > 0 {
+		warnings = append(warnings, fmt.Sprintf("delegated %s %s had not finished; %s recorded as failed because the new session has no process to attach to", plural(len(unfinished), "run", "runs"), strings.Join(unfinished, ", "), plural(len(unfinished), "it was", "they were")))
+	}
+	return files, warnings, nil
+}
+
+// writeKimiWireLog renders one canonical event stream as a Kimi wire log for a
+// single agent. Files are produced under stageAgent so an aborted write leaves
+// nothing behind, but plan records must store the location those files will
+// have after publication, which is what publishedAgent supplies. The returned
+// paths are the published plan files.
+func writeKimiWireLog(events []Event, stageAgent, publishedAgent string, now time.Time) (files []string, err error) {
+	wirePath := filepath.Join(stageAgent, "wire.jsonl")
+	f, err := os.OpenFile(wirePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	if err := writeJSONLine(f, map[string]any{"type": "metadata", "protocol_version": "1.5", "created_at": now.UnixMilli()}); err != nil {
+		return nil, err
+	}
+	callParents := make(map[string]string)
+	resultIDs := make(map[string]bool)
+	for _, event := range events {
+		for _, part := range event.Parts {
+			if part.Kind == ToolResult || (part.Kind == Media && part.CallID != "") {
+				resultIDs[part.CallID] = true
+			}
+		}
+	}
+	turnID, err := newUUID()
+	if err != nil {
+		return nil, err
+	}
+	emitToolResult := func(part Part, ts int64) error {
+		parent := callParents[part.CallID]
+		if parent == "" {
+			return fmt.Errorf("Kimi tool result %s has no emitted call", part.CallID)
+		}
+		output := any(part.Text)
+		if part.Kind == Media {
+			output = map[string]any{"type": "image", "url": mediaDataURL(part), "mime": part.MediaType, "filename": part.Filename}
+		}
+		resultValue := map[string]any{"output": output}
+		if part.Error {
+			resultValue["isError"] = true
+		}
+		loop := map[string]any{"type": "tool.result", "parentUuid": parent, "toolCallId": part.CallID, "result": resultValue}
+		return writeJSONLine(f, map[string]any{"type": "context.append_loop_event", "event": loop, "time": ts})
+	}
+	step := 0
+	planIndex := 0
+	for _, event := range events {
+		ts := timestampOr(event.Timestamp, now).UnixMilli()
+		if event.Kind == Plan {
+			planIndex++
+			planID := fmt.Sprintf("agentswap-import-%d", planIndex)
+			content := []byte(event.PlanText)
+			planPath := filepath.Join("plan", planID, "v1.md")
+			full := filepath.Join(stageAgent, planPath)
+			if err := ensureDir(filepath.Dir(full)); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(full, content, 0o600); err != nil {
+				return nil, err
+			}
+			if err := ensureDir(filepath.Join(stageAgent, "plans")); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(filepath.Join(stageAgent, "plans", planID+".md"), content, 0o600); err != nil {
+				return nil, err
+			}
+			publishedPlan := filepath.Join(publishedAgent, planPath)
+			recordedPath, err := filepath.Rel(kimiCodeRoot(), publishedPlan)
+			if err != nil {
+				return nil, err
+			}
+			if err := writeJSONLine(f, map[string]any{"type": "plan.revision", "id": planID, "version": 1, "path": filepath.ToSlash(recordedPath), "sha256": hashHex(content), "bytes": len(content), "time": ts}); err != nil {
+				return nil, err
+			}
+			files = append(files, publishedPlan)
+			continue
+		}
+		if event.Role == "user" {
+			var content []any
+			flushUser := func() error {
+				if len(content) == 0 {
+					return nil
+				}
+				turnID, err = newUUID()
+				if err != nil {
+					return err
+				}
+				messageID, err := shortID("msg_")
+				if err != nil {
+					return err
+				}
+				message := map[string]any{"role": "user", "content": content, "toolCalls": []any{}, "origin": map[string]any{"kind": "user"}, "id": messageID}
+				if err := writeJSONLine(f, map[string]any{"type": "context.append_message", "message": message, "time": ts}); err != nil {
+					return err
+				}
+				if err := writeJSONLine(f, map[string]any{"type": "turn.prompt", "input": content, "origin": map[string]any{"kind": "user"}, "time": ts}); err != nil {
+					return err
+				}
+				content = nil
+				step = 0
+				return nil
+			}
+			for _, part := range event.Parts {
+				switch part.Kind {
+				case Text:
+					content = append(content, map[string]any{"type": "text", "text": part.Text})
+				case Media:
+					content = append(content, map[string]any{"type": "image", "url": mediaDataURL(part), "mime": part.MediaType, "filename": part.Filename})
+				case ToolResult:
+					if err := flushUser(); err != nil {
+						return nil, err
+					}
+					if err := emitToolResult(part, ts); err != nil {
+						return nil, err
+					}
+				default:
+					return nil, fmt.Errorf("cannot write %s part in a Kimi user message", part.Kind)
+				}
+			}
+			if err := flushUser(); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if event.Role == "assistant" {
+			stepUUID, err := newUUID()
+			if err != nil {
+				return nil, err
+			}
+			beginUUID, err := newUUID()
+			if err != nil {
+				return nil, err
+			}
+			if err := writeJSONLine(f, map[string]any{"type": "context.append_loop_event", "event": map[string]any{"type": "step.begin", "uuid": beginUUID, "turnId": turnID, "step": step}, "time": ts}); err != nil {
+				return nil, err
+			}
+			var dangling []Part
+			for _, part := range event.Parts {
+				eventUUID, err := newUUID()
+				if err != nil {
+					return nil, err
+				}
+				var loop map[string]any
+				switch part.Kind {
+				case Text:
+					loop = map[string]any{"type": "content.part", "uuid": eventUUID, "turnId": turnID, "step": step, "stepUuid": stepUUID, "part": map[string]any{"type": "text", "text": part.Text}}
+				case Reasoning:
+					loop = map[string]any{"type": "content.part", "uuid": eventUUID, "turnId": turnID, "step": step, "stepUuid": stepUUID, "part": map[string]any{"type": "think", "think": part.Text}}
+				case Media:
+					loop = map[string]any{"type": "content.part", "uuid": eventUUID, "turnId": turnID, "step": step, "stepUuid": stepUUID, "part": map[string]any{"type": "image", "url": mediaDataURL(part), "mime": part.MediaType, "filename": part.Filename}}
+				case ToolCall:
+					var args map[string]any
+					if err := json.Unmarshal(jsonObject(part.Data), &args); err != nil {
+						return nil, err
+					}
+					loop = map[string]any{"type": "tool.call", "uuid": eventUUID, "turnId": turnID, "step": step, "stepUuid": stepUUID, "toolCallId": part.CallID, "name": part.ToolName, "args": args}
+					callParents[part.CallID] = eventUUID
+					if !resultIDs[part.CallID] {
+						dangling = append(dangling, Part{Kind: ToolResult, CallID: part.CallID, Text: "[Tool execution was interrupted before teleport]", Error: true})
+					}
+				case ToolResult:
+					return nil, fmt.Errorf("tool result appeared in an assistant event")
+				}
+				if err := writeJSONLine(f, map[string]any{"type": "context.append_loop_event", "event": loop, "time": ts}); err != nil {
+					return nil, err
+				}
+			}
+			endUUID, err := newUUID()
+			if err != nil {
+				return nil, err
+			}
+			if err := writeJSONLine(f, map[string]any{"type": "context.append_loop_event", "event": map[string]any{"type": "step.end", "uuid": endUUID, "turnId": turnID, "step": step}, "time": ts}); err != nil {
+				return nil, err
+			}
+			step++
+			for _, part := range dangling {
+				if err := emitToolResult(part, ts); err != nil {
+					return nil, err
+				}
+			}
+			continue
+		}
+		if event.Role == "tool" {
+			for _, part := range event.Parts {
+				if part.Kind != ToolResult && part.Kind != Media {
+					return nil, fmt.Errorf("non-result part appeared in a tool event")
+				}
+				if err := emitToolResult(part, ts); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+	if err := f.Sync(); err != nil {
+		return nil, err
+	}
+	return files, f.Close()
+}
+
 func writeKimiCode(history *Session, opts WriteOptions) (result Result, err error) {
 	resumeModel, err := kimiResumeModel()
 	if err != nil {
@@ -731,10 +1326,10 @@ func writeKimiCode(history *Session, opts WriteOptions) (result Result, err erro
 		return Result{}, err
 	}
 	now := time.Now()
-	created := now.UnixMilli()
+	agents := map[string]any{"main": map[string]any{"homedir": filepath.Join(final, "agents", "main"), "type": "main", "parentAgentId": nil}}
 	state := map[string]any{
 		"createdAt": now.UTC().Format(time.RFC3339Nano), "updatedAt": now.UTC().Format(time.RFC3339Nano),
-		"agents": map[string]any{"main": map[string]any{"homedir": filepath.Join(final, "agents", "main"), "type": "main", "parentAgentId": nil}},
+		"agents": agents,
 		"custom": map[string]any{"agentswap": map[string]any{
 			"sourceAgent": history.Source, "sourceSessionID": history.SourceID, "sourceModel": history.Model,
 			"sourceCreatedAt": history.CreatedAt, "sourceUpdatedAt": history.UpdatedAt,
@@ -742,200 +1337,18 @@ func writeKimiCode(history *Session, opts WriteOptions) (result Result, err erro
 		"lastPrompt": lastUserText(history), "title": safeTitle(history.Title, firstText(history)),
 		"workDir": canonical, "isCustomTitle": true,
 	}
+	planFiles, err := writeKimiWireLog(history.Events, stageAgent, agentHome, now)
+	if err != nil {
+		return Result{}, err
+	}
+	result.Files = append(result.Files, planFiles...)
+	branchFiles, branchWarnings, err := writeKimiBranches(history.Branches, agents, stage, final, now)
+	if err != nil {
+		return Result{}, err
+	}
+	result.Files = append(result.Files, branchFiles...)
+	result.Warnings = append(result.Warnings, branchWarnings...)
 	if err := writeJSONFile(filepath.Join(stage, "state.json"), state, 0o600); err != nil {
-		return Result{}, err
-	}
-	wirePath := filepath.Join(stageAgent, "wire.jsonl")
-	f, err := os.OpenFile(wirePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		return Result{}, err
-	}
-	defer f.Close()
-	if err := writeJSONLine(f, map[string]any{"type": "metadata", "protocol_version": "1.5", "created_at": created}); err != nil {
-		return Result{}, err
-	}
-	callParents := make(map[string]string)
-	resultIDs := make(map[string]bool)
-	for _, event := range history.Events {
-		for _, part := range event.Parts {
-			if part.Kind == ToolResult || (part.Kind == Media && part.CallID != "") {
-				resultIDs[part.CallID] = true
-			}
-		}
-	}
-	turnID, err := newUUID()
-	if err != nil {
-		return Result{}, err
-	}
-	emitToolResult := func(part Part, ts int64) error {
-		parent := callParents[part.CallID]
-		if parent == "" {
-			return fmt.Errorf("Kimi tool result %s has no emitted call", part.CallID)
-		}
-		output := any(part.Text)
-		if part.Kind == Media {
-			output = map[string]any{"type": "image", "url": mediaDataURL(part), "mime": part.MediaType, "filename": part.Filename}
-		}
-		resultValue := map[string]any{"output": output}
-		if part.Error {
-			resultValue["isError"] = true
-		}
-		loop := map[string]any{"type": "tool.result", "parentUuid": parent, "toolCallId": part.CallID, "result": resultValue}
-		return writeJSONLine(f, map[string]any{"type": "context.append_loop_event", "event": loop, "time": ts})
-	}
-	step := 0
-	planIndex := 0
-	for _, event := range history.Events {
-		ts := timestampOr(event.Timestamp, now).UnixMilli()
-		if event.Kind == Plan {
-			planIndex++
-			planID := fmt.Sprintf("agentswap-import-%d", planIndex)
-			content := []byte(event.PlanText)
-			planPath := filepath.Join("plan", planID, "v1.md")
-			full := filepath.Join(stageAgent, planPath)
-			if err := ensureDir(filepath.Dir(full)); err != nil {
-				return Result{}, err
-			}
-			if err := os.WriteFile(full, content, 0o600); err != nil {
-				return Result{}, err
-			}
-			if err := ensureDir(filepath.Join(stageAgent, "plans")); err != nil {
-				return Result{}, err
-			}
-			if err := os.WriteFile(filepath.Join(stageAgent, "plans", planID+".md"), content, 0o600); err != nil {
-				return Result{}, err
-			}
-			publishedPlan := filepath.Join(agentHome, planPath)
-			recordedPath, err := filepath.Rel(kimiCodeRoot(), publishedPlan)
-			if err != nil {
-				return Result{}, err
-			}
-			if err := writeJSONLine(f, map[string]any{"type": "plan.revision", "id": planID, "version": 1, "path": filepath.ToSlash(recordedPath), "sha256": hashHex(content), "bytes": len(content), "time": ts}); err != nil {
-				return Result{}, err
-			}
-			result.Files = append(result.Files, publishedPlan)
-			continue
-		}
-		if event.Role == "user" {
-			var content []any
-			flushUser := func() error {
-				if len(content) == 0 {
-					return nil
-				}
-				turnID, err = newUUID()
-				if err != nil {
-					return err
-				}
-				messageID, err := shortID("msg_")
-				if err != nil {
-					return err
-				}
-				message := map[string]any{"role": "user", "content": content, "toolCalls": []any{}, "origin": map[string]any{"kind": "user"}, "id": messageID}
-				if err := writeJSONLine(f, map[string]any{"type": "context.append_message", "message": message, "time": ts}); err != nil {
-					return err
-				}
-				if err := writeJSONLine(f, map[string]any{"type": "turn.prompt", "input": content, "origin": map[string]any{"kind": "user"}, "time": ts}); err != nil {
-					return err
-				}
-				content = nil
-				step = 0
-				return nil
-			}
-			for _, part := range event.Parts {
-				switch part.Kind {
-				case Text:
-					content = append(content, map[string]any{"type": "text", "text": part.Text})
-				case Media:
-					content = append(content, map[string]any{"type": "image", "url": mediaDataURL(part), "mime": part.MediaType, "filename": part.Filename})
-				case ToolResult:
-					if err := flushUser(); err != nil {
-						return Result{}, err
-					}
-					if err := emitToolResult(part, ts); err != nil {
-						return Result{}, err
-					}
-				default:
-					return Result{}, fmt.Errorf("cannot write %s part in a Kimi user message", part.Kind)
-				}
-			}
-			if err := flushUser(); err != nil {
-				return Result{}, err
-			}
-			continue
-		}
-		if event.Role == "assistant" {
-			stepUUID, err := newUUID()
-			if err != nil {
-				return Result{}, err
-			}
-			beginUUID, err := newUUID()
-			if err != nil {
-				return Result{}, err
-			}
-			if err := writeJSONLine(f, map[string]any{"type": "context.append_loop_event", "event": map[string]any{"type": "step.begin", "uuid": beginUUID, "turnId": turnID, "step": step}, "time": ts}); err != nil {
-				return Result{}, err
-			}
-			var dangling []Part
-			for _, part := range event.Parts {
-				eventUUID, err := newUUID()
-				if err != nil {
-					return Result{}, err
-				}
-				var loop map[string]any
-				switch part.Kind {
-				case Text:
-					loop = map[string]any{"type": "content.part", "uuid": eventUUID, "turnId": turnID, "step": step, "stepUuid": stepUUID, "part": map[string]any{"type": "text", "text": part.Text}}
-				case Reasoning:
-					loop = map[string]any{"type": "content.part", "uuid": eventUUID, "turnId": turnID, "step": step, "stepUuid": stepUUID, "part": map[string]any{"type": "think", "think": part.Text}}
-				case Media:
-					loop = map[string]any{"type": "content.part", "uuid": eventUUID, "turnId": turnID, "step": step, "stepUuid": stepUUID, "part": map[string]any{"type": "image", "url": mediaDataURL(part), "mime": part.MediaType, "filename": part.Filename}}
-				case ToolCall:
-					var args map[string]any
-					if err := json.Unmarshal(jsonObject(part.Data), &args); err != nil {
-						return Result{}, err
-					}
-					loop = map[string]any{"type": "tool.call", "uuid": eventUUID, "turnId": turnID, "step": step, "stepUuid": stepUUID, "toolCallId": part.CallID, "name": part.ToolName, "args": args}
-					callParents[part.CallID] = eventUUID
-					if !resultIDs[part.CallID] {
-						dangling = append(dangling, Part{Kind: ToolResult, CallID: part.CallID, Text: "[Tool execution was interrupted before teleport]", Error: true})
-					}
-				case ToolResult:
-					return Result{}, fmt.Errorf("tool result appeared in an assistant event")
-				}
-				if err := writeJSONLine(f, map[string]any{"type": "context.append_loop_event", "event": loop, "time": ts}); err != nil {
-					return Result{}, err
-				}
-			}
-			endUUID, err := newUUID()
-			if err != nil {
-				return Result{}, err
-			}
-			if err := writeJSONLine(f, map[string]any{"type": "context.append_loop_event", "event": map[string]any{"type": "step.end", "uuid": endUUID, "turnId": turnID, "step": step}, "time": ts}); err != nil {
-				return Result{}, err
-			}
-			step++
-			for _, part := range dangling {
-				if err := emitToolResult(part, ts); err != nil {
-					return Result{}, err
-				}
-			}
-			continue
-		}
-		if event.Role == "tool" {
-			for _, part := range event.Parts {
-				if part.Kind != ToolResult && part.Kind != Media {
-					return Result{}, fmt.Errorf("non-result part appeared in a tool event")
-				}
-				if err := emitToolResult(part, ts); err != nil {
-					return Result{}, err
-				}
-			}
-		}
-	}
-	if err := f.Sync(); err != nil {
-		return Result{}, err
-	}
-	if err := f.Close(); err != nil {
 		return Result{}, err
 	}
 	if err := os.Rename(stage, final); err != nil {
@@ -988,6 +1401,9 @@ func writeKimiLegacy(history *Session, opts WriteOptions) (result Result, err er
 	result = Result{
 		Agent: Kimi, ID: id, Path: final, Resume: []string{"kimi", "-r", id},
 		Files: []string{filepath.Join(final, "context.jsonl"), filepath.Join(final, "wire.jsonl"), filepath.Join(final, "state.json")},
+	}
+	if len(history.Branches) > 0 {
+		result.Warnings = append(result.Warnings, branchesNotTransferred("The Python-era Kimi layout", history.Branches))
 	}
 	if opts.DryRun {
 		return result, nil

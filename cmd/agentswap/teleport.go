@@ -195,6 +195,9 @@ func cmdTransfer(args []string, handoff bool) error {
 			fmt.Fprintf(os.Stdout, "Location: %s\n", result.Path)
 		}
 	}
+	if len(history.Branches) > 0 {
+		fmt.Fprintf(os.Stdout, "Delegated agent runs: %d (%s)\n", len(history.Branches), branchSummary(history.Branches))
+	}
 	if len(result.Resume) > 0 {
 		fmt.Fprintf(os.Stdout, "Resume: %s\n", shellJoin(result.Resume))
 	}
@@ -294,6 +297,26 @@ func shellJoin(args []string) string {
 		}
 	}
 	return strings.Join(quoted, " ")
+}
+
+// branchSummary counts the delegated runs by the event totals that matter to a
+// reader deciding whether the transfer captured the work: how many messages the
+// branches hold, and how many of them are still linked to the call that spawned
+// them. A branch that lost its link is readable but will not appear under a
+// tool call in the target.
+func branchSummary(branches []session.Branch) string {
+	events, attached := 0, 0
+	for _, branch := range branches {
+		events += len(branch.Events)
+		if branch.CallID != "" {
+			attached++
+		}
+	}
+	summary := fmt.Sprintf("%d events", events)
+	if attached < len(branches) {
+		summary += fmt.Sprintf(", %d of %d linked to a tool call", attached, len(branches))
+	}
+	return summary
 }
 
 func uniqueStrings(values []string) []string {

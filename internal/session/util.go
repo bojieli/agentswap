@@ -347,6 +347,14 @@ func proposedPlan(text string) (string, bool) {
 	return strings.TrimSpace(trimmed[start:end]), true
 }
 
+// plural picks the form matching n, so a count and its noun agree in a message.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
 func ensureDir(path string) error { return os.MkdirAll(path, 0o700) }
 
 func removeIfExists(path string) { _ = os.RemoveAll(path) }
