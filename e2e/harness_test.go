@@ -123,6 +123,13 @@ func (e *env) environ() []string {
 		"CODEX_HOME="+e.codex,
 		// Keep a stray real login from leaking into an import test.
 		"CLAUDE_CREDENTIALS_PATH="+filepath.Join(e.claude, ".credentials.json"),
+		// A test that asserts no daemon is running must not be able to reach
+		// one. Every other root is redirected above, but the listen address
+		// would otherwise fall back to the compiled-in default and find the
+		// developer's own daemon. Port 1 needs root to bind, so nothing in the
+		// test run — or on the machine — can be listening there, and the probe
+		// is refused immediately rather than waiting out a timeout.
+		"AGENTSWAP_ADDR=127.0.0.1:1",
 		"GOCOVERDIR="+coverDir(),
 	)
 }

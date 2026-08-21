@@ -66,11 +66,17 @@ will actually read.
 ## Top level
 
 ### `addr`
-Default `127.0.0.1:8420`.
+Default `127.0.0.1:8420`, or `AGENTSWAP_ADDR` when that is set.
 
-Where the daemon listens. Loopback is the point: anything that can reach this
-port gets answers paid for with your subscriptions. Binding elsewhere warns at
-startup.
+Where the daemon listens, and where every other command looks for one. Loopback
+is the point: anything that can reach this port gets answers paid for with your
+subscriptions. Binding elsewhere warns at startup.
+
+`AGENTSWAP_ADDR` moves that default the way `AGENTSWAP_HOME` moves the config
+directory, which is what a second installation on one machine needs: without
+it, two daemons with no `addr` in their config files both fall back to the same
+port, and each one's commands reach whichever daemon bound it first. This file
+still wins over the variable, and `serve --addr` still wins over both.
 
 Changing this means re-running `agentswap install`, since the CLIs are
 configured with the address baked in. `agentswap serve --addr` overrides it for

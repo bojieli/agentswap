@@ -26,6 +26,36 @@ func TestDefaultIsValid(t *testing.T) {
 	}
 }
 
+// Two installations on one machine, and any test that must not reach the
+// developer's own daemon, need the listen address to be movable by environment
+// alone. A config file still outranks the variable.
+func TestDefaultAddrHonorsTheEnvironment(t *testing.T) {
+	if got := Default().Addr; got != DefaultAddr {
+		t.Fatalf("addr with no environment = %q, want %q", got, DefaultAddr)
+	}
+	t.Setenv("AGENTSWAP_ADDR", " 127.0.0.1:9137 ")
+	if got := Default().Addr; got != "127.0.0.1:9137" {
+		t.Errorf("addr from AGENTSWAP_ADDR = %q, want 127.0.0.1:9137", got)
+	}
+	if err := Default().Validate(); err != nil {
+		t.Errorf("an overridden default does not validate: %v", err)
+	}
+
+	t.Setenv("AGENTSWAP_ADDR", "   ")
+	if got := Default().Addr; got != DefaultAddr {
+		t.Errorf("addr from a blank AGENTSWAP_ADDR = %q, want %q", got, DefaultAddr)
+	}
+
+	t.Setenv("AGENTSWAP_ADDR", "127.0.0.1:9137")
+	cfg, err := Load(writeConfig(t, `{"addr": "127.0.0.1:9999"}`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Addr != "127.0.0.1:9999" {
+		t.Errorf("addr = %q, want the config file to outrank AGENTSWAP_ADDR", cfg.Addr)
+	}
+}
+
 func TestLoadWithoutAFileIsNotAnError(t *testing.T) {
 	cfg, err := Load(t.TempDir())
 	if err != nil {

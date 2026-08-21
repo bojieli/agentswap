@@ -4,6 +4,22 @@ Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html); until 1.0 the minor
 version moves for anything that changes behaviour.
 
+## Unreleased
+
+### Fixed
+
+- **Four end-to-end tests failed on any machine already running agentswap.**
+  The suite gives each test its own config directory, its own stand-ins for the
+  CLIs' directories, and its own upstream, but the listen address had no such
+  redirect: a test asserting that no daemon is running fell back to the
+  compiled-in `127.0.0.1:8420`, found the developer's real daemon, and reported
+  the opposite of what it was checking. `AGENTSWAP_ADDR` now moves that default
+  the way `AGENTSWAP_HOME` moves the config directory — useful in its own right
+  for a second installation on one machine, since two daemons with no `addr` in
+  their config files otherwise answer each other's commands — and the suite
+  points it at a port nothing can bind. `config.json` still outranks the
+  variable, and `serve --addr` still outranks both.
+
 ## v0.3.0 — 2026-08-21
 
 ### Added

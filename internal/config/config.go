@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -99,10 +100,26 @@ type Park struct {
 	Keepalive string `json:"keepalive"`
 }
 
+// DefaultAddr is the address agentswap serves on, and the one every other
+// command looks for a daemon at, when nothing configures one.
+const DefaultAddr = "127.0.0.1:8420"
+
+// defaultAddr honors AGENTSWAP_ADDR the way Dir honors AGENTSWAP_HOME. Without
+// it the listen address is the one piece of agentswap's environment that a
+// caller cannot move: two installations on one machine, or a test that must
+// not find the developer's own daemon, would otherwise both fall back to
+// DefaultAddr and reach whichever daemon got there first.
+func defaultAddr() string {
+	if a := strings.TrimSpace(os.Getenv("AGENTSWAP_ADDR")); a != "" {
+		return a
+	}
+	return DefaultAddr
+}
+
 // Default returns the configuration used when no file exists.
 func Default() Config {
 	return Config{
-		Addr: "127.0.0.1:8420",
+		Addr: defaultAddr(),
 		Rotation: Rotation{
 			DrainAbove: 98,
 			Sticky:     true,
