@@ -4,7 +4,7 @@ Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html); until 1.0 the minor
 version moves for anything that changes behaviour.
 
-## Unreleased
+## v0.4.0 — 2026-08-28
 
 ### Added
 
@@ -55,6 +55,16 @@ version moves for anything that changes behaviour.
   content at all. Any session that had read a file since being resumed refused
   to move, with `unsupported Kimi wire record "staleGuard.recorded"`. Both now
   join the other UI, permission and usage records the reader skips.
+
+- **Four tests failed on Windows, none of them for a reason the product was
+  responsible for.** Two digest tests built their fixtures from POSIX paths, so
+  the relativization under test — which goes through `filepath` — did nothing
+  on a host where `/p/one.go` is not an absolute path; two teleport end-to-end
+  tests looked for an archive path in the raw text of a Codex rollout, which is
+  JSONL, where a Windows separator appears escaped. The fixtures now use the
+  host's own path syntax and the assertions search for the encoded form. A
+  session recorded on Windows always carried Windows paths and was never
+  affected.
 
 - **Four end-to-end tests failed on any machine already running agentswap.**
   The suite gives each test its own config directory, its own stand-ins for the
