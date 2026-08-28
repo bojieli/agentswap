@@ -366,6 +366,18 @@ func TestTeleportWarnsWhenTheSourceIsTooLargeForTheTarget(t *testing.T) {
 	}
 }
 
+// inJSON renders a path the way it appears inside a JSONL record, where a
+// Windows separator is escaped. Comparing the raw path against the file would
+// pass on POSIX and fail on Windows for a record that is perfectly correct.
+func inJSON(t *testing.T, path string) string {
+	t.Helper()
+	encoded, err := json.Marshal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Trim(string(encoded), `"`)
+}
+
 func TestTeleportCompactAbridgesAndArchivesTheHistory(t *testing.T) {
 	e := newEnv(t)
 	project := filepath.Join(t.TempDir(), "project")
@@ -415,7 +427,7 @@ func TestTeleportCompactAbridgesAndArchivesTheHistory(t *testing.T) {
 		"Rewrite the lexer to report column numbers.",
 		"COMMANDS RUN",
 		"agentswap:elided",
-		archive,
+		inJSON(t, archive),
 	} {
 		mustContain(t, rollout, want, "compacted Codex rollout")
 	}
@@ -520,7 +532,7 @@ func TestTeleportCompactArchiveDirMovesTheArchiveAndWarns(t *testing.T) {
 	if err != nil || len(rollouts) != 1 {
 		t.Fatalf("Codex rollouts = %v, %v", rollouts, err)
 	}
-	mustContain(t, readFile(t, rollouts[0]), moved[0], "markers point at the chosen root")
+	mustContain(t, readFile(t, rollouts[0]), inJSON(t, moved[0]), "markers point at the chosen root")
 }
 
 func TestTeleportCompactArchiveIsKeptOutOfVersionControl(t *testing.T) {
