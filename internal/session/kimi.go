@@ -495,7 +495,7 @@ func parseKimiWire(wirePath, agentHome string) (*kimiWire, error) {
 			if task.Kind == "agent" && task.AgentID != "" {
 				wire.tasks = append(wire.tasks, task)
 			}
-		case "config.update", "goal.clear", "goal.create", "goal.update", "interaction.request", "interaction.resolved", "interruptionReminder.recorded", "llm.request", "llm.tools_snapshot", "permission.record_approval_result", "permission.set_mode", "plan_mode.enter", "plan_mode.exit", "plugin.session_start", "prompt.accepted", "runtime.set_binding", "swarm_mode.enter", "swarm_mode.exit", "token_counting.measured", "tools.set_active_tools", "tools.update_store", "turn.cancel", "turn.ended", "turn.prompt", "turn.steer", "usage.record":
+		case "config.update", "goal.clear", "goal.create", "goal.update", "interaction.request", "interaction.resolved", "interruptionReminder.recorded", "llm.request", "llm.tools_snapshot", "permission.record_approval_result", "permission.set_mode", "plan_mode.enter", "plan_mode.exit", "plugin.session_start", "prompt.accepted", "runtime.set_binding", "staleGuard.recorded", "swarm_mode.enter", "swarm_mode.exit", "token_counting.measured", "token_counting.turn_recorded", "tools.set_active_tools", "tools.update_store", "turn.cancel", "turn.ended", "turn.prompt", "turn.steer", "usage.record":
 			// UI, permission, usage and profile records do not add model
 			// conversation content.
 		default:

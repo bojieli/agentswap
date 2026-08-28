@@ -456,6 +456,48 @@ func TestKimiCodeBranchRoundTrip(t *testing.T) {
 	assertBranchesMatch(t, got.Branches, history.Branches)
 }
 
+func TestKimiCodeReaderIgnoresBookkeepingRecords(t *testing.T) {
+	isolatedHomes(t)
+	cwd := t.TempDir()
+	adapter := kimiAdapter{}
+	result, err := adapter.Write(context.Background(), sampleHistory(t, cwd), WriteOptions{CWD: cwd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wirePath := filepath.Join(result.Path, "agents", "main", "wire.jsonl")
+	f, err := os.OpenFile(wirePath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range []map[string]any{
+		{"type": "staleGuard.recorded", "path": filepath.Join(cwd, "parser.go"), "mtimeMs": 1787905539272.4387, "time": 1787922536166},
+		{"type": "token_counting.turn_recorded", "agentId": "main", "turnId": 0, "length": 24, "tokens": 42709, "time": 1787922786155},
+	} {
+		if err := writeJSONLine(f, record); err != nil {
+			_ = f.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	candidate := candidateForResult(Kimi, result, cwd)
+	assertRoundTrip(t, adapter, candidate)
+
+	f, err = os.OpenFile(wirePath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = writeJSONLine(f, map[string]any{"type": "_future.record", "time": 1787922786155})
+	_ = f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.Read(context.Background(), candidate); err == nil || !strings.Contains(err.Error(), `unsupported Kimi wire record "_future.record"`) {
+		t.Fatalf("unknown wire record error = %v", err)
+	}
+}
+
 func TestKimiLegacyRoundTrip(t *testing.T) {
 	root := isolatedHomes(t)
 	t.Setenv("KIMI_CODE_HOME", filepath.Join(root, "modern-empty"))
