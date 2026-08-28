@@ -47,6 +47,15 @@ version moves for anything that changes behaviour.
 
 ### Fixed
 
+- **Two Kimi bookkeeping records aborted the whole transfer.** The Kimi Code
+  reader fails closed on a wire record it does not know, so that new content
+  can never be dropped in silence, but `staleGuard.recorded` (a file path and
+  its mtime, kept so the agent can detect an edit underneath it) and
+  `token_counting.turn_recorded` (a per-turn token tally) carry no conversation
+  content at all. Any session that had read a file since being resumed refused
+  to move, with `unsupported Kimi wire record "staleGuard.recorded"`. Both now
+  join the other UI, permission and usage records the reader skips.
+
 - **Four end-to-end tests failed on any machine already running agentswap.**
   The suite gives each test its own config directory, its own stand-ins for the
   CLIs' directories, and its own upstream, but the listen address had no such
