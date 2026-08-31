@@ -4,6 +4,19 @@ Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html); until 1.0 the minor
 version moves for anything that changes behaviour.
 
+## v0.5.0 — 2026-08-31
+
+### Fixed
+
+- **New Claude Code bookkeeping records no longer abort a handoff.** Claude
+  Code added a top-level `cost-state` record containing usage and timing
+  totals. The session reader treated every unrecognized top-level record as a
+  fatal format change, so an otherwise valid handoff stopped at that line with
+  `unsupported Claude record type "cost-state"`. Unknown top-level Claude
+  records are now ignored while known conversation records and their content
+  remain strictly validated, allowing telemetry and UI metadata to evolve
+  without stranding the transcript.
+
 ## v0.4.0 — 2026-08-28
 
 ### Added
