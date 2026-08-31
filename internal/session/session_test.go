@@ -178,6 +178,44 @@ func TestClaudeRoundTrip(t *testing.T) {
 	assertRoundTrip(t, adapter, candidates[0])
 }
 
+func TestClaudeReaderIgnoresUnknownRecordTypes(t *testing.T) {
+	cwd := t.TempDir()
+	id := "11111111-1111-4111-8111-111111111111"
+	path := filepath.Join(t.TempDir(), id+".jsonl")
+	records := []map[string]any{
+		{"type": "user", "uuid": "u", "cwd": cwd, "message": map[string]any{"role": "user", "content": "before bookkeeping"}},
+		{"type": "cost-state", "sessionId": id, "totalCostUSD": 0.42, "totalLinesAdded": 12, "totalLinesRemoved": 3},
+		{"type": "future-bookkeeping", "opaque": true},
+		{"type": "assistant", "uuid": "a", "parentUuid": "u", "message": map[string]any{"role": "assistant", "content": "after bookkeeping"}},
+	}
+	var body strings.Builder
+	for _, record := range records {
+		line, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body.Write(line)
+		body.WriteByte('\n')
+	}
+	if err := os.WriteFile(path, []byte(body.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	history, err := (claudeAdapter{}).Read(context.Background(), Candidate{Agent: Claude, ID: id, CWD: cwd, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Events) != 2 {
+		t.Fatalf("history events = %#v, want the two conversation records", history.Events)
+	}
+	encoded, err := json.Marshal(history.Events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytesContainAll(encoded, []string{"before bookkeeping", "after bookkeeping"}) {
+		t.Fatalf("conversation around ignored records was not preserved: %s", encoded)
+	}
+}
+
 func TestClaudeDiscoveryMatchesDifferentSymlinkAliases(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation is not generally available to unprivileged Windows tests")

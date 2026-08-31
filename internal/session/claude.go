@@ -281,7 +281,10 @@ func (s *claudeStream) record(_ int, raw json.RawMessage) error {
 		// not add user/assistant conversation beyond the records retained above.
 		return nil
 	default:
-		return fmt.Errorf("unsupported Claude record type %q", rtype)
+		// Claude adds top-level telemetry and UI bookkeeping records over time.
+		// Only the known user and assistant records carry transferable
+		// conversation; an unfamiliar envelope must not strand the whole session.
+		return nil
 	}
 	message, ok := record["message"].(map[string]any)
 	if !ok {
