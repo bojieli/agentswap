@@ -209,13 +209,14 @@ func (s *claudeStream) record(_ int, raw json.RawMessage) error {
 		case "remove", "dequeue":
 			s.removePending(content)
 		default:
-			return fmt.Errorf("unsupported Claude queue operation %q", operation)
+			s.warnings = appendUnique(s.warnings, fmt.Sprintf("unsupported Claude queue operation %q was skipped", operation))
 		}
 		return nil
 	case "attachment":
 		attachment, ok := record["attachment"].(map[string]any)
 		if !ok {
-			return fmt.Errorf("attachment record has no attachment object")
+			s.warnings = appendUnique(s.warnings, "a Claude attachment record had no attachment object and was skipped")
+			return nil
 		}
 		kind, _ := attachment["type"].(string)
 		switch kind {
@@ -234,7 +235,8 @@ func (s *claudeStream) record(_ int, raw json.RawMessage) error {
 		case "file":
 			content, ok := attachment["content"].(map[string]any)
 			if !ok {
-				return fmt.Errorf("unsupported Claude file attachment (media cannot be teleported safely)")
+				s.warnings = appendUnique(s.warnings, "a Claude file attachment had no content object and was skipped (media cannot be teleported safely)")
+				return nil
 			}
 			contentType := stringValue(content["type"])
 			if contentType == "image" || contentType == "document" {
@@ -243,16 +245,19 @@ func (s *claudeStream) record(_ int, raw json.RawMessage) error {
 					media, mediaErr = mediaPartFromValue(content, stringValue(content["media_type"]), stringValue(attachment["filename"]))
 				}
 				if mediaErr != nil {
-					return fmt.Errorf("Claude media attachment: %w", mediaErr)
+					s.warnings = appendUnique(s.warnings, fmt.Sprintf("a Claude media attachment could not be decoded and was skipped: %v", mediaErr))
+					return nil
 				}
 				s.events = append(s.events, Event{Kind: Message, ID: stringValue(record["uuid"]), ParentID: stringValue(record["parentUuid"]), Role: "user", Timestamp: timestamp, Parts: []Part{media}})
 			} else {
 				if contentType != "text" {
-					return fmt.Errorf("unsupported Claude file attachment (media cannot be teleported safely)")
+					s.warnings = appendUnique(s.warnings, fmt.Sprintf("unsupported Claude file attachment content %q was skipped (media cannot be teleported safely)", contentType))
+					return nil
 				}
 				file, ok := content["file"].(map[string]any)
 				if !ok {
-					return fmt.Errorf("Claude text attachment has no file object")
+					s.warnings = appendUnique(s.warnings, "a Claude text attachment had no file object and was skipped")
+					return nil
 				}
 				name := stringValue(attachment["filename"])
 				if name == "" {
@@ -291,11 +296,13 @@ func (s *claudeStream) record(_ int, raw json.RawMessage) error {
 	}
 	message, ok := record["message"].(map[string]any)
 	if !ok {
-		return fmt.Errorf("%s record has no message object", rtype)
+		s.warnings = appendUnique(s.warnings, fmt.Sprintf("a Claude %s record had no message object and was skipped", rtype))
+		return nil
 	}
 	role, _ := message["role"].(string)
 	if role != "user" && role != "assistant" {
-		return fmt.Errorf("unsupported Claude message role %q", role)
+		s.warnings = appendUnique(s.warnings, fmt.Sprintf("unsupported Claude message role %q was skipped", role))
+		return nil
 	}
 	if model, _ := message["model"].(string); model != "" && model != "<synthetic>" && s.model == "" {
 		s.model = model
@@ -313,7 +320,8 @@ func (s *claudeStream) record(_ int, raw json.RawMessage) error {
 		for _, item := range blocks {
 			block, ok := item.(map[string]any)
 			if !ok {
-				return fmt.Errorf("message content contains a non-object block")
+				s.warnings = appendUnique(s.warnings, "a Claude message content contained a non-object block that was skipped")
+				continue
 			}
 			kind, _ := block["type"].(string)
 			switch kind {
@@ -336,7 +344,8 @@ func (s *claudeStream) record(_ int, raw json.RawMessage) error {
 			case "image", "document":
 				source, ok := block["source"].(map[string]any)
 				if !ok {
-					return fmt.Errorf("Claude image block has no source")
+					s.warnings = appendUnique(s.warnings, "a Claude image block had no usable source and was skipped")
+					continue
 				}
 				sourceType := stringValue(source["type"])
 				var media Part
@@ -350,7 +359,8 @@ func (s *claudeStream) record(_ int, raw json.RawMessage) error {
 					mediaErr = fmt.Errorf("unsupported Claude image source %q", sourceType)
 				}
 				if mediaErr != nil {
-					return mediaErr
+					s.warnings = appendUnique(s.warnings, fmt.Sprintf("a Claude image block was skipped: %v", mediaErr))
+					continue
 				}
 				event.Parts = append(event.Parts, media)
 			case "tool_use", "server_tool_use":
@@ -374,17 +384,17 @@ func (s *claudeStream) record(_ int, raw json.RawMessage) error {
 			case "tool_result":
 				id, _ := block["tool_use_id"].(string)
 				isError, _ := block["is_error"].(bool)
-				parts, err := claudeResultParts(block["content"], id, isError)
-				if err != nil {
-					return fmt.Errorf("tool result %s: %w", id, err)
+				parts, resultWarnings := claudeResultParts(block["content"], id, isError)
+				for _, warning := range resultWarnings {
+					s.warnings = appendUnique(s.warnings, warning)
 				}
 				event.Parts = append(event.Parts, parts...)
 			default:
-				return fmt.Errorf("unsupported Claude conversation block %q", kind)
+				s.warnings = appendUnique(s.warnings, fmt.Sprintf("unsupported Claude conversation block %q was skipped", kind))
 			}
 		}
 	} else if content != nil {
-		return fmt.Errorf("message content has unsupported type %T", content)
+		s.warnings = appendUnique(s.warnings, fmt.Sprintf("a Claude message's content had unsupported type %T and was skipped", content))
 	}
 	if len(event.Parts) > 0 {
 		if hasOnlyToolResults(event.Parts) {
@@ -562,18 +572,22 @@ func readClaudeBranches(transcript string, main *claudeStream) ([]Branch, []stri
 	return branches, warnings, nil
 }
 
-func claudeResultParts(content any, callID string, isError bool) ([]Part, error) {
+// claudeResultParts converts one Claude tool_result content value into
+// canonical parts. A block it cannot interpret — an unknown kind, an image
+// without a usable source, media that cannot be decoded — is skipped with a
+// warning so one foreign block cannot strand the rest of the session.
+func claudeResultParts(content any, callID string, isError bool) (parts []Part, warnings []string) {
 	switch value := content.(type) {
 	case nil:
 		return []Part{{Kind: ToolResult, CallID: callID, Error: isError}}, nil
 	case string:
 		return []Part{{Kind: ToolResult, CallID: callID, Text: value, Error: isError}}, nil
 	case []any:
-		var parts []Part
 		for _, item := range value {
 			block, ok := item.(map[string]any)
 			if !ok {
-				return nil, fmt.Errorf("contains a non-object content block")
+				warnings = appendUnique(warnings, "a Claude tool result contained a non-object block that was skipped")
+				continue
 			}
 			kind, _ := block["type"].(string)
 			switch kind {
@@ -583,7 +597,8 @@ func claudeResultParts(content any, callID string, isError bool) ([]Part, error)
 			case "image", "document":
 				source, ok := block["source"].(map[string]any)
 				if !ok {
-					return nil, fmt.Errorf("image block has no source")
+					warnings = appendUnique(warnings, "a Claude tool-result image block had no usable source and was skipped")
+					continue
 				}
 				var media Part
 				var err error
@@ -593,20 +608,21 @@ func claudeResultParts(content any, callID string, isError bool) ([]Part, error)
 				case "url":
 					media, err = mediaPart(stringValue(source["url"]), stringValue(source["media_type"]), stringValue(block["filename"]))
 				default:
-					err = fmt.Errorf("unsupported image source %q", stringValue(source["type"]))
+					err = fmt.Errorf("unsupported Claude image source %q", stringValue(source["type"]))
 				}
 				if err != nil {
-					return nil, err
+					warnings = appendUnique(warnings, fmt.Sprintf("a Claude tool-result image block was skipped: %v", err))
+					continue
 				}
 				media.CallID, media.Error = callID, isError
 				parts = append(parts, media)
 			default:
-				return nil, fmt.Errorf("unsupported content block %q (media cannot be teleported safely)", kind)
+				warnings = appendUnique(warnings, fmt.Sprintf("unsupported Claude tool-result content block %q was skipped", kind))
 			}
 		}
-		return parts, nil
+		return parts, warnings
 	default:
-		return nil, fmt.Errorf("unsupported content type %T", content)
+		return nil, []string{fmt.Sprintf("a Claude tool result's content had unsupported type %T and was skipped", content)}
 	}
 }
 

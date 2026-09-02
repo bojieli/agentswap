@@ -360,21 +360,25 @@ func parseKimiWire(wirePath, agentHome string) (*kimiWire, error) {
 		case "context.append_message":
 			message, ok := record["message"].(map[string]any)
 			if !ok {
-				return fmt.Errorf("context.append_message has no message")
+				wire.warnings = appendUnique(wire.warnings, "a Kimi context.append_message record had no message object and was skipped")
+				return nil
 			}
 			role := stringValue(message["role"])
 			if role != "user" && role != "assistant" {
-				return fmt.Errorf("unsupported Kimi context role %q", role)
+				wire.warnings = appendUnique(wire.warnings, fmt.Sprintf("unsupported Kimi context role %q was skipped", role))
+				return nil
 			}
 			event := Event{Kind: Message, ID: stringValue(message["id"]), Role: role, Timestamp: ts}
 			content, ok := message["content"].([]any)
 			if !ok {
-				return fmt.Errorf("Kimi context content is not an array")
+				wire.warnings = appendUnique(wire.warnings, "a Kimi context message's content was not an array and was skipped")
+				return nil
 			}
 			for _, item := range content {
 				block, ok := item.(map[string]any)
 				if !ok {
-					return fmt.Errorf("Kimi context contains a non-object block")
+					wire.warnings = appendUnique(wire.warnings, "a Kimi context message contained a non-object block that was skipped")
+					continue
 				}
 				blockType := stringValue(block["type"])
 				switch blockType {
@@ -388,11 +392,12 @@ func parseKimiWire(wirePath, agentHome string) (*kimiWire, error) {
 						media, err = mediaPartFromValue(block["image_url"], stringValue(block["mime"]), stringValue(block["filename"]))
 					}
 					if err != nil {
-						return fmt.Errorf("Kimi media block: %w", err)
+						wire.warnings = appendUnique(wire.warnings, fmt.Sprintf("a Kimi media block could not be decoded and was skipped: %v", err))
+						continue
 					}
 					event.Parts = append(event.Parts, media)
 				default:
-					return fmt.Errorf("unsupported Kimi context block %q", blockType)
+					wire.warnings = appendUnique(wire.warnings, fmt.Sprintf("unsupported Kimi context block %q was skipped", blockType))
 				}
 			}
 			if len(event.Parts) > 0 {
@@ -401,13 +406,15 @@ func parseKimiWire(wirePath, agentHome string) (*kimiWire, error) {
 		case "context.append_loop_event":
 			event, ok := record["event"].(map[string]any)
 			if !ok {
-				return fmt.Errorf("context.append_loop_event has no event")
+				wire.warnings = appendUnique(wire.warnings, "a Kimi context.append_loop_event record had no event object and was skipped")
+				return nil
 			}
 			switch eventType := stringValue(event["type"]); eventType {
 			case "content.part":
 				part, ok := event["part"].(map[string]any)
 				if !ok {
-					return fmt.Errorf("content.part has no part")
+					wire.warnings = appendUnique(wire.warnings, "a Kimi content.part event had no part object and was skipped")
+					return nil
 				}
 				switch partType := stringValue(part["type"]); partType {
 				case "text":
@@ -424,11 +431,12 @@ func parseKimiWire(wirePath, agentHome string) (*kimiWire, error) {
 						media, err = mediaPartFromValue(part["image_url"], stringValue(part["mime"]), stringValue(part["filename"]))
 					}
 					if err != nil {
-						return fmt.Errorf("Kimi media part: %w", err)
+						wire.warnings = appendUnique(wire.warnings, fmt.Sprintf("a Kimi media part could not be decoded and was skipped: %v", err))
+						return nil
 					}
 					wire.events = append(wire.events, Event{Kind: Message, Role: "assistant", Timestamp: ts, Parts: []Part{media}})
 				default:
-					return fmt.Errorf("unsupported Kimi content part %q", partType)
+					wire.warnings = appendUnique(wire.warnings, fmt.Sprintf("unsupported Kimi content part %q was skipped", partType))
 				}
 			case "tool.call":
 				input, err := json.Marshal(event["args"])
@@ -442,20 +450,23 @@ func parseKimiWire(wirePath, agentHome string) (*kimiWire, error) {
 			case "tool.result":
 				result, ok := event["result"].(map[string]any)
 				if !ok {
-					return fmt.Errorf("tool.result has no result")
+					wire.warnings = appendUnique(wire.warnings, "a Kimi tool.result event had no result object and was skipped")
+					return nil
 				}
-				parts, err := kimiOutputParts(result["output"], stringValue(event["toolCallId"]))
-				if err != nil {
-					return err
+				parts, outputWarnings := kimiOutputParts(result["output"], stringValue(event["toolCallId"]))
+				for _, warning := range outputWarnings {
+					wire.warnings = appendUnique(wire.warnings, warning)
 				}
 				isError, _ := result["isError"].(bool)
 				for i := range parts {
 					parts[i].Error = isError
 				}
-				wire.events = append(wire.events, Event{Kind: Message, Role: "tool", Timestamp: ts, Parts: parts})
+				if len(parts) > 0 {
+					wire.events = append(wire.events, Event{Kind: Message, Role: "tool", Timestamp: ts, Parts: parts})
+				}
 			case "step.begin", "step.end":
 			default:
-				return fmt.Errorf("unsupported Kimi loop event %q", eventType)
+				wire.warnings = appendUnique(wire.warnings, fmt.Sprintf("unsupported Kimi loop event %q was skipped", eventType))
 			}
 		case "plan.revision":
 			path := stringValue(record["path"])
@@ -482,7 +493,8 @@ func parseKimiWire(wirePath, agentHome string) (*kimiWire, error) {
 			// metadata that links a subagent directory to the call that spawned it.
 			info, ok := record["info"].(map[string]any)
 			if !ok {
-				return fmt.Errorf("%s has no info object", kind)
+				wire.warnings = appendUnique(wire.warnings, fmt.Sprintf("a Kimi %s record had no info object and was skipped", kind))
+				return nil
 			}
 			raw, err := json.Marshal(info)
 			if err != nil {
@@ -499,7 +511,9 @@ func parseKimiWire(wirePath, agentHome string) (*kimiWire, error) {
 			// UI, permission, usage and profile records do not add model
 			// conversation content.
 		default:
-			return fmt.Errorf("unsupported Kimi wire record %q", kind)
+			// Kimi adds new wire records over time. An unfamiliar record must not
+			// strand the whole session, so it is skipped with a warning.
+			wire.warnings = appendUnique(wire.warnings, fmt.Sprintf("unsupported Kimi wire record %q was skipped", kind))
 		}
 		return nil
 	})
@@ -819,7 +833,10 @@ func readKimiTaskFiles(dir string) ([]kimiTask, error) {
 	return out, nil
 }
 
-func kimiOutputParts(output any, callID string) ([]Part, error) {
+// kimiOutputParts converts one tool result output into canonical parts. A
+// block it cannot interpret — a non-object entry or media that cannot be
+// decoded — is skipped with a warning rather than aborting the read.
+func kimiOutputParts(output any, callID string) (parts []Part, warnings []string) {
 	if text, ok := output.(string); ok {
 		return []Part{{Kind: ToolResult, CallID: callID, Text: text}}, nil
 	}
@@ -830,38 +847,36 @@ func kimiOutputParts(output any, callID string) ([]Part, error) {
 				media, err = mediaPartFromValue(obj["image_url"], stringValue(obj["mime"]), stringValue(obj["filename"]))
 			}
 			if err != nil {
-				return nil, err
+				return nil, []string{fmt.Sprintf("a Kimi tool output's media could not be decoded and was skipped: %v", err)}
 			}
 			media.CallID = callID
 			return []Part{media}, nil
 		}
 	}
 	if blocks, ok := output.([]any); ok {
-		var parts []Part
 		for _, block := range blocks {
 			obj, ok := block.(map[string]any)
 			if !ok {
-				return nil, fmt.Errorf("Kimi tool output contains a non-object block")
+				warnings = appendUnique(warnings, "a Kimi tool output contained a non-object block that was skipped")
+				continue
 			}
 			if stringValue(obj["type"]) == "image" || stringValue(obj["type"]) == "input_image" {
-				media, err := kimiOutputParts(obj, callID)
-				if err != nil {
-					return nil, err
-				}
+				media, mediaWarnings := kimiOutputParts(obj, callID)
+				warnings = append(warnings, mediaWarnings...)
 				parts = append(parts, media...)
 			} else {
 				parts = append(parts, Part{Kind: ToolResult, CallID: callID, Text: stringValue(obj["text"])})
 			}
 		}
-		if len(parts) > 0 {
-			return parts, nil
+		if len(parts) > 0 || len(warnings) > 0 {
+			return parts, warnings
 		}
 	}
 	text, err := stringifyOutput(output)
 	if err != nil {
-		return nil, err
+		return nil, append(warnings, fmt.Sprintf("a Kimi tool output could not be encoded and was skipped: %v", err))
 	}
-	return []Part{{Kind: ToolResult, CallID: callID, Text: text}}, nil
+	return []Part{{Kind: ToolResult, CallID: callID, Text: text}}, warnings
 }
 
 func readKimiLegacy(candidate Candidate) (*Session, error) {
@@ -878,7 +893,7 @@ func readKimiLegacy(candidate Candidate) (*Session, error) {
 			// Python-era Kimi materializes its runtime prompt and bookkeeping
 			// records in context.jsonl when a native session is resumed. They
 			// are not conversation messages and cannot be reused by a different
-			// harness. Keep unknown roles fail-closed below.
+			// harness. Unknown roles are skipped with a warning below.
 			return nil
 		case "user", "assistant":
 			event := Event{Kind: Message, Role: role}
@@ -891,7 +906,8 @@ func readKimiLegacy(candidate Candidate) (*Session, error) {
 				for _, item := range content {
 					block, ok := item.(map[string]any)
 					if !ok {
-						return fmt.Errorf("legacy Kimi content contains a non-object block")
+						history.Warnings = appendUnique(history.Warnings, "a legacy Kimi message contained a non-object block that was skipped")
+						continue
 					}
 					switch stringValue(block["type"]) {
 					case "text":
@@ -908,22 +924,24 @@ func readKimiLegacy(candidate Candidate) (*Session, error) {
 							media, err = mediaPartFromValue(block["image_url"], stringValue(block["mime"]), stringValue(block["filename"]))
 						}
 						if err != nil {
-							return fmt.Errorf("legacy Kimi media block: %w", err)
+							history.Warnings = appendUnique(history.Warnings, fmt.Sprintf("a legacy Kimi media block could not be decoded and was skipped: %v", err))
+							continue
 						}
 						event.Parts = append(event.Parts, media)
 					default:
-						return fmt.Errorf("unsupported legacy Kimi content block %q", stringValue(block["type"]))
+						history.Warnings = appendUnique(history.Warnings, fmt.Sprintf("unsupported legacy Kimi content block %q was skipped", stringValue(block["type"])))
 					}
 				}
 			case nil:
 			default:
-				return fmt.Errorf("unsupported legacy Kimi content type %T", content)
+				history.Warnings = appendUnique(history.Warnings, fmt.Sprintf("a legacy Kimi message's content had unsupported type %T and was skipped", content))
 			}
 			if calls, ok := message["tool_calls"].([]any); ok {
 				for _, item := range calls {
 					call, ok := item.(map[string]any)
 					if !ok {
-						return fmt.Errorf("legacy Kimi tool call is not an object")
+						history.Warnings = appendUnique(history.Warnings, "a legacy Kimi tool call was not an object and was skipped")
+						continue
 					}
 					fn, _ := call["function"].(map[string]any)
 					input, err := codexInputJSON(fn["arguments"])
@@ -938,13 +956,15 @@ func readKimiLegacy(candidate Candidate) (*Session, error) {
 				history.Events = append(history.Events, event)
 			}
 		case "tool":
-			parts, err := kimiOutputParts(message["content"], stringValue(message["tool_call_id"]))
-			if err != nil {
-				return err
+			parts, outputWarnings := kimiOutputParts(message["content"], stringValue(message["tool_call_id"]))
+			for _, warning := range outputWarnings {
+				history.Warnings = appendUnique(history.Warnings, warning)
 			}
-			history.Events = append(history.Events, Event{Kind: Message, Role: "tool", Parts: parts})
+			if len(parts) > 0 {
+				history.Events = append(history.Events, Event{Kind: Message, Role: "tool", Parts: parts})
+			}
 		default:
-			return fmt.Errorf("unsupported legacy Kimi role %q", role)
+			history.Warnings = appendUnique(history.Warnings, fmt.Sprintf("unsupported legacy Kimi role %q was skipped", role))
 		}
 		return nil
 	})

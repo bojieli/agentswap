@@ -116,7 +116,8 @@ func (openCodeAdapter) Read(ctx context.Context, candidate Candidate) (*Session,
 	for _, message := range exported.Messages {
 		role := stringValue(message.Info["role"])
 		if role != "user" && role != "assistant" {
-			return nil, fmt.Errorf("unsupported OpenCode message role %q", role)
+			history.Warnings = appendUnique(history.Warnings, fmt.Sprintf("unsupported OpenCode message role %q was skipped", role))
+			continue
 		}
 		ts := time.Time{}
 		if tm, ok := message.Info["time"].(map[string]any); ok {
@@ -161,7 +162,8 @@ func (openCodeAdapter) Read(ctx context.Context, candidate Candidate) (*Session,
 				name := stringValue(part["tool"])
 				state, ok := part["state"].(map[string]any)
 				if !ok {
-					return nil, fmt.Errorf("OpenCode tool %s has no state", callID)
+					history.Warnings = appendUnique(history.Warnings, fmt.Sprintf("an OpenCode tool part for call %s had no state object and was skipped", callID))
+					continue
 				}
 				input, err := json.Marshal(state["input"])
 				if err != nil {
@@ -184,16 +186,19 @@ func (openCodeAdapter) Read(ctx context.Context, candidate Candidate) (*Session,
 					history.Warnings = appendUnique(history.Warnings, fmt.Sprintf("OpenCode tool call %s was %s when recorded", callID, status))
 					continue
 				default:
-					return nil, fmt.Errorf("OpenCode tool %s has unsupported state %q", callID, status)
+					history.Warnings = appendUnique(history.Warnings, fmt.Sprintf("OpenCode tool call %s had unsupported state %q; its result was skipped", callID, status))
+					continue
 				}
-				parts, err := openCodeOutputParts(output, callID)
-				if err != nil {
-					return nil, err
+				parts, outputWarnings := openCodeOutputParts(output, callID)
+				for _, warning := range outputWarnings {
+					history.Warnings = appendUnique(history.Warnings, warning)
 				}
 				for i := range parts {
 					parts[i].Error = isError
 				}
-				history.Events = append(history.Events, Event{Kind: Message, Role: "tool", Timestamp: ts, Parts: parts})
+				if len(parts) > 0 {
+					history.Events = append(history.Events, Event{Kind: Message, Role: "tool", Timestamp: ts, Parts: parts})
+				}
 			case "step-start", "step-finish", "snapshot", "patch", "retry", "compaction":
 				// Execution/UI bookkeeping. Conversation-bearing text, reasoning and
 				// tools are represented by their own parts and retained above.
@@ -203,7 +208,8 @@ func (openCodeAdapter) Read(ctx context.Context, candidate Candidate) (*Session,
 					media, err = mediaPartFromValue(part["source"], stringValue(part["mime"]), stringValue(part["filename"]))
 				}
 				if err != nil {
-					return nil, fmt.Errorf("unsupported OpenCode file media: %w", err)
+					history.Warnings = appendUnique(history.Warnings, fmt.Sprintf("an OpenCode file part's media could not be decoded and was skipped: %v", err))
+					continue
 				}
 				event.Parts = append(event.Parts, media)
 			case "agent", "subtask":
@@ -231,7 +237,9 @@ func (openCodeAdapter) Read(ctx context.Context, candidate Candidate) (*Session,
 				event.Parts = append(event.Parts, Part{Kind: Text, ID: stringValue(part["id"]), Text: text})
 				history.Warnings = appendUnique(history.Warnings, "an OpenCode agent delegation was retained as visible text; the delegated run is a separate OpenCode session that `opencode export` does not include")
 			default:
-				return nil, fmt.Errorf("unsupported OpenCode conversation part %q", kind)
+				// OpenCode adds new part kinds over time. An unfamiliar part must
+				// not strand the whole session, so it is skipped with a warning.
+				history.Warnings = appendUnique(history.Warnings, fmt.Sprintf("unsupported OpenCode conversation part %q was skipped", kind))
 			}
 		}
 		flush()
@@ -242,7 +250,11 @@ func (openCodeAdapter) Read(ctx context.Context, candidate Candidate) (*Session,
 	return history, nil
 }
 
-func openCodeOutputParts(output any, callID string) ([]Part, error) {
+// openCodeOutputParts converts one tool state output into canonical parts.
+// Content it cannot interpret — media that cannot be decoded, or a value that
+// cannot be rendered as text — is skipped with a warning rather than aborting
+// the read.
+func openCodeOutputParts(output any, callID string) (parts []Part, warnings []string) {
 	if text, ok := output.(string); ok {
 		return []Part{{Kind: ToolResult, CallID: callID, Text: text}}, nil
 	}
@@ -253,7 +265,7 @@ func openCodeOutputParts(output any, callID string) ([]Part, error) {
 				media, err = mediaPartFromValue(obj["image_url"], stringValue(obj["mime"]), stringValue(obj["filename"]))
 			}
 			if err != nil {
-				return nil, err
+				return nil, []string{fmt.Sprintf("an OpenCode tool output's media could not be decoded and was skipped: %v", err)}
 			}
 			media.CallID = callID
 			return []Part{media}, nil
@@ -264,7 +276,7 @@ func openCodeOutputParts(output any, callID string) ([]Part, error) {
 	}
 	text, err := stringifyOutput(output)
 	if err != nil {
-		return nil, err
+		return nil, []string{fmt.Sprintf("an OpenCode tool output could not be encoded and was skipped: %v", err)}
 	}
 	return []Part{{Kind: ToolResult, CallID: callID, Text: text}}, nil
 }

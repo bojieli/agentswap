@@ -235,8 +235,9 @@ or in-memory plugin state. The target is a new native process with its own
 permissions and provider configuration.
 
 The source is read-only. Validation happens before the target is written, and
-unsupported conversation-bearing records fail closed. OpenCode sessions are
-read and written through OpenCode's own `export` and `import` commands.
+unsupported conversation-bearing records are skipped with a warning. OpenCode
+sessions are read and written through OpenCode's own `export` and `import`
+commands.
 
 Supported source and target harnesses are:
 

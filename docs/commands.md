@@ -313,7 +313,8 @@ jobs, and in-memory plugin/MCP state. Recorded reasoning is retained as visible
 content if the target cannot reuse its provider signature. Text-file context is
 retained as visible text with a warning. Inline media (including images) is
 transferred as native content (remote URLs remain URLs). Unsupported media forms
-and unknown conversation-bearing native blocks currently fail closed.
+and unknown conversation-bearing native blocks are skipped with a warning while
+the rest of the session is read.
 
 Delegated agent runs travel as branches beside the main thread, each linked to
 the tool call that spawned it. Claude Code and Kimi Code write them natively;

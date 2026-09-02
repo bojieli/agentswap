@@ -325,6 +325,47 @@ func TestClaudeReaderSkipsUnsupportedAttachments(t *testing.T) {
 	}
 }
 
+func TestClaudeReaderSkipsUnsupportedConversationBlocks(t *testing.T) {
+	root := isolatedHomes(t)
+	cwd := t.TempDir()
+	id := "11111111-1111-4111-8111-111111111111"
+	dir := filepath.Join(root, "claude", "projects", encodeClaudeProject(cwd))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, id+".jsonl")
+	records := []map[string]any{
+		{"type": "user", "uuid": "u", "cwd": cwd, "message": map[string]any{"role": "user", "content": "start"}},
+		{"type": "assistant", "uuid": "a", "cwd": cwd, "message": map[string]any{"role": "assistant", "content": []any{
+			map[string]any{"type": "text", "text": "visible answer"},
+			map[string]any{"type": "future_block", "payload": 1},
+		}}},
+		{"type": "user", "uuid": "u2", "cwd": cwd, "message": map[string]any{"role": "user", "content": "after"}},
+	}
+	var lines []byte
+	for _, record := range records {
+		line, _ := json.Marshal(record)
+		lines = append(lines, append(line, '\n')...)
+	}
+	if err := os.WriteFile(path, lines, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	history, err := (claudeAdapter{}).Read(context.Background(), Candidate{Agent: Claude, ID: id, CWD: cwd, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Events) != 3 {
+		t.Fatalf("events = %#v", history.Events)
+	}
+	encoded, _ := json.Marshal(history.Events)
+	if !bytesContainAll(encoded, []string{"start", "visible answer", "after"}) {
+		t.Fatalf("conversation around the unknown block was not preserved: %s", encoded)
+	}
+	if !bytesContainAll([]byte(strings.Join(history.Warnings, "\n")), []string{"future_block"}) {
+		t.Fatalf("warnings = %#v", history.Warnings)
+	}
+}
+
 func TestClaudeReaderLoadsSubagentTranscripts(t *testing.T) {
 	root := isolatedHomes(t)
 	cwd := t.TempDir()
@@ -462,6 +503,40 @@ func TestCodexWriterUsesConfiguredProvider(t *testing.T) {
 	}
 }
 
+func TestCodexReaderSkipsUnknownRecordTypes(t *testing.T) {
+	cwd := t.TempDir()
+	id := "11111111-1111-4111-8111-111111111111"
+	path := filepath.Join(t.TempDir(), "rollout-"+id+".jsonl")
+	records := []map[string]any{
+		{"timestamp": "2026-08-19T10:00:00Z", "type": "session_meta", "payload": map[string]any{"id": id, "cwd": cwd}},
+		{"timestamp": "2026-08-19T10:00:01Z", "type": "response_item", "payload": map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "before"}}}},
+		{"timestamp": "2026-08-19T10:00:02Z", "type": "future_record", "payload": map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "unknown envelope"}}}},
+		{"timestamp": "2026-08-19T10:00:03Z", "type": "response_item", "payload": map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "after"}}}},
+	}
+	var lines []byte
+	for _, record := range records {
+		line, _ := json.Marshal(record)
+		lines = append(lines, append(line, '\n')...)
+	}
+	if err := os.WriteFile(path, lines, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	history, err := (codexAdapter{}).Read(context.Background(), Candidate{Agent: Codex, ID: id, CWD: cwd, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Events) != 2 {
+		t.Fatalf("events = %#v", history.Events)
+	}
+	encoded, _ := json.Marshal(history.Events)
+	if !bytesContainAll(encoded, []string{"before", "after"}) || strings.Contains(string(encoded), "unknown envelope") {
+		t.Fatalf("conversation around the unknown record was not preserved: %s", encoded)
+	}
+	if !bytesContainAll([]byte(strings.Join(history.Warnings, "\n")), []string{"future_record"}) {
+		t.Fatalf("warnings = %#v", history.Warnings)
+	}
+}
+
 func TestKimiCodeRoundTrip(t *testing.T) {
 	isolatedHomes(t)
 	cwd := t.TempDir()
@@ -565,8 +640,56 @@ func TestKimiCodeReaderIgnoresBookkeepingRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := adapter.Read(context.Background(), candidate); err == nil || !strings.Contains(err.Error(), `unsupported Kimi wire record "_future.record"`) {
-		t.Fatalf("unknown wire record error = %v", err)
+	history, err := adapter.Read(context.Background(), candidate)
+	if err != nil {
+		t.Fatalf("unknown wire record aborted the read: %v", err)
+	}
+	if !bytesContainAll([]byte(strings.Join(history.Warnings, "\n")), []string{"_future.record"}) {
+		t.Fatalf("unknown wire record was not reported: %#v", history.Warnings)
+	}
+}
+
+func TestKimiCodeReaderSkipsUnknownWireRecords(t *testing.T) {
+	isolatedHomes(t)
+	cwd := t.TempDir()
+	id := "session_11111111-1111-4111-8111-111111111111"
+	dir := filepath.Join(t.TempDir(), id)
+	agentHome := filepath.Join(dir, "agents", "main")
+	if err := os.MkdirAll(agentHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	state := map[string]any{"id": id, "workDir": cwd}
+	stateBytes, _ := json.Marshal(state)
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), stateBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	records := []map[string]any{
+		{"type": "metadata", "protocol_version": "1.5", "time": 1787922536166},
+		{"type": "context.append_message", "time": 1787922536167, "message": map[string]any{"role": "user", "id": "m1", "content": []any{map[string]any{"type": "text", "text": "before"}}}},
+		{"type": "future.wire_record", "time": 1787922536168, "message": map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": "unknown envelope"}}}},
+		{"type": "context.append_message", "time": 1787922536169, "message": map[string]any{"role": "user", "id": "m2", "content": []any{map[string]any{"type": "text", "text": "after"}}}},
+	}
+	var lines []byte
+	for _, record := range records {
+		line, _ := json.Marshal(record)
+		lines = append(lines, append(line, '\n')...)
+	}
+	if err := os.WriteFile(filepath.Join(agentHome, "wire.jsonl"), lines, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	history, err := (kimiAdapter{}).Read(context.Background(), Candidate{Agent: Kimi, ID: id, CWD: cwd, Path: dir, Format: "kimi-code-wire"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Events) != 2 {
+		t.Fatalf("events = %#v", history.Events)
+	}
+	encoded, _ := json.Marshal(history.Events)
+	if !bytesContainAll(encoded, []string{"before", "after"}) || strings.Contains(string(encoded), "unknown envelope") {
+		t.Fatalf("conversation around the unknown record was not preserved: %s", encoded)
+	}
+	if !bytesContainAll([]byte(strings.Join(history.Warnings, "\n")), []string{"future.wire_record"}) {
+		t.Fatalf("warnings = %#v", history.Warnings)
 	}
 }
 
@@ -651,9 +774,12 @@ func TestKimiLegacyReaderIgnoresNativeRuntimeMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = adapter.Read(context.Background(), candidate)
-	if err == nil || !strings.Contains(err.Error(), "unsupported legacy Kimi role") {
-		t.Fatalf("unknown legacy role error = %v", err)
+	got, err = adapter.Read(context.Background(), candidate)
+	if err != nil {
+		t.Fatalf("unknown legacy role aborted the read: %v", err)
+	}
+	if !bytesContainAll([]byte(strings.Join(got.Warnings, "\n")), []string{"_future_metadata"}) {
+		t.Fatalf("unknown legacy role was not reported: %#v", got.Warnings)
 	}
 }
 
@@ -1050,15 +1176,29 @@ func TestMediaRoundTripAcrossFileTargets(t *testing.T) {
 	}
 }
 
-func TestOpenCodeReaderFailsClosedOnUnknownParts(t *testing.T) {
+func TestOpenCodeReaderSkipsUnknownParts(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake OpenCode executable is a POSIX shell script")
 	}
 	for _, kind := range []string{"file", "future-conversation-part"} {
 		t.Run(kind, func(t *testing.T) {
-			_, err := readFakeOpenCodePart(t, map[string]any{"id": "part", "type": kind})
-			if err == nil || !strings.Contains(err.Error(), kind) {
-				t.Fatalf("OpenCode %s read error = %v", kind, err)
+			history, err := readFakeOpenCodePart(t,
+				map[string]any{"id": "before", "type": "text", "text": "before the unknown part"},
+				map[string]any{"id": "part", "type": kind},
+				map[string]any{"id": "after", "type": "text", "text": "after the unknown part"},
+			)
+			if err != nil {
+				t.Fatalf("OpenCode %s part aborted the read: %v", kind, err)
+			}
+			encoded, err := json.Marshal(history.Events)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytesContainAll(encoded, []string{"before the unknown part", "after the unknown part"}) {
+				t.Fatalf("conversation around the OpenCode %s part was not preserved: %s", kind, encoded)
+			}
+			if !bytesContainAll([]byte(strings.Join(history.Warnings, "\n")), []string{kind}) {
+				t.Fatalf("OpenCode %s part was not reported: %#v", kind, history.Warnings)
 			}
 		})
 	}
@@ -1101,16 +1241,20 @@ func TestOpenCodeReaderRetainsDelegationAsText(t *testing.T) {
 	}
 }
 
-func readFakeOpenCodePart(t *testing.T, part map[string]any) (*Session, error) {
+func readFakeOpenCodePart(t *testing.T, parts ...map[string]any) (*Session, error) {
 	t.Helper()
 	root := isolatedHomes(t)
 	cwd := t.TempDir()
 	exportPath := filepath.Join(root, "export.json")
+	exportParts := make([]any, 0, len(parts))
+	for _, part := range parts {
+		exportParts = append(exportParts, part)
+	}
 	exported := map[string]any{
 		"info": map[string]any{"id": "ses_source", "directory": cwd},
 		"messages": []any{map[string]any{
 			"info":  map[string]any{"id": "msg", "role": "user"},
-			"parts": []any{part},
+			"parts": exportParts,
 		}},
 	}
 	b, _ := json.Marshal(exported)

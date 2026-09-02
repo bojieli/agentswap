@@ -193,7 +193,7 @@ func (codexAdapter) Read(_ context.Context, candidate Candidate) (*Session, erro
 		case "world_state":
 			// Runtime environment state is recreated by the destination harness.
 		default:
-			return fmt.Errorf("unsupported Codex record type %q", record.Type)
+			history.Warnings = appendUnique(history.Warnings, fmt.Sprintf("unsupported Codex record type %q was skipped", record.Type))
 		}
 		return nil
 	})
@@ -215,19 +215,22 @@ func readCodexResponse(history *Session, payload map[string]any, ts time.Time) e
 			return nil
 		}
 		if role != "user" && role != "assistant" {
-			return fmt.Errorf("unsupported Codex message role %q", role)
+			history.Warnings = appendUnique(history.Warnings, fmt.Sprintf("unsupported Codex message role %q was skipped", role))
+			return nil
 		}
 		event := Event{Kind: Message, Role: role, Timestamp: ts}
 		event.ID, _ = payload["id"].(string)
 		content, ok := payload["content"].([]any)
 		if !ok {
-			return fmt.Errorf("Codex message content is not an array")
+			history.Warnings = appendUnique(history.Warnings, "a Codex message's content was not an array and was skipped")
+			return nil
 		}
 		var plans []string
 		for _, item := range content {
 			block, ok := item.(map[string]any)
 			if !ok {
-				return fmt.Errorf("Codex content contains a non-object block")
+				history.Warnings = appendUnique(history.Warnings, "a Codex message content contained a non-object block that was skipped")
+				continue
 			}
 			blockType, _ := block["type"].(string)
 			switch blockType {
@@ -247,11 +250,12 @@ func readCodexResponse(history *Session, payload map[string]any, ts time.Time) e
 					media, err = mediaPartFromValue(block["url"], stringValue(block["media_type"]), stringValue(block["filename"]))
 				}
 				if err != nil {
-					return fmt.Errorf("Codex image content: %w", err)
+					history.Warnings = appendUnique(history.Warnings, fmt.Sprintf("a Codex image block could not be decoded and was skipped: %v", err))
+					continue
 				}
 				event.Parts = append(event.Parts, media)
 			default:
-				return fmt.Errorf("unsupported Codex message block %q", blockType)
+				history.Warnings = appendUnique(history.Warnings, fmt.Sprintf("unsupported Codex message block %q was skipped", blockType))
 			}
 		}
 		if len(event.Parts) > 0 {
@@ -277,9 +281,9 @@ func readCodexResponse(history *Session, payload map[string]any, ts time.Time) e
 		history.Events = append(history.Events, Event{Kind: Message, Role: "assistant", Timestamp: ts, Parts: []Part{{Kind: ToolCall, ID: stringValue(payload["id"]), CallID: callID, ToolName: name, Data: data}}})
 	case "function_call_output", "custom_tool_call_output":
 		callID, _ := payload["call_id"].(string)
-		parts, err := codexOutputParts(payload["output"], callID)
-		if err != nil {
-			return err
+		parts, outputWarnings := codexOutputParts(payload["output"], callID)
+		for _, warning := range outputWarnings {
+			history.Warnings = appendUnique(history.Warnings, warning)
 		}
 		isError, _ := payload["agentswap_error"].(bool)
 		for i := range parts {
@@ -306,16 +310,20 @@ func readCodexResponse(history *Session, payload map[string]any, ts time.Time) e
 	case "compacted":
 		history.Warnings = appendUnique(history.Warnings, "source contains a Codex compaction marker; all original records still present in the rollout were retained")
 	case "web_search_call", "computer_call":
-		return fmt.Errorf("unsupported Codex conversation item %q", kind)
+		history.Warnings = appendUnique(history.Warnings, fmt.Sprintf("unsupported Codex conversation item %q was skipped", kind))
 	case "":
-		return fmt.Errorf("response_item has no payload type")
+		history.Warnings = appendUnique(history.Warnings, "a Codex response item had no payload type and was skipped")
 	default:
-		return fmt.Errorf("unsupported Codex response item %q", kind)
+		history.Warnings = appendUnique(history.Warnings, fmt.Sprintf("unsupported Codex response item %q was skipped", kind))
 	}
 	return nil
 }
 
-func codexOutputParts(value any, callID string) ([]Part, error) {
+// codexOutputParts converts one tool call output into canonical parts. A block
+// it cannot interpret — an unknown kind or media that cannot be decoded — is
+// skipped with a warning; if every block was skipped an empty result keeps the
+// call paired.
+func codexOutputParts(value any, callID string) (parts []Part, warnings []string) {
 	if value == nil {
 		return []Part{{Kind: ToolResult, CallID: callID}}, nil
 	}
@@ -326,15 +334,15 @@ func codexOutputParts(value any, callID string) ([]Part, error) {
 	if !ok {
 		text, err := stringifyOutput(value)
 		if err != nil {
-			return nil, err
+			return nil, []string{fmt.Sprintf("a Codex tool output could not be encoded and was skipped: %v", err)}
 		}
 		return []Part{{Kind: ToolResult, CallID: callID, Text: text}}, nil
 	}
-	var parts []Part
 	for _, item := range items {
 		obj, ok := item.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("Codex tool output contains a non-object block")
+			warnings = appendUnique(warnings, "a Codex tool output contained a non-object block that was skipped")
+			continue
 		}
 		kind := stringValue(obj["type"])
 		switch kind {
@@ -346,18 +354,19 @@ func codexOutputParts(value any, callID string) ([]Part, error) {
 				media, err = mediaPartFromValue(obj, stringValue(obj["media_type"]), stringValue(obj["filename"]))
 			}
 			if err != nil {
-				return nil, err
+				warnings = appendUnique(warnings, fmt.Sprintf("a Codex tool-output media block could not be decoded and was skipped: %v", err))
+				continue
 			}
 			media.CallID = callID
 			parts = append(parts, media)
 		default:
-			return nil, fmt.Errorf("unsupported Codex tool output block %q", kind)
+			warnings = appendUnique(warnings, fmt.Sprintf("unsupported Codex tool output block %q was skipped", kind))
 		}
 	}
 	if len(parts) == 0 {
 		parts = append(parts, Part{Kind: ToolResult, CallID: callID})
 	}
-	return parts, nil
+	return parts, warnings
 }
 
 func codexInputJSON(value any) (json.RawMessage, error) {

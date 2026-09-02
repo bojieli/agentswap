@@ -4,6 +4,26 @@ Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html); until 1.0 the minor
 version moves for anything that changes behaviour.
 
+## v0.6.0 — 2026-09-02
+
+### Changed
+
+- **Every session reader now skips what it does not understand instead of
+  failing.** v0.5.0 applied this to unknown top-level Claude Code records; the
+  rule is now general. Claude, Codex, Kimi (current and legacy), and OpenCode
+  sessions are read with the same policy at every layer: an unfamiliar record
+  type, message role, conversation block, attachment kind, queue operation,
+  wire record, tool-result block, or media payload that cannot be decoded is
+  skipped with a warning naming exactly what was dropped, and the rest of the
+  session transfers normally. A handoff that previously stopped with
+  `unsupported Claude attachment "remote_session_change"`,
+  `unsupported Kimi wire record ...`, or `unsupported Codex record type ...`
+  now completes and reports the gap. What still fails closed is corruption
+  rather than evolution: a file that cannot be read, a line that is not valid
+  JSON, a plan whose SHA-256 does not match, and the structural validation of
+  the assembled session. Writers remain strict — an incomplete or inconsistent
+  target is never produced silently.
+
 ## v0.5.0 — 2026-08-31
 
 ### Fixed

@@ -50,9 +50,9 @@ It also includes:
   errors, five plan revisions, and dangling calls that require interrupted
   results;
 - a JSONL safety-limit case larger than 64 MiB;
-- image-media round trips plus fail-closed cases for unsupported media,
-  malformed and unknown conversation-bearing blocks, duplicate/orphaned
-  results, and empty canonical records;
+- image-media round trips, warn-and-skip cases for unsupported media and
+  malformed or unknown conversation-bearing blocks, and fail-closed validation
+  of duplicate/orphaned results and empty canonical records;
 - delegated agent runs: Claude and Kimi branch round trips including a nested
   run, the split of sidechain records an older Claude inlined into the main
   log, per-branch validation as an independent tool-call namespace, OpenCode
@@ -178,7 +178,7 @@ OAuth servers.
 Session continuation proves the observable native record. No tool can migrate
 provider KV caches, hidden or encrypted reasoning, an unrecorded system prompt,
 credentials, approvals, a live process, or in-memory plugin state. Unsupported
-conversation-bearing records fail closed instead of being silently discarded.
-The live checks establish compatibility with the versions listed above; future
-harness schema changes remain the reason the parsers validate unknown records
-strictly and the acceptance scripts are reusable.
+conversation-bearing records are skipped with a warning instead of being
+silently discarded. The live checks establish compatibility with the versions
+listed above; future harness schema changes surface as warnings naming the
+skipped records, and the acceptance scripts are reusable.

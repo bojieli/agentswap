@@ -141,8 +141,9 @@ summary prompt. Depending on what the source recorded, the target retains:
 - delegated agent runs, where the destination has a place to keep them.
 
 The source remains read-only. Validation completes before a target is written.
-Unknown conversation-bearing records fail closed rather than producing a session
-that only looks resumable.
+Unknown or undecodable conversation-bearing records are skipped with a warning
+naming what was skipped, so one unfamiliar record cannot strand the rest of the
+session.
 
 OpenCode's session database is accessed through its own `export` and `import`
 commands. agentswap does not write OpenCode's SQLite schema directly.
