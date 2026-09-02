@@ -271,7 +271,10 @@ func (s *claudeStream) record(_ int, raw json.RawMessage) error {
 			// Runtime instructions, state deltas and UI reminders are rebuilt by
 			// the destination rather than replayed as user conversation.
 		default:
-			return fmt.Errorf("unsupported Claude attachment %q", kind)
+			// Claude introduces new attachment kinds over time. An unfamiliar
+			// attachment must not strand the whole session, so skip it with a
+			// warning like the top-level default below.
+			s.warnings = appendUnique(s.warnings, fmt.Sprintf("unsupported Claude attachment %q was skipped", kind))
 		}
 		return nil
 	case "user", "assistant":

@@ -291,6 +291,40 @@ func TestClaudeReaderPreservesQueuedPromptsAndPlanAttachments(t *testing.T) {
 	}
 }
 
+func TestClaudeReaderSkipsUnsupportedAttachments(t *testing.T) {
+	root := isolatedHomes(t)
+	cwd := t.TempDir()
+	id := "11111111-1111-4111-8111-111111111111"
+	dir := filepath.Join(root, "claude", "projects", encodeClaudeProject(cwd))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, id+".jsonl")
+	records := []map[string]any{
+		{"type": "user", "uuid": "u", "cwd": cwd, "message": map[string]any{"role": "user", "content": "start"}},
+		{"type": "attachment", "uuid": "r", "timestamp": "2026-08-19T10:00:01Z", "attachment": map[string]any{"type": "remote_session_change", "url": "https://example.invalid"}},
+		{"type": "user", "uuid": "u2", "cwd": cwd, "message": map[string]any{"role": "user", "content": "after"}},
+	}
+	var lines []byte
+	for _, record := range records {
+		line, _ := json.Marshal(record)
+		lines = append(lines, append(line, '\n')...)
+	}
+	if err := os.WriteFile(path, lines, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	history, err := (claudeAdapter{}).Read(context.Background(), Candidate{Agent: Claude, ID: id, CWD: cwd, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Events) != 2 {
+		t.Fatalf("events = %#v", history.Events)
+	}
+	if !bytesContainAll([]byte(strings.Join(history.Warnings, "\n")), []string{"remote_session_change"}) {
+		t.Fatalf("warnings = %#v", history.Warnings)
+	}
+}
+
 func TestClaudeReaderLoadsSubagentTranscripts(t *testing.T) {
 	root := isolatedHomes(t)
 	cwd := t.TempDir()
