@@ -285,7 +285,23 @@ The target commands are `claude --resume ID`,
 `--last` or `--continue`. Codex's configured provider is copied into the
 teleported session metadata so the native resume command can bootstrap it.
 
-Codex target rollouts record the target installation's configured
+For a Codex target, `--to-provider ID` explicitly sets the destination provider
+and `--to-model NAME` optionally sets its model. Both appear in the new rollout
+metadata and the printed/launched resume command. They are AgentSwap flags, not
+passthrough arguments. Same-harness transfer is supported for Codex only and
+requires `--to-provider`:
+
+```sh
+agentswap teleport codex codex --session <id> --to-provider openai
+agentswap handoff codex codex --session <id> --to-provider agentswap --to-model <model>
+```
+
+The source is unchanged and the destination gets a new session ID. The provider
+must already be configured; no account login or network validation happens.
+See [provider transfers](sessions.md#continue-a-codex-session-with-another-provider)
+for history limitations and dry-run examples.
+
+Without an explicit destination override, Codex target rollouts record the target installation's configured
 `model_provider` in `session_meta` because Codex uses that field during resume.
 This keeps native metadata aligned with the generated command without forcing
 an agentswap-specific provider or profile.

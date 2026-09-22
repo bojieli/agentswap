@@ -219,6 +219,18 @@ everything it removes is written to a plain-text archive under
 file. It goes in the project because that is where a coding agent is allowed to
 read, and it carries a `.gitignore` so it never becomes a commit.
 
+To continue a Codex conversation through another provider, copy it to a new
+session with an explicit destination:
+
+```sh
+agentswap teleport codex codex --session <id> --to-provider openai
+agentswap handoff codex codex --session <id> --to-provider agentswap
+```
+
+Add `--to-model <model>` if needed. The source stays unchanged; the provider
+must already be configured. See the [provider transfer guide](docs/sessions.md#continue-a-codex-session-with-another-provider)
+for setup and history limitations.
+
 See the user guide in [docs/sessions.md](docs/sessions.md) and the exact flag
 reference in [docs/commands.md](docs/commands.md).
 

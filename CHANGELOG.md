@@ -4,6 +4,22 @@ Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html); until 1.0 the minor
 version moves for anything that changes behaviour.
 
+## v0.7.0 — 2026-09-22
+
+### Added
+
+- **Move a Codex conversation between providers.** `agentswap teleport codex
+  codex --session <id> --to-provider <provider>` creates a new session with the
+  chosen provider, leaving the original unchanged. `handoff` also launches the
+  copy. Optional `--to-model` selects a destination model. Both options are
+  recorded in destination metadata and explicitly applied on resume, so the
+  copied conversation does not restore the old provider's runtime settings.
+- Provider transfers support dry-run validation and the existing compaction
+  options. Discovery reads local sessions across provider labels. Supported
+  messages and tool interactions transfer; provider-bound encrypted reasoning
+  and unsupported records are omitted with warnings. Destination providers and
+  credentials must already be configured.
+
 ## v0.6.0 — 2026-09-02
 
 ### Changed

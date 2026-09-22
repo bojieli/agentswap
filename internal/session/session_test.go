@@ -1922,3 +1922,97 @@ func TestKimiCodeLeavesAmbiguousBranchesUnattached(t *testing.T) {
 		t.Fatalf("ambiguous branch was attached to %q", branches[0].CallID)
 	}
 }
+
+func TestCodexProviderTeleport(t *testing.T) {
+	isolatedHomes(t)
+	cwd := t.TempDir()
+	ctx := context.Background()
+	adapter := codexAdapter{}
+	source, err := adapter.Write(ctx, sampleHistory(t, cwd), WriteOptions{CWD: cwd, CodexProvider: "krill"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Saved runtime state must not bring the original provider into the copy.
+	f, err := os.OpenFile(source.Path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.WriteString("{\"type\":\"turn_context\",\"payload\":{\"model\":\"old-model\",\"model_provider\":\"krill\"}}\n{\"type\":\"response_item\",\"payload\":{\"type\":\"reasoning\",\"encrypted_content\":\"provider-secret\"}}\n")
+	f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(source.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager()
+	candidates, err := manager.Discover(ctx, DiscoverOptions{From: Codex, Target: Codex, CWD: cwd})
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("discover: %v, %v", candidates, err)
+	}
+	opts := TransferOptions{WriteOptions: WriteOptions{CWD: cwd, CodexProvider: "openai", CodexModel: "new-model", DryRun: true}}
+	dry, _, err := manager.Teleport(ctx, candidates[0], Codex, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dry.Path); !os.IsNotExist(err) {
+		t.Fatalf("dry-run destination exists: %v", err)
+	}
+	opts.DryRun = false
+	result, _, err := manager.Teleport(ctx, candidates[0], Codex, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ID == source.ID {
+		t.Fatal("reused original session ID")
+	}
+	after, _ := os.ReadFile(source.Path)
+	if string(before) != string(after) {
+		t.Fatal("source was modified")
+	}
+	body, err := os.ReadFile(result.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record struct {
+		Payload map[string]any `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(strings.SplitN(string(body), "\n", 2)[0]), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.Payload["model_provider"] != "openai" || record.Payload["model"] != "new-model" {
+		t.Fatalf("destination metadata: %v", record.Payload)
+	}
+	for _, forbidden := range []string{"provider-secret", "turn_context", "krill", "old-model"} {
+		if strings.Contains(string(body), forbidden) {
+			t.Fatalf("copied provider-bound state %q", forbidden)
+		}
+	}
+	if !strings.Contains(strings.Join(result.Warnings, "\n"), "encrypted reasoning") {
+		t.Fatal("missing encrypted reasoning warning")
+	}
+	want := []string{"codex", "resume", result.ID, "-c", `model_provider="openai"`, "-c", `model="new-model"`}
+	if !reflect.DeepEqual(result.Resume, want) {
+		t.Fatalf("resume: %v", result.Resume)
+	}
+	assertRoundTrip(t, adapter, Candidate{Agent: Codex, ID: result.ID, CWD: cwd, Path: result.Path})
+}
+
+func TestValidateProviderDestination(t *testing.T) {
+	for _, tc := range []struct {
+		source, target Agent
+		opts           WriteOptions
+	}{
+		{Codex, Codex, WriteOptions{}},
+		{Claude, Claude, WriteOptions{}},
+		{Codex, Claude, WriteOptions{CodexProvider: "openai"}},
+		{Codex, Kimi, WriteOptions{CodexModel: "model"}},
+		{Codex, Codex, WriteOptions{CodexProvider: " "}},
+		{Codex, Codex, WriteOptions{CodexProvider: "openai", CodexModel: " "}},
+	} {
+		if err := ValidateDestination(tc.source, tc.target, tc.opts); err == nil {
+			t.Fatalf("accepted invalid destination: %+v", tc)
+		}
+	}
+}

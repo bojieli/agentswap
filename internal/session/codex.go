@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -440,6 +441,17 @@ func (codexAdapter) Write(_ context.Context, history *Session, opts WriteOptions
 	// `agentswap install`. Keep the resume command native: callers should not
 	// need an agentswap-specific profile flag just to open a teleported session.
 	result = Result{Agent: Codex, ID: id, Path: final, Resume: []string{"codex", "resume", id}, Files: []string{final}}
+	provider := codexConfiguredModelProvider()
+	if opts.CodexProvider != "" {
+		provider = opts.CodexProvider
+		result.Resume = append(result.Resume, "-c", "model_provider="+strconv.Quote(provider))
+	}
+	model := history.Model
+	if opts.CodexModel != "" {
+		model = opts.CodexModel
+		result.Resume = append(result.Resume, "-c", "model="+strconv.Quote(model))
+	}
+
 	if len(history.Branches) > 0 {
 		result.Warnings = append(result.Warnings, branchesNotTransferred("A Codex rollout", history.Branches))
 	}
@@ -471,8 +483,8 @@ func (codexAdapter) Write(_ context.Context, history *Session, opts WriteOptions
 	meta := map[string]any{
 		"id": id, "session_id": id, "timestamp": now.Format(time.RFC3339Nano),
 		"cwd": canonical, "originator": "agentswap", "cli_version": "agentswap",
-		"source": "cli", "thread_source": "user", "model_provider": codexConfiguredModelProvider(),
-		"model": history.Model,
+		"source": "cli", "thread_source": "user", "model_provider": provider,
+		"model": model,
 		"agentswap_source": map[string]any{
 			"agent": history.Source, "session_id": history.SourceID,
 			"created_at": history.CreatedAt, "updated_at": history.UpdatedAt,
