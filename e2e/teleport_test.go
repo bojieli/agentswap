@@ -556,3 +556,70 @@ func TestTeleportCompactArchiveIsKeptOutOfVersionControl(t *testing.T) {
 		t.Fatalf("archive .gitignore = %q, want everything ignored", ignore)
 	}
 }
+
+func TestTeleportCodexProviderAndHandoff(t *testing.T) {
+	e := newEnv(t)
+	project := t.TempDir()
+	sourceID := "77777777-7777-4777-8777-777777777777"
+	source := filepath.Join(e.codex, "sessions", "2026", "09", "22", "rollout-2026-09-22T00-00-00-"+sourceID+".jsonl")
+	meta, _ := json.Marshal(map[string]any{"type": "session_meta", "payload": map[string]any{"id": sourceID, "cwd": project, "model_provider": "krill", "model": "old-model"}})
+	body := string(meta) + "\n" + `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"keep this conversation"}]}}` + "\n"
+	writeFile(t, source, body)
+	writeFile(t, filepath.Join(e.codex, "config.toml"), "model_provider = 'krill'\n")
+	args := []string{"teleport", "codex", "codex", "--cwd", project, "--session", sourceID, "--to-provider", "openai", "--to-model", "new-model"}
+	dry := e.mustRun(append(args, "--dry-run")...)
+	mustContain(t, dry.out(), "Nothing was written", "provider dry run")
+	rollouts, _ := filepath.Glob(filepath.Join(e.codex, "sessions", "*", "*", "*", "*.jsonl"))
+	if len(rollouts) != 1 {
+		t.Fatalf("dry run wrote rollouts: %v", rollouts)
+	}
+	result := e.mustRun(args...)
+	mustContain(t, result.out(), `model_provider="openai"`, "provider resume command")
+	mustContain(t, result.out(), `model="new-model"`, "model resume command")
+	rollouts, _ = filepath.Glob(filepath.Join(e.codex, "sessions", "*", "*", "*", "*.jsonl"))
+	if len(rollouts) != 2 {
+		t.Fatalf("rollouts: %v", rollouts)
+	}
+	for _, p := range rollouts {
+		if p == source {
+			continue
+		}
+		contents := readFile(t, p)
+		mustContain(t, contents, `"model_provider":"openai"`, "destination")
+		mustContain(t, contents, `"model":"new-model"`, "destination")
+		mustContain(t, contents, "keep this conversation", "destination")
+	}
+	if readFile(t, source) != body {
+		t.Fatal("modified original")
+	}
+	missing := e.run("teleport", "codex", "codex", "--cwd", project)
+	if missing.code == 0 {
+		t.Fatal("accepted missing provider")
+	}
+	mustContain(t, missing.out(), "requires --to-provider", "missing provider")
+	if runtime.GOOS == "windows" {
+		return
+	}
+	bin := t.TempDir()
+	capture := filepath.Join(t.TempDir(), "args.txt")
+	fake := filepath.Join(bin, "codex")
+	writeFile(t, fake, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FAKE_LAUNCH_CAPTURE\"\n")
+	if err := os.Chmod(fake, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	launched := e.runEnv([]string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"), "FAKE_LAUNCH_CAPTURE=" + capture},
+		"handoff", "codex", "codex", "--cwd", project, "--session", sourceID, "--to-provider", "agentswap", "--to-model", "new-model", "--profile", "mine", "-c", `model_provider="krill"`)
+	if launched.code != 0 {
+		t.Fatalf("handoff: %s", launched.out())
+	}
+	got := strings.Split(strings.TrimSpace(readFile(t, capture)), "\n")
+	if len(got) != 10 || got[0] != "resume" || got[1] == sourceID {
+		t.Fatalf("launch args: %v", got)
+	}
+	if strings.Join(got[6:], "\n") != "-c\nmodel_provider=\"agentswap\"\n-c\nmodel=\"new-model\"" {
+		t.Fatalf("destination overrides: %v", got)
+	}
+	if readFile(t, source) != body {
+		t.Fatal("handoff modified original")
+	}
+}

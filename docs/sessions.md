@@ -48,6 +48,58 @@ Automatic resume needs the supervisor. A bare `claude` or `codex` process can
 receive a `503` after the configured maximum hold time because no parent
 process is available to resume it.
 
+## Continue a Codex session with another provider
+
+Codex's resume picker can filter history by provider, and an existing session
+can retain settings from its original provider. To move the recorded
+conversation to another provider, create a new Codex session explicitly:
+
+```sh
+agentswap teleport codex codex --session <source-id> --to-provider openai
+```
+
+The source is selected from local rollouts regardless of its provider label.
+Discovery still uses the current project directory; add `--cwd /path/to/project`
+when running elsewhere. Without `--session`, the active Codex session is used
+when available, otherwise the newest matching session.
+
+`--to-provider` is a Codex provider ID, such as `openai`, `krill`, or `agentswap`,
+not an account ID from `agentswap list`. The provider and its credentials must
+already be configured in Codex. This offline command does not validate network
+access or model availability. Run `agentswap install` and start the daemon
+before using the `agentswap` provider; its account pool determines the upstream.
+
+If the destination needs a different model, specify it with `--to-model`:
+
+```sh
+agentswap teleport codex codex --session <source-id> \
+  --to-provider agentswap --to-model <supported-model> --dry-run
+
+agentswap handoff codex codex --session <source-id> \
+  --to-provider agentswap --to-model <supported-model>
+```
+
+`teleport` prints the resume command; `handoff` creates the copy and launches it.
+The destination provider is written into the new session metadata and passed
+explicitly in its resume command. `--to-model` is handled the same way.
+These explicit destination options take precedence over passthrough `-c`
+settings and provider selection in a target profile. Use `--to-model` rather
+than a conflicting target `--model` flag. Without `--to-model`, recorded model
+metadata is retained and Codex resolves the model on resume.
+
+This is a conversation transfer through the same reader and writer used for
+cross-harness teleport, not a byte-for-byte clone. It preserves supported
+messages and tool interactions, creates a new session ID, and leaves the source
+unchanged. Original runtime settings, approvals, caches, and credentials do not
+move. Provider-bound encrypted reasoning is omitted with a warning; unfamiliar
+records are skipped with warnings. For compacted rollouts, the transfer uses
+original response items still present in the file and does not recreate hidden
+or missing history. `--compact` and `--budget` are available for large histories.
+
+Codex-to-Codex transfers require `--to-provider`. The two destination options
+also work when transferring from another harness into Codex; they are rejected
+for non-Codex targets.
+
 ## Continue in another harness
 
 Suppose Claude Code has exhausted its subscriptions and provider fallback,

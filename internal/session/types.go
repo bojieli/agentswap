@@ -159,6 +159,9 @@ type Candidate struct {
 type WriteOptions struct {
 	CWD    string
 	DryRun bool
+	// CodexProvider and CodexModel explicitly select the destination for Codex.
+	CodexProvider string
+	CodexModel    string
 }
 
 type Result struct {

@@ -18,6 +18,7 @@ provide the details you need at the terminal.
 
 - [Session recovery, teleport, and handoff](sessions.md) — choose between
   waiting in the current harness and continuing in another one.
+- [Switch a Codex session to another provider](sessions.md#continue-a-codex-session-with-another-provider) — copy a conversation with an explicit destination provider and model.
 - [Command reference](commands.md) — every command, flag, and environment
   variable.
 - [Configuration](configuration.md) — tune rotation, retries, parking, and
