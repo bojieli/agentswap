@@ -4,6 +4,15 @@ Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html); until 1.0 the minor
 version moves for anything that changes behaviour.
 
+## v0.7.1 — 2026-10-01
+
+### Fixed
+
+- **Handoffs no longer fail on a concurrently written Claude transcript.** If
+  Claude Code is still appending a JSONL record, agentswap now ignores only an
+  unterminated final record while continuing to reject malformed complete
+  records.
+
 ## v0.7.0 — 2026-09-22
 
 ### Added

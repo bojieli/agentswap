@@ -1083,6 +1083,26 @@ func TestReadersRejectCorruptJSONL(t *testing.T) {
 	}
 }
 
+func TestReadJSONLIgnoresUnterminatedFinalRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "in-progress.jsonl")
+	if err := os.WriteFile(path, []byte("{\"ok\":true}\n{\"partial\":"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var records int
+	if err := readJSONL(path, func(_ int, raw json.RawMessage) error {
+		records++
+		if !json.Valid(raw) {
+			t.Fatalf("callback received invalid JSON: %q", raw)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("readJSONL returned error for an in-progress final record: %v", err)
+	}
+	if records != 1 {
+		t.Fatalf("read %d complete records, want 1", records)
+	}
+}
+
 func TestReadJSONLRejectsOversizedRecord(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "oversized.jsonl")
 	f, err := os.Create(path)
