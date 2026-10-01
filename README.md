@@ -61,16 +61,9 @@ go install github.com/bojieli/agentswap/cmd/agentswap@latest
 
 ### Verified binary installer
 
-The installer downloads the archive and verifies its SHA-256 checksum before
-placing the binary in a user-writable directory:
-
 ```sh
 curl -fsSL https://raw.githubusercontent.com/bojieli/agentswap/main/install.sh | sh
 ```
-
-For a private repository, GitHub does not serve release assets anonymously.
-Use authenticated downloads or wait until the repository and its releases
-are public.
 
 ## Five-minute setup
 
