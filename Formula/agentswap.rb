@@ -1,26 +1,26 @@
 class Agentswap < Formula
   desc "Local failover proxy for Claude Code and Codex"
   homepage "https://github.com/bojieli/agentswap"
-  version "0.7.1"
+  version "0.8.0"
   license "MIT"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/bojieli/agentswap/releases/download/v0.7.1/agentswap_v0.7.1_darwin_arm64.tar.gz"
-      sha256 "b94208d7209d2a3f2070ee22fd19d0e42a1752dce6e5dbf6f4ac2840633dd87f"
+      url "https://github.com/bojieli/agentswap/releases/download/v0.8.0/agentswap_v0.8.0_darwin_arm64.tar.gz"
+      sha256 "aeb9d6f617a9c8591a29c897d1e31f9120c9e1bfaaa86d4846cb25f99c5215f1"
     else
-      url "https://github.com/bojieli/agentswap/releases/download/v0.7.1/agentswap_v0.7.1_darwin_amd64.tar.gz"
-      sha256 "7741a6eee54c035544ae38951f935b836a80ddfd2486a3a56d14bda45a0ddb9e"
+      url "https://github.com/bojieli/agentswap/releases/download/v0.8.0/agentswap_v0.8.0_darwin_amd64.tar.gz"
+      sha256 "be50e95c7a42528046d68dbbbda527cdffb23b4a93afb50ca2f46f69f1e158cb"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/bojieli/agentswap/releases/download/v0.7.1/agentswap_v0.7.1_linux_arm64.tar.gz"
-      sha256 "b9c991ac6d1af9a3f08ce8d28662551027479530a878858228f2e8e8ffa4bc18"
+      url "https://github.com/bojieli/agentswap/releases/download/v0.8.0/agentswap_v0.8.0_linux_arm64.tar.gz"
+      sha256 "3345eada17091ff38fa5203573f2c967fe55085f6b2cf4f8e9ca85585d3f47c1"
     else
-      url "https://github.com/bojieli/agentswap/releases/download/v0.7.1/agentswap_v0.7.1_linux_amd64.tar.gz"
-      sha256 "ef1b84c82356fd8941904768e97d501b59a6617d546415727a00ff15fd2d78b8"
+      url "https://github.com/bojieli/agentswap/releases/download/v0.8.0/agentswap_v0.8.0_linux_amd64.tar.gz"
+      sha256 "6c27975a8b24d5b36358bbc6f8cf40cf4be37adb48e4a50ae0afd9e636b88f5b"
     end
   end
 
