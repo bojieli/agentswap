@@ -25,6 +25,7 @@ func main() {
 		{"run", "run a CLI, resuming it after a quota wait", cmdRun},
 		{"teleport", "move a resumable session to another coding agent", cmdTeleport},
 		{"handoff", "move the latest session and continue in another agent", cmdHandoff},
+		{"agents", "convert reusable agent definitions between harnesses", cmdAgents},
 		{"login", "add an account, or replace a rejected credential", cmdLogin},
 		{"import", "adopt logins and active provider overrides", cmdImport},
 		{"add-key", "add an API key to a lane", cmdAddKey},

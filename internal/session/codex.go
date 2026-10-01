@@ -80,11 +80,14 @@ func (codexAdapter) Discover(_ context.Context, cwd string) ([]Candidate, error)
 			}
 			return walkErr
 		}
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), ".agentswap-") {
+			return filepath.SkipDir
+		}
 		if entry.IsDir() || filepath.Ext(path) != ".jsonl" {
 			return nil
 		}
 		meta, err := readCodexMeta(path)
-		if err != nil || !samePath(meta.CWD, canonical) {
+		if err != nil || meta.ParentID != "" || !samePath(meta.CWD, canonical) {
 			return nil
 		}
 		info, err := entry.Info()
@@ -111,6 +114,10 @@ type codexMeta struct {
 	ID        string
 	CWD       string
 	Timestamp time.Time
+	ParentID  string
+	Role      string
+	Nickname  string
+	Branch    *Branch
 }
 
 func readCodexMeta(path string) (codexMeta, error) {
@@ -137,13 +144,38 @@ func readCodexMeta(path string) (codexMeta, error) {
 	}
 	result.CWD, _ = record.Payload["cwd"].(string)
 	result.Timestamp = parseFlexibleTime(record.Payload["timestamp"])
+	result.ParentID = stringValue(record.Payload["parent_thread_id"])
+	result.Role = stringValue(record.Payload["agent_role"])
+	result.Nickname = stringValue(record.Payload["agent_nickname"])
+	if source, ok := record.Payload["source"].(map[string]any); ok {
+		if sub, ok := source["subagent"].(map[string]any); ok {
+			if spawn, ok := sub["thread_spawn"].(map[string]any); ok {
+				if parent := stringValue(spawn["parent_thread_id"]); parent != "" {
+					result.ParentID = parent
+				}
+				if role := stringValue(spawn["agent_role"]); role != "" {
+					result.Role = role
+				}
+				if result.Role == "" {
+					result.Role = stringValue(spawn["agent_type"])
+				}
+				result.Nickname = stringValue(spawn["agent_nickname"])
+			}
+		}
+	}
+	if branch, ok := record.Payload["agentswap_branch"]; ok {
+		b, _ := json.Marshal(branch)
+		if err := json.Unmarshal(b, &result.Branch); err != nil {
+			return result, err
+		}
+	}
 	if result.ID == "" || result.CWD == "" {
 		return result, fmt.Errorf("session_meta is missing id or cwd")
 	}
 	return result, nil
 }
 
-func (codexAdapter) Read(_ context.Context, candidate Candidate) (*Session, error) {
+func readCodexThread(candidate Candidate) (*Session, error) {
 	meta, err := readCodexMeta(candidate.Path)
 	if err != nil {
 		return nil, err
@@ -424,17 +456,14 @@ func codexPlanText(value any) string {
 	return strings.Join(lines, "\n")
 }
 
-func (codexAdapter) Write(_ context.Context, history *Session, opts WriteOptions) (result Result, err error) {
+func writeCodexThread(history *Session, opts WriteOptions, id string, dir string, extra map[string]any) (result Result, err error) {
 	now := time.Now().UTC()
-	id, err := newUUID7(now)
-	if err != nil {
-		return Result{}, err
-	}
+
 	canonical, err := canonicalPath(opts.CWD)
 	if err != nil {
 		return Result{}, err
 	}
-	dir := filepath.Join(codexRoot(), "sessions", now.Format("2006"), now.Format("01"), now.Format("02"))
+
 	name := "rollout-" + now.Format("2006-01-02T15-04-05") + "-" + id + ".jsonl"
 	final := filepath.Join(dir, name)
 	// The agentswap provider is configured in Codex's own config by
@@ -452,9 +481,6 @@ func (codexAdapter) Write(_ context.Context, history *Session, opts WriteOptions
 		result.Resume = append(result.Resume, "-c", "model="+strconv.Quote(model))
 	}
 
-	if len(history.Branches) > 0 {
-		result.Warnings = append(result.Warnings, branchesNotTransferred("A Codex rollout", history.Branches))
-	}
 	if opts.DryRun {
 		return result, nil
 	}
@@ -490,6 +516,10 @@ func (codexAdapter) Write(_ context.Context, history *Session, opts WriteOptions
 			"created_at": history.CreatedAt, "updated_at": history.UpdatedAt,
 		},
 	}
+	for key, value := range extra {
+		meta[key] = value
+	}
+	delete(meta, "agentswap_spawn_events")
 	if err := write("session_meta", now, meta); err != nil {
 		return Result{}, err
 	}
@@ -644,6 +674,13 @@ func (codexAdapter) Write(_ context.Context, history *Session, opts WriteOptions
 		}
 		if err := flushMessage(); err != nil {
 			return Result{}, err
+		}
+	}
+	if events, ok := extra["agentswap_spawn_events"].([]map[string]any); ok {
+		for _, event := range events {
+			if err := write("event_msg", now, event); err != nil {
+				return Result{}, err
+			}
 		}
 	}
 	if err := f.Sync(); err != nil {

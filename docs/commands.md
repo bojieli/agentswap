@@ -332,12 +332,12 @@ transferred as native content (remote URLs remain URLs). Unsupported media forms
 and unknown conversation-bearing native blocks are skipped with a warning while
 the rest of the session is read.
 
-Delegated agent runs travel as branches beside the main thread, each linked to
-the tool call that spawned it. Claude Code and Kimi Code write them natively;
-Codex, OpenCode, and the Python-era Kimi layout have no equivalent and report
-each run they could not keep. A moved run is readable but not resumable in the
-target. See [the session guide](sessions.md) for the layouts and the two
-sources whose linkage is approximate.
+Delegated agent runs travel as branches beside the main thread, linked to their
+spawning calls and nested parents. All four harnesses write native child
+histories, including Python Kimi. Live jobs do not move; unfinished calls are
+marked interrupted and Kimi tasks receive a terminal status. Missing child
+histories are reported. See [the session guide](sessions.md#delegated-agent-runs)
+for layouts and native discovery limits.
 
 Kimi Code has two incompatible local formats. Current releases use
 `~/.kimi-code` with per-session state and versioned wire event logs; the
@@ -350,6 +350,45 @@ history intentionally does not fabricate that provider-specific profile, so
 the generated resume command includes Kimi's configured `default_model` and
 lets Kimi perform the bind itself. `AGENTSWAP_KIMI_MODEL` overrides that target
 model when needed.
+
+## Converting reusable agents
+
+### agents
+
+`agentswap agents <source> <target>` converts reusable custom agent definitions
+independently of session history. All directed conversions among `claude`,
+`codex`, `kimi`, and `opencode` are supported:
+
+```sh
+agentswap agents claude codex --dry-run
+agentswap agents claude codex --model gpt-5.4
+agentswap agents codex claude --target-dir ./claude-agents
+agentswap agents kimi opencode --agent-file ./agent.yaml --strict
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--cwd DIR` | project whose agent directories are used; defaults to the current directory |
+| `--source-dir DIR` | read only this source agent directory |
+| `--target-dir DIR` | destination; defaults to `<project>/.<target>/agents` |
+| `--agent-file FILE` | source Kimi root YAML, legacy Codex config TOML, or OpenCode config JSON |
+| `--model MODEL` | explicit destination model; otherwise inherit its configured model |
+| `--dry-run` | parse, convert, check collisions, and report warnings without writing |
+| `--strict` | reject any compatibility warning before writing |
+
+Without `--source-dir`, personal and project directories are combined, with
+project agents overriding names from personal directories. Kimi's root file
+registers its `subagents`; generated conversions print the required
+`kimi --agent-file ...` launch command. Kimi model overrides apply to that
+launch command rather than YAML. Built-in agents are not exported.
+
+Prompts, descriptions, and known tool restrictions are translated. Source
+settings are retained in `agentswap-definitions.json` for round trips. Unsupported
+settings stay inert, with warnings; Codex uses a read-only sandbox when a source
+tool allowlist cannot be enforced natively. Use `--strict` when an approximate
+policy is unsuitable. Unsupported YAML/TOML syntax fails explicitly, and existing
+files—including the manifest—are never overwritten. A failed write removes only
+files created by that conversion. See [definition compatibility](sessions.md#reusable-agent-definitions).
 
 ## Wiring your CLIs
 

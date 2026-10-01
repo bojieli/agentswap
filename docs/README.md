@@ -19,6 +19,8 @@ provide the details you need at the terminal.
 - [Session recovery, teleport, and handoff](sessions.md) — choose between
   waiting in the current harness and continuing in another one.
 - [Switch a Codex session to another provider](sessions.md#continue-a-codex-session-with-another-provider) — copy a conversation with an explicit destination provider and model.
+- [Convert custom agent definitions](commands.md#agents) — move reusable Claude,
+  Codex, Kimi, and OpenCode agents with explicit compatibility reporting.
 - [Command reference](commands.md) — every command, flag, and environment
   variable.
 - [Configuration](configuration.md) — tune rotation, retries, parking, and
@@ -53,6 +55,7 @@ agentswap service install    run the proxy at every login
 agentswap run -- ...         wait and resume in the same harness
 agentswap teleport A B       create a native B session from A
 agentswap handoff A B        create and launch that target session
+agentswap agents A B         convert reusable agent definitions
 agentswap doctor             find the first broken link in the setup
 ```
 

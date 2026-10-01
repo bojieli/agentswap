@@ -75,10 +75,10 @@ func (openCodeAdapter) Discover(ctx context.Context, cwd string) ([]Candidate, e
 	return out, nil
 }
 
-func (openCodeAdapter) Read(ctx context.Context, candidate Candidate) (*Session, error) {
+func readOpenCodeThread(ctx context.Context, candidate Candidate, child bool) (*Session, map[string]any, error) {
 	stdout, _, err := runOpenCode(ctx, candidate.CWD, "export", candidate.ID)
 	if err != nil {
-		return nil, fmt.Errorf("run `opencode export %s`: %w", candidate.ID, err)
+		return nil, nil, fmt.Errorf("run `opencode export %s`: %w", candidate.ID, err)
 	}
 	var exported struct {
 		Info     map[string]any `json:"info"`
@@ -88,15 +88,15 @@ func (openCodeAdapter) Read(ctx context.Context, candidate Candidate) (*Session,
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(stdout, &exported); err != nil {
-		return nil, fmt.Errorf("parse OpenCode export: %w", err)
+		return nil, nil, fmt.Errorf("parse OpenCode export: %w", err)
 	}
 	id, _ := exported.Info["id"].(string)
 	if id != candidate.ID {
-		return nil, fmt.Errorf("export returned session %q, want %q", id, candidate.ID)
+		return nil, nil, fmt.Errorf("export returned session %q, want %q", id, candidate.ID)
 	}
 	directory, _ := exported.Info["directory"].(string)
-	if !samePath(directory, candidate.CWD) {
-		return nil, fmt.Errorf("exported session cwd %q does not match %q", directory, candidate.CWD)
+	if directory == "" || !child && !samePath(directory, candidate.CWD) {
+		return nil, nil, fmt.Errorf("exported session cwd %q does not match %q", directory, candidate.CWD)
 	}
 	history := &Session{Source: OpenCode, SourceID: id, CWD: directory, Title: stringValue(exported.Info["title"])}
 	if model, ok := exported.Info["model"].(map[string]any); ok {
@@ -167,7 +167,7 @@ func (openCodeAdapter) Read(ctx context.Context, candidate Candidate) (*Session,
 				}
 				input, err := json.Marshal(state["input"])
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 				if string(input) == "null" {
 					input = []byte(`{}`)
@@ -235,7 +235,7 @@ func (openCodeAdapter) Read(ctx context.Context, candidate Candidate) (*Session,
 					text += "\n" + prompt
 				}
 				event.Parts = append(event.Parts, Part{Kind: Text, ID: stringValue(part["id"]), Text: text})
-				history.Warnings = appendUnique(history.Warnings, "an OpenCode agent delegation was retained as visible text; the delegated run is a separate OpenCode session that `opencode export` does not include")
+				history.Warnings = appendUnique(history.Warnings, "an OpenCode agent delegation was retained as visible text; child histories are discovered separately through task metadata")
 			default:
 				// OpenCode adds new part kinds over time. An unfamiliar part must
 				// not strand the whole session, so it is skipped with a warning.
@@ -247,7 +247,9 @@ func (openCodeAdapter) Read(ctx context.Context, candidate Candidate) (*Session,
 	if history.Title == "" {
 		history.Title = firstText(history)
 	}
-	return history, nil
+	var raw map[string]any
+	_ = json.Unmarshal(stdout, &raw)
+	return history, raw, nil
 }
 
 // openCodeOutputParts converts one tool state output into canonical parts.
@@ -281,22 +283,12 @@ func openCodeOutputParts(output any, callID string) (parts []Part, warnings []st
 	return []Part{{Kind: ToolResult, CallID: callID, Text: text}}, nil
 }
 
-func (openCodeAdapter) Write(ctx context.Context, history *Session, opts WriteOptions) (result Result, err error) {
-	idPart, err := shortID("")
-	if err != nil {
-		return Result{}, err
-	}
-	id := "ses_" + idPart
+func writeOpenCodeThread(ctx context.Context, history *Session, opts WriteOptions, id, parentID string, childLinks map[string][]Branch) (result Result, err error) {
 	canonical, err := canonicalPath(opts.CWD)
 	if err != nil {
 		return Result{}, err
 	}
 	result = Result{Agent: OpenCode, ID: id, Path: "OpenCode local database", Resume: []string{openCodeBinary(), "--session", id}, ExternalCLI: true}
-	if len(history.Branches) > 0 {
-		// OpenCode keeps a delegated run in a separate child session, and
-		// `opencode import` writes one session at a time.
-		result.Warnings = append(result.Warnings, branchesNotTransferred("The OpenCode import boundary", history.Branches))
-	}
 	if opts.DryRun {
 		return result, nil
 	}
@@ -316,6 +308,9 @@ func (openCodeAdapter) Write(ctx context.Context, history *Session, opts WriteOp
 				"sourceCreatedAt": history.CreatedAt, "sourceUpdatedAt": history.UpdatedAt,
 			}},
 		},
+	}
+	if parentID != "" {
+		export["info"].(map[string]any)["parentID"] = parentID
 	}
 	type recordedToolResult struct {
 		part Part
@@ -375,6 +370,10 @@ func (openCodeAdapter) Write(ctx context.Context, history *Session, opts WriteOp
 					} else {
 						state = map[string]any{"status": "completed", "input": input, "output": output, "title": part.ToolName, "metadata": map[string]any{}, "time": map[string]any{"start": stateTime, "end": endTime}}
 					}
+				}
+				if children := childLinks[part.CallID]; len(children) > 0 {
+					metadata := map[string]any{"sessionId": children[0].ID, "agentswapBranches": children}
+					state["metadata"] = metadata
 				}
 				parts = append(parts, map[string]any{"id": partID, "sessionID": id, "type": "tool", "callID": part.CallID, "tool": part.ToolName, "state": state})
 			case ToolResult:

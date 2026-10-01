@@ -317,6 +317,7 @@ func readKimiCode(candidate Candidate) (*Session, error) {
 // its parent that spawned it.
 type kimiTask struct {
 	TaskID       string `json:"taskId"`
+	CWD          string `json:"agentswapCwd"`
 	Description  string `json:"description"`
 	Status       string `json:"status"`
 	Kind         string `json:"kind"`
@@ -655,7 +656,7 @@ func readKimiBranches(agentsDir string, agents map[string]kimiAgentNode, mainTas
 			parent = ""
 		}
 		branch := Branch{
-			ID: item.name, ParentID: parent, CallID: task.ParentCallID,
+			ID: item.name, CWD: task.CWD, ParentID: parent, CallID: task.ParentCallID,
 			Name: task.SubagentType, Description: task.Description, Status: task.Status,
 			Model: task.Model, CreatedAt: parseFlexibleTime(task.StartedAt),
 			UpdatedAt: parseFlexibleTime(task.EndedAt), Events: item.wire.events,
@@ -684,7 +685,7 @@ func readKimiBranches(agentsDir string, agents map[string]kimiAgentNode, mainTas
 		streams = append(streams, branch.Events)
 	}
 	attachKimiBranches(branches, streams, swarmItems)
-	linkBranchParents(branches)
+	linkBranchParents(branches, mainEvents)
 	var unattached []string
 	for _, branch := range branches {
 		if branch.CallID == "" {
@@ -879,7 +880,7 @@ func kimiOutputParts(output any, callID string) (parts []Part, warnings []string
 	return []Part{{Kind: ToolResult, CallID: callID, Text: text}}, warnings
 }
 
-func readKimiLegacy(candidate Candidate) (*Session, error) {
+func readKimiLegacyThread(candidate Candidate) (*Session, error) {
 	contextPath := filepath.Join(candidate.Path, "context.jsonl")
 	history := &Session{Source: Kimi, SourceID: candidate.ID, CWD: candidate.CWD, UpdatedAt: candidate.UpdatedAt}
 	err := readJSONL(contextPath, func(_ int, raw json.RawMessage) error {
@@ -1024,9 +1025,20 @@ func (kimiAdapter) Write(_ context.Context, history *Session, opts WriteOptions)
 		return Result{}, fmt.Errorf("AGENTSWAP_KIMI_FORMAT must be modern or legacy, got %q", format)
 	}
 	if format == "legacy" {
-		return writeKimiLegacy(history, opts)
+		result, err := writeKimiLegacy(history, opts)
+		return warnKimiBranchCWD(result, history, opts), err
 	}
-	return writeKimiCode(history, opts)
+	result, err := writeKimiCode(history, opts)
+	return warnKimiBranchCWD(result, history, opts), err
+}
+
+func warnKimiBranchCWD(result Result, history *Session, opts WriteOptions) Result {
+	for _, b := range history.Branches {
+		if b.CWD != "" && !samePath(b.CWD, opts.CWD) {
+			result.Warnings = appendUnique(result.Warnings, fmt.Sprintf("Kimi branch %s originated in %s; that directory is retained as metadata, but Kimi runs agents in the session working directory", b.ID, b.CWD))
+		}
+	}
+	return result
 }
 
 // writeKimiBranches gives every delegated run its own agent directory, the way
@@ -1084,7 +1096,7 @@ func writeKimiBranches(branches []Branch, agents map[string]any, stage, final st
 			"taskId": "agent-" + taskSuffix, "kind": "agent", "agentId": name,
 			"description": branch.Description, "status": status, "detached": false,
 			"parentToolCallId": branch.CallID, "subagentType": branch.Name,
-			"model": branch.Model, "agentswapSourceAgentId": branch.ID,
+			"model": branch.Model, "agentswapSourceAgentId": branch.ID, "agentswapCwd": branch.CWD,
 		}
 		if !branch.CreatedAt.IsZero() {
 			task["startedAt"] = branch.CreatedAt.UnixMilli()
@@ -1101,7 +1113,7 @@ func writeKimiBranches(branches []Branch, agents map[string]any, stage, final st
 		}
 		files = append(files, filepath.Join(final, "agents", parent, "tasks", stringValue(task["taskId"])+".json"))
 	}
-	warnings = append(warnings, fmt.Sprintf("%d delegated agent %s moved into Kimi subagent %s; the transcripts are readable but a subagent cannot be resumed in the new session", len(branches), plural(len(branches), "run", "runs"), plural(len(branches), "directory", "directories")))
+	warnings = append(warnings, fmt.Sprintf("%d delegated agent %s moved into Kimi subagent %s; the histories are readable; live execution and runtime agent registration were not transferred", len(branches), plural(len(branches), "run", "runs"), plural(len(branches), "directory", "directories")))
 	if len(unfinished) > 0 {
 		warnings = append(warnings, fmt.Sprintf("delegated %s %s had not finished; %s recorded as failed because the new session has no process to attach to", plural(len(unfinished), "run", "runs"), strings.Join(unfinished, ", "), plural(len(unfinished), "it was", "they were")))
 	}
@@ -1308,6 +1320,22 @@ func writeKimiWireLog(events []Event, stageAgent, publishedAgent string, now tim
 }
 
 func writeKimiCode(history *Session, opts WriteOptions) (result Result, err error) {
+	branches, err := orderedBranches(history.Branches)
+	if err != nil {
+		return Result{}, err
+	}
+	ids := map[string]string{}
+	for i, b := range branches {
+		ids[b.ID] = fmt.Sprintf("agent-%d", i)
+	}
+	refs := branchReferenceIDs(history.Source, branches, ids)
+	copied := *history
+	copied.Events = remapDelegation(history.Events, refs)
+	copied.Branches = append([]Branch(nil), branches...)
+	for i := range copied.Branches {
+		copied.Branches[i].Events = remapDelegation(copied.Branches[i].Events, refs)
+	}
+	history = &copied
 	resumeModel, err := kimiResumeModel()
 	if err != nil {
 		return Result{}, err
@@ -1406,24 +1434,15 @@ func lastUserText(history *Session) string {
 	return ""
 }
 
-func writeKimiLegacy(history *Session, opts WriteOptions) (result Result, err error) {
-	id, err := newUUID()
-	if err != nil {
-		return Result{}, err
-	}
+func writeKimiLegacyAt(history *Session, opts WriteOptions, final, id string, register bool) (result Result, err error) {
 	canonical, err := canonicalPath(opts.CWD)
 	if err != nil {
 		return Result{}, err
 	}
-	hash := md5.Sum([]byte(canonical))
-	workdir := filepath.Join(kimiLegacyRoot(), "sessions", hex.EncodeToString(hash[:]))
-	final := filepath.Join(workdir, id)
+	workdir := filepath.Dir(final)
 	result = Result{
 		Agent: Kimi, ID: id, Path: final, Resume: []string{"kimi", "-r", id},
 		Files: []string{filepath.Join(final, "context.jsonl"), filepath.Join(final, "wire.jsonl"), filepath.Join(final, "state.json")},
-	}
-	if len(history.Branches) > 0 {
-		result.Warnings = append(result.Warnings, branchesNotTransferred("The Python-era Kimi layout", history.Branches))
 	}
 	if opts.DryRun {
 		return result, nil
@@ -1641,12 +1660,19 @@ func writeKimiLegacy(history *Session, opts WriteOptions) (result Result, err er
 	if err := writeJSONFile(filepath.Join(stage, "state.json"), state, 0o600); err != nil {
 		return Result{}, err
 	}
+	branchFiles, err := writeKimiLegacyChildren(history, opts, stage, final)
+	if err != nil {
+		return Result{}, err
+	}
+	result.Files = append(result.Files, branchFiles...)
 	if err := os.Rename(stage, final); err != nil {
 		return Result{}, err
 	}
 	published = true
-	if err := updateKimiLegacyMetadata(canonical, id); err != nil {
-		return Result{}, err
+	if register {
+		if err := updateKimiLegacyMetadata(canonical, id); err != nil {
+			return Result{}, err
+		}
 	}
 	committed = true
 	return result, nil

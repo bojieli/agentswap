@@ -1762,36 +1762,6 @@ func TestClaudeCodeBranchRoundTrip(t *testing.T) {
 	}
 }
 
-// A destination with no branch representation must say so rather than drop the
-// runs quietly.
-func TestWritersReportBranchesTheyCannotKeep(t *testing.T) {
-	for _, agent := range []Agent{Codex, Kimi} {
-		t.Run(string(agent), func(t *testing.T) {
-			root := isolatedHomes(t)
-			if agent == Kimi {
-				t.Setenv("KIMI_SHARE_DIR", filepath.Join(root, "legacy-only"))
-				t.Setenv("AGENTSWAP_KIMI_FORMAT", "legacy")
-			}
-			cwd := t.TempDir()
-			history := sampleHistory(t, cwd)
-			history.Branches = sampleBranches()
-			result, err := NewManager().adapters[agent].Write(context.Background(), history, WriteOptions{CWD: cwd, DryRun: true})
-			if err != nil {
-				t.Fatal(err)
-			}
-			var reported bool
-			for _, warning := range result.Warnings {
-				if strings.Contains(warning, "delegated agent run") && strings.Contains(warning, "agent-0") {
-					reported = true
-				}
-			}
-			if !reported {
-				t.Fatalf("%s warnings = %#v", agent, result.Warnings)
-			}
-		})
-	}
-}
-
 func TestValidateChecksBranchesAsIndependentStreams(t *testing.T) {
 	cwd := t.TempDir()
 	base := func() *Session {

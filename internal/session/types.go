@@ -134,6 +134,7 @@ type Session struct {
 // main thread. CallID is the tool call in that parent which opened the branch.
 type Branch struct {
 	ID          string    `json:"id"`
+	CWD         string    `json:"cwd,omitempty"`
 	ParentID    string    `json:"parent_id,omitempty"`
 	CallID      string    `json:"call_id,omitempty"`
 	Name        string    `json:"name,omitempty"`
@@ -204,6 +205,9 @@ func (s *Session) Validate() error {
 	if len(s.Events) == 0 {
 		return errors.New("source session has no transferable messages")
 	}
+	if _, err := orderedBranches(s.Branches); err != nil {
+		return err
+	}
 	calls, dangling, err := validateEvents(s.Events, "")
 	if err != nil {
 		return err
@@ -213,10 +217,7 @@ func (s *Session) Validate() error {
 	}
 	// A branch may be spawned by another branch, so every stream's calls are
 	// collected before any parent link is resolved.
-	spawnable := map[string]struct{}{"": {}}
-	for id := range calls {
-		spawnable[id] = struct{}{}
-	}
+	streams := map[string]map[string]struct{}{"": calls}
 	seen := make(map[string]struct{}, len(s.Branches))
 	for i, branch := range s.Branches {
 		if branch.ID == "" {
@@ -237,9 +238,7 @@ func (s *Session) Validate() error {
 		for _, id := range branchDangling {
 			s.Warnings = appendUnique(s.Warnings, fmt.Sprintf("branch %s ended with tool call %s unanswered; the target will mark it interrupted", branch.ID, id))
 		}
-		for id := range branchCalls {
-			spawnable[id] = struct{}{}
-		}
+		streams[branch.ID] = branchCalls
 	}
 	for _, branch := range s.Branches {
 		if branch.ParentID != "" {
@@ -247,8 +246,8 @@ func (s *Session) Validate() error {
 				return fmt.Errorf("branch %q names unknown parent branch %q", branch.ID, branch.ParentID)
 			}
 		}
-		if _, exists := spawnable[branch.CallID]; !exists {
-			s.Warnings = appendUnique(s.Warnings, fmt.Sprintf("branch %s names tool call %s, which no transferred thread contains; it moved unattached", branch.ID, branch.CallID))
+		if _, exists := streams[branch.ParentID][branch.CallID]; branch.CallID != "" && !exists {
+			s.Warnings = appendUnique(s.Warnings, fmt.Sprintf("branch %s names tool call %s, which its parent thread does not contain; it moved unattached", branch.ID, branch.CallID))
 		}
 	}
 	return nil
@@ -362,27 +361,6 @@ func validateEvents(events []Event, label string) (map[string]struct{}, []string
 	return calls, dangling, nil
 }
 
-// branchesNotTransferred names the delegated runs a destination has no native
-// place to keep. The conversation itself is complete either way — the main
-// thread still carries the delegating call and the result the model saw — so
-// what is reported here is the loss of each run's own transcript.
-func branchesNotTransferred(target string, branches []Branch) string {
-	const listed = 5
-	names := make([]string, 0, listed+1)
-	for i, branch := range branches {
-		if i == listed {
-			names = append(names, fmt.Sprintf("and %d more", len(branches)-listed))
-			break
-		}
-		label := branch.ID
-		if branch.Description != "" {
-			label += " (" + branch.Description + ")"
-		}
-		names = append(names, label)
-	}
-	return fmt.Sprintf("%s has no representation for a delegated agent run, so %d %s did not move: %s. The main thread kept every delegating tool call and the result it recorded", target, len(branches), plural(len(branches), "transcript", "transcripts"), strings.Join(names, "; "))
-}
-
 // sortBranches orders branches the way the thread spawned them, so a
 // destination lists a delegated run next to the call it came from. Branches
 // with no recorded call sort last. The sort is stable, so branches sharing one
@@ -441,12 +419,23 @@ func naturalLess(a, b string) bool {
 // linkBranchParents fills in the branch that spawned each branch, for sources
 // that record the spawning call but not the agent tree. A call id belongs to
 // exactly one stream, so the branch whose events contain it is the parent.
-func linkBranchParents(branches []Branch) {
+func linkBranchParents(branches []Branch, main []Event) {
 	owner := make(map[string]string)
+	ambiguous := make(map[string]bool)
+	for _, event := range main {
+		for _, part := range event.Parts {
+			if part.Kind == ToolCall {
+				owner[part.CallID] = ""
+			}
+		}
+	}
 	for _, branch := range branches {
 		for _, event := range branch.Events {
 			for _, part := range event.Parts {
 				if part.Kind == ToolCall {
+					if previous, ok := owner[part.CallID]; ok && previous != branch.ID {
+						ambiguous[part.CallID] = true
+					}
 					owner[part.CallID] = branch.ID
 				}
 			}
@@ -456,7 +445,7 @@ func linkBranchParents(branches []Branch) {
 		if branches[i].ParentID != "" {
 			continue
 		}
-		if parent := owner[branches[i].CallID]; parent != "" && parent != branches[i].ID {
+		if parent := owner[branches[i].CallID]; !ambiguous[branches[i].CallID] && parent != "" && parent != branches[i].ID {
 			branches[i].ParentID = parent
 		}
 	}

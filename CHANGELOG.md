@@ -4,6 +4,48 @@ Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html); until 1.0 the minor
 version moves for anything that changes behaviour.
 
+## v0.8.0 — 2026-10-01
+
+### Added
+
+- **Claude Code ↔ Codex handoffs preserve subagent histories.** Codex reads
+  native child rollouts recursively and writes separate target rollouts with
+  parent metadata and collaboration events. Claude writes native subagent
+  transcripts and sidecars. Nested relationships, delegation references, and
+  each run's independent tool-call namespace survive transfers in both
+  directions. Child IDs are regenerated without rewriting ordinary messages
+  or shell commands, and child rollouts stay out of the root resume picker.
+  Child histories in isolated worktrees are discovered by parentage. Their
+  working directories are preserved where supported, with a warning for Kimi.
+- **Subagent trees transfer across all four harnesses.** OpenCode child
+  sessions are discovered through task metadata, exported and imported through
+  its native CLI, and linked through `parentID`. Both current Kimi agent trees
+  and Python Kimi subagent directories are supported. Missing histories are
+  reported; unfinished calls get interrupted results and Kimi tasks receive
+  terminal statuses. Live processes are not transferred.
+- **Convert reusable agent definitions with `agentswap agents A B`.** Converts
+  Claude/OpenCode Markdown, Codex TOML roles, Kimi YAML and prompt files, and
+  OpenCode JSON agent maps. Known tool policies are mapped; incompatible
+  settings are reported and retained in an inert round-trip manifest. Includes
+  model overrides, explicit source/destination paths, Kimi inheritance,
+  collision refusal, dry runs, and strict compatibility mode. The configuration
+  parser remains dependency-free and explicitly rejects unsupported syntax.
+
+### Fixed
+
+- Parent cycles are rejected before writing. Spawning-call validation respects
+  each parent's tool-call namespace, including repeated IDs across branches.
+- Failed child writes/imports roll back the newly created session tree instead
+  of leaving a partial transfer. Codex publishes the root after its children.
+
+### Validation
+
+- All twelve directed branch transfers and all twelve definition conversions
+  have automated coverage, including both Kimi layouts and Claude ↔ Codex CLI
+  round trips. Native offline checks against Codex 0.159.3 and OpenCode 1.18.30
+  confirmed child import/export and Codex parent/child `thread/read` and
+  `thread/resume` without starting a model turn.
+
 ## v0.7.1 — 2026-10-01
 
 ### Fixed

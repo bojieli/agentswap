@@ -53,11 +53,15 @@ It also includes:
 - image-media round trips, warn-and-skip cases for unsupported media and
   malformed or unknown conversation-bearing blocks, and fail-closed validation
   of duplicate/orphaned results and empty canonical records;
-- delegated agent runs: Claude and Kimi branch round trips including a nested
-  run, the split of sidechain records an older Claude inlined into the main
-  log, per-branch validation as an independent tool-call namespace, OpenCode
-  delegation retained as text, and the warnings Codex and the Python-era Kimi
-  layout raise for runs they cannot keep;
+- delegated agent runs: all twelve directed transfers, nested parent links,
+  both Kimi layouts, Codex native spawn-event discovery, Claude sidechain
+  extraction, ID remapping restricted to delegation records, cycle rejection,
+  independent tool-call namespaces, OpenCode child import rollback, and
+  artifact-free dry runs;
+- reusable agents: all twelve definition conversions, source-policy round trips,
+  Kimi inheritance and cycle rejection, legacy Codex roles, OpenCode JSON agent
+  maps, explicit syntax failures, collision refusal, strict mode, and CLI E2E
+  coverage;
 - post-publication rollback for legacy Kimi metadata corruption and no-artifact
   guarantees when a target data root is unusable;
 - full round trips for Claude JSONL, Codex rollouts, current Kimi wire logs, and

@@ -143,6 +143,21 @@ native export to `opencode import`, verifies its confirmation, and asks
 OpenCode to delete that new id if the import fails. This keeps a database driver
 and schema copy out of the credential-holding process.
 
+Delegated runs are independent canonical streams with a parent branch ID and
+spawning call ID. Validation checks each stream's call namespace and rejects
+parent cycles. Every adapter writes native child histories, remaps delegation
+references to fresh target IDs, and keeps child messages out of parent context.
+Codex stages the whole tree and publishes the root last; OpenCode imports each
+session with native parent/task links and deletes the new tree after any failed
+import. Its separate manifest retains linkage not exposed by session metadata.
+
+Reusable agent definitions use a separate, explicit `agents` command. Prompts
+and supported policy settings map to native definitions; a provenance manifest
+retains unrepresentable settings for later round trips. The local YAML/TOML
+subset parser refuses unsupported syntax, and strict mode refuses approximate
+translations before any files are written. No parser dependency or remote
+configuration service is added to the process that holds credentials.
+
 The supervisor never invokes teleport, and neither transfer command chooses a
 source or target harness. Both are positional user decisions. `handoff` is a
 thin launch step over the same selection, validation, and write pipeline used
