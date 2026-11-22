@@ -61,16 +61,9 @@ go install github.com/bojieli/agentswap/cmd/agentswap@latest
 
 ### Verified binary installer
 
-The installer downloads the archive and verifies its SHA-256 checksum before
-placing the binary in a user-writable directory:
-
 ```sh
 curl -fsSL https://raw.githubusercontent.com/bojieli/agentswap/main/install.sh | sh
 ```
-
-For a private repository, GitHub does not serve release assets anonymously.
-Use authenticated downloads or wait until the repository and its releases
-are public.
 
 ## Five-minute setup
 
@@ -183,6 +176,7 @@ prompt:
 
 ```sh
 agentswap handoff claude codex
+agentswap handoff codex claude
 ```
 
 `handoff` validates the newest session in the current directory, creates a
@@ -219,6 +213,18 @@ everything it removes is written to a plain-text archive under
 file. It goes in the project because that is where a coding agent is allowed to
 read, and it carries a `.gitignore` so it never becomes a commit.
 
+To continue a Codex conversation through another provider, copy it to a new
+session with an explicit destination:
+
+```sh
+agentswap teleport codex codex --session <id> --to-provider openai
+agentswap handoff codex codex --session <id> --to-provider agentswap
+```
+
+Add `--to-model <model>` if needed. The source stays unchanged; the provider
+must already be configured. See the [provider transfer guide](docs/sessions.md#continue-a-codex-session-with-another-provider)
+for setup and history limitations.
+
 See the user guide in [docs/sessions.md](docs/sessions.md) and the exact flag
 reference in [docs/commands.md](docs/commands.md).
 
@@ -229,23 +235,62 @@ a summary prompt. It carries messages, reasoning that the source records,
 tool calls and results, call ids, plans, timestamps, model metadata, and
 supported inline media.
 
+Subagent histories transfer in both directions between Claude Code and Codex,
+and across Kimi Code and OpenCode. Each run stays separate from the parent
+conversation, with its recorded tool calls, results, and nested parent links.
+Codex receives native child rollouts; Claude receives native subagent
+transcripts. Destination IDs are regenerated and delegation references are
+updated. Missing child histories are reported, and unfinished tool calls get
+interrupted results so the parent can continue after a rate-limit handoff.
+
 It deliberately does not move credentials, provider KV caches, hidden or
 encrypted runtime state, approvals, live shell processes, background tasks,
 or in-memory plugin state. The target is a new native process with its own
 permissions and provider configuration.
 
 The source is read-only. Validation happens before the target is written, and
-unsupported conversation-bearing records fail closed. OpenCode sessions are
-read and written through OpenCode's own `export` and `import` commands.
+unsupported conversation-bearing records are skipped with a warning. OpenCode
+sessions are read and written through OpenCode's own `export` and `import`
+commands.
 
 Supported source and target harnesses are:
 
 | Harness | Native session support |
 | --- | --- |
-| Claude Code | JSONL read/write and native resume |
-| Codex | rollout read/write and `codex resume` |
-| OpenCode | native `export`/`import` boundary |
-| Kimi Code | current and legacy session formats |
+| Claude Code | JSONL and subagent transcripts; native resume |
+| Codex | parent and child rollouts; `codex resume` |
+| OpenCode | parent and child sessions through native `export`/`import` |
+| Kimi Code | current agent trees and Python subagent directories |
+
+## Convert reusable agents
+
+To move custom agent prompts and configuration as well, use the separate
+`agents` command. It converts definitions among all four harnesses without
+overwriting installed agents:
+
+```sh
+agentswap agents claude codex --dry-run
+agentswap agents claude codex --model gpt-5.4
+agentswap agents codex claude --target-dir ./converted-claude-agents
+agentswap agents claude kimi --target-dir ./converted-kimi-agents
+```
+
+By default it reads personal and project agent directories, with project
+definitions taking precedence, and writes to the target's project agent
+directory. Use `--source-dir` to select a directory or `--agent-file` for a Kimi
+root YAML, legacy Codex role config, or OpenCode JSON config. Kimi conversions
+include a root `agent.yaml` and print the `kimi --agent-file ...` command.
+
+Prompts and descriptions transfer directly. Known tool restrictions are mapped;
+models, permissions, hooks, and other settings that cannot be represented are
+reported and retained in an inert manifest for later round trips. Codex uses a
+read-only sandbox when a source tool policy has no native equivalent. Use
+`--strict` to refuse conversions with compatibility warnings. Unsupported
+configuration syntax fails explicitly. Session handoffs preserve run histories
+without changing installed agent definitions.
+
+See [the subagent transfer guide](docs/sessions.md#delegated-agent-runs) and
+[the definition command reference](docs/commands.md#agents).
 
 ## Reliability boundaries
 

@@ -178,6 +178,44 @@ func TestClaudeRoundTrip(t *testing.T) {
 	assertRoundTrip(t, adapter, candidates[0])
 }
 
+func TestClaudeReaderIgnoresUnknownRecordTypes(t *testing.T) {
+	cwd := t.TempDir()
+	id := "11111111-1111-4111-8111-111111111111"
+	path := filepath.Join(t.TempDir(), id+".jsonl")
+	records := []map[string]any{
+		{"type": "user", "uuid": "u", "cwd": cwd, "message": map[string]any{"role": "user", "content": "before bookkeeping"}},
+		{"type": "cost-state", "sessionId": id, "totalCostUSD": 0.42, "totalLinesAdded": 12, "totalLinesRemoved": 3},
+		{"type": "future-bookkeeping", "opaque": true},
+		{"type": "assistant", "uuid": "a", "parentUuid": "u", "message": map[string]any{"role": "assistant", "content": "after bookkeeping"}},
+	}
+	var body strings.Builder
+	for _, record := range records {
+		line, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body.Write(line)
+		body.WriteByte('\n')
+	}
+	if err := os.WriteFile(path, []byte(body.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	history, err := (claudeAdapter{}).Read(context.Background(), Candidate{Agent: Claude, ID: id, CWD: cwd, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Events) != 2 {
+		t.Fatalf("history events = %#v, want the two conversation records", history.Events)
+	}
+	encoded, err := json.Marshal(history.Events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytesContainAll(encoded, []string{"before bookkeeping", "after bookkeeping"}) {
+		t.Fatalf("conversation around ignored records was not preserved: %s", encoded)
+	}
+}
+
 func TestClaudeDiscoveryMatchesDifferentSymlinkAliases(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation is not generally available to unprivileged Windows tests")
@@ -250,6 +288,81 @@ func TestClaudeReaderPreservesQueuedPromptsAndPlanAttachments(t *testing.T) {
 	encoded, _ := json.Marshal(history.Events)
 	if !bytesContainAll(encoded, []string{"queued request", "revision one"}) || strings.Count(string(encoded), "queued request") != 1 {
 		t.Fatalf("queued prompt or plan was not preserved exactly once: %s", encoded)
+	}
+}
+
+func TestClaudeReaderSkipsUnsupportedAttachments(t *testing.T) {
+	root := isolatedHomes(t)
+	cwd := t.TempDir()
+	id := "11111111-1111-4111-8111-111111111111"
+	dir := filepath.Join(root, "claude", "projects", encodeClaudeProject(cwd))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, id+".jsonl")
+	records := []map[string]any{
+		{"type": "user", "uuid": "u", "cwd": cwd, "message": map[string]any{"role": "user", "content": "start"}},
+		{"type": "attachment", "uuid": "r", "timestamp": "2026-08-19T10:00:01Z", "attachment": map[string]any{"type": "remote_session_change", "url": "https://example.invalid"}},
+		{"type": "user", "uuid": "u2", "cwd": cwd, "message": map[string]any{"role": "user", "content": "after"}},
+	}
+	var lines []byte
+	for _, record := range records {
+		line, _ := json.Marshal(record)
+		lines = append(lines, append(line, '\n')...)
+	}
+	if err := os.WriteFile(path, lines, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	history, err := (claudeAdapter{}).Read(context.Background(), Candidate{Agent: Claude, ID: id, CWD: cwd, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Events) != 2 {
+		t.Fatalf("events = %#v", history.Events)
+	}
+	if !bytesContainAll([]byte(strings.Join(history.Warnings, "\n")), []string{"remote_session_change"}) {
+		t.Fatalf("warnings = %#v", history.Warnings)
+	}
+}
+
+func TestClaudeReaderSkipsUnsupportedConversationBlocks(t *testing.T) {
+	root := isolatedHomes(t)
+	cwd := t.TempDir()
+	id := "11111111-1111-4111-8111-111111111111"
+	dir := filepath.Join(root, "claude", "projects", encodeClaudeProject(cwd))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, id+".jsonl")
+	records := []map[string]any{
+		{"type": "user", "uuid": "u", "cwd": cwd, "message": map[string]any{"role": "user", "content": "start"}},
+		{"type": "assistant", "uuid": "a", "cwd": cwd, "message": map[string]any{"role": "assistant", "content": []any{
+			map[string]any{"type": "text", "text": "visible answer"},
+			map[string]any{"type": "future_block", "payload": 1},
+		}}},
+		{"type": "user", "uuid": "u2", "cwd": cwd, "message": map[string]any{"role": "user", "content": "after"}},
+	}
+	var lines []byte
+	for _, record := range records {
+		line, _ := json.Marshal(record)
+		lines = append(lines, append(line, '\n')...)
+	}
+	if err := os.WriteFile(path, lines, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	history, err := (claudeAdapter{}).Read(context.Background(), Candidate{Agent: Claude, ID: id, CWD: cwd, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Events) != 3 {
+		t.Fatalf("events = %#v", history.Events)
+	}
+	encoded, _ := json.Marshal(history.Events)
+	if !bytesContainAll(encoded, []string{"start", "visible answer", "after"}) {
+		t.Fatalf("conversation around the unknown block was not preserved: %s", encoded)
+	}
+	if !bytesContainAll([]byte(strings.Join(history.Warnings, "\n")), []string{"future_block"}) {
+		t.Fatalf("warnings = %#v", history.Warnings)
 	}
 }
 
@@ -390,6 +503,40 @@ func TestCodexWriterUsesConfiguredProvider(t *testing.T) {
 	}
 }
 
+func TestCodexReaderSkipsUnknownRecordTypes(t *testing.T) {
+	cwd := t.TempDir()
+	id := "11111111-1111-4111-8111-111111111111"
+	path := filepath.Join(t.TempDir(), "rollout-"+id+".jsonl")
+	records := []map[string]any{
+		{"timestamp": "2026-08-19T10:00:00Z", "type": "session_meta", "payload": map[string]any{"id": id, "cwd": cwd}},
+		{"timestamp": "2026-08-19T10:00:01Z", "type": "response_item", "payload": map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "before"}}}},
+		{"timestamp": "2026-08-19T10:00:02Z", "type": "future_record", "payload": map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "unknown envelope"}}}},
+		{"timestamp": "2026-08-19T10:00:03Z", "type": "response_item", "payload": map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "after"}}}},
+	}
+	var lines []byte
+	for _, record := range records {
+		line, _ := json.Marshal(record)
+		lines = append(lines, append(line, '\n')...)
+	}
+	if err := os.WriteFile(path, lines, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	history, err := (codexAdapter{}).Read(context.Background(), Candidate{Agent: Codex, ID: id, CWD: cwd, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Events) != 2 {
+		t.Fatalf("events = %#v", history.Events)
+	}
+	encoded, _ := json.Marshal(history.Events)
+	if !bytesContainAll(encoded, []string{"before", "after"}) || strings.Contains(string(encoded), "unknown envelope") {
+		t.Fatalf("conversation around the unknown record was not preserved: %s", encoded)
+	}
+	if !bytesContainAll([]byte(strings.Join(history.Warnings, "\n")), []string{"future_record"}) {
+		t.Fatalf("warnings = %#v", history.Warnings)
+	}
+}
+
 func TestKimiCodeRoundTrip(t *testing.T) {
 	isolatedHomes(t)
 	cwd := t.TempDir()
@@ -454,6 +601,96 @@ func TestKimiCodeBranchRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertBranchesMatch(t, got.Branches, history.Branches)
+}
+
+func TestKimiCodeReaderIgnoresBookkeepingRecords(t *testing.T) {
+	isolatedHomes(t)
+	cwd := t.TempDir()
+	adapter := kimiAdapter{}
+	result, err := adapter.Write(context.Background(), sampleHistory(t, cwd), WriteOptions{CWD: cwd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wirePath := filepath.Join(result.Path, "agents", "main", "wire.jsonl")
+	f, err := os.OpenFile(wirePath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range []map[string]any{
+		{"type": "staleGuard.recorded", "path": filepath.Join(cwd, "parser.go"), "mtimeMs": 1787905539272.4387, "time": 1787922536166},
+		{"type": "token_counting.turn_recorded", "agentId": "main", "turnId": 0, "length": 24, "tokens": 42709, "time": 1787922786155},
+	} {
+		if err := writeJSONLine(f, record); err != nil {
+			_ = f.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	candidate := candidateForResult(Kimi, result, cwd)
+	assertRoundTrip(t, adapter, candidate)
+
+	f, err = os.OpenFile(wirePath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = writeJSONLine(f, map[string]any{"type": "_future.record", "time": 1787922786155})
+	_ = f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, err := adapter.Read(context.Background(), candidate)
+	if err != nil {
+		t.Fatalf("unknown wire record aborted the read: %v", err)
+	}
+	if !bytesContainAll([]byte(strings.Join(history.Warnings, "\n")), []string{"_future.record"}) {
+		t.Fatalf("unknown wire record was not reported: %#v", history.Warnings)
+	}
+}
+
+func TestKimiCodeReaderSkipsUnknownWireRecords(t *testing.T) {
+	isolatedHomes(t)
+	cwd := t.TempDir()
+	id := "session_11111111-1111-4111-8111-111111111111"
+	dir := filepath.Join(t.TempDir(), id)
+	agentHome := filepath.Join(dir, "agents", "main")
+	if err := os.MkdirAll(agentHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	state := map[string]any{"id": id, "workDir": cwd}
+	stateBytes, _ := json.Marshal(state)
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), stateBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	records := []map[string]any{
+		{"type": "metadata", "protocol_version": "1.5", "time": 1787922536166},
+		{"type": "context.append_message", "time": 1787922536167, "message": map[string]any{"role": "user", "id": "m1", "content": []any{map[string]any{"type": "text", "text": "before"}}}},
+		{"type": "future.wire_record", "time": 1787922536168, "message": map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": "unknown envelope"}}}},
+		{"type": "context.append_message", "time": 1787922536169, "message": map[string]any{"role": "user", "id": "m2", "content": []any{map[string]any{"type": "text", "text": "after"}}}},
+	}
+	var lines []byte
+	for _, record := range records {
+		line, _ := json.Marshal(record)
+		lines = append(lines, append(line, '\n')...)
+	}
+	if err := os.WriteFile(filepath.Join(agentHome, "wire.jsonl"), lines, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	history, err := (kimiAdapter{}).Read(context.Background(), Candidate{Agent: Kimi, ID: id, CWD: cwd, Path: dir, Format: "kimi-code-wire"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Events) != 2 {
+		t.Fatalf("events = %#v", history.Events)
+	}
+	encoded, _ := json.Marshal(history.Events)
+	if !bytesContainAll(encoded, []string{"before", "after"}) || strings.Contains(string(encoded), "unknown envelope") {
+		t.Fatalf("conversation around the unknown record was not preserved: %s", encoded)
+	}
+	if !bytesContainAll([]byte(strings.Join(history.Warnings, "\n")), []string{"future.wire_record"}) {
+		t.Fatalf("warnings = %#v", history.Warnings)
+	}
 }
 
 func TestKimiLegacyRoundTrip(t *testing.T) {
@@ -537,9 +774,12 @@ func TestKimiLegacyReaderIgnoresNativeRuntimeMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = adapter.Read(context.Background(), candidate)
-	if err == nil || !strings.Contains(err.Error(), "unsupported legacy Kimi role") {
-		t.Fatalf("unknown legacy role error = %v", err)
+	got, err = adapter.Read(context.Background(), candidate)
+	if err != nil {
+		t.Fatalf("unknown legacy role aborted the read: %v", err)
+	}
+	if !bytesContainAll([]byte(strings.Join(got.Warnings, "\n")), []string{"_future_metadata"}) {
+		t.Fatalf("unknown legacy role was not reported: %#v", got.Warnings)
 	}
 }
 
@@ -843,6 +1083,26 @@ func TestReadersRejectCorruptJSONL(t *testing.T) {
 	}
 }
 
+func TestReadJSONLIgnoresUnterminatedFinalRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "in-progress.jsonl")
+	if err := os.WriteFile(path, []byte("{\"ok\":true}\n{\"partial\":"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var records int
+	if err := readJSONL(path, func(_ int, raw json.RawMessage) error {
+		records++
+		if !json.Valid(raw) {
+			t.Fatalf("callback received invalid JSON: %q", raw)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("readJSONL returned error for an in-progress final record: %v", err)
+	}
+	if records != 1 {
+		t.Fatalf("read %d complete records, want 1", records)
+	}
+}
+
 func TestReadJSONLRejectsOversizedRecord(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "oversized.jsonl")
 	f, err := os.Create(path)
@@ -936,15 +1196,29 @@ func TestMediaRoundTripAcrossFileTargets(t *testing.T) {
 	}
 }
 
-func TestOpenCodeReaderFailsClosedOnUnknownParts(t *testing.T) {
+func TestOpenCodeReaderSkipsUnknownParts(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake OpenCode executable is a POSIX shell script")
 	}
 	for _, kind := range []string{"file", "future-conversation-part"} {
 		t.Run(kind, func(t *testing.T) {
-			_, err := readFakeOpenCodePart(t, map[string]any{"id": "part", "type": kind})
-			if err == nil || !strings.Contains(err.Error(), kind) {
-				t.Fatalf("OpenCode %s read error = %v", kind, err)
+			history, err := readFakeOpenCodePart(t,
+				map[string]any{"id": "before", "type": "text", "text": "before the unknown part"},
+				map[string]any{"id": "part", "type": kind},
+				map[string]any{"id": "after", "type": "text", "text": "after the unknown part"},
+			)
+			if err != nil {
+				t.Fatalf("OpenCode %s part aborted the read: %v", kind, err)
+			}
+			encoded, err := json.Marshal(history.Events)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytesContainAll(encoded, []string{"before the unknown part", "after the unknown part"}) {
+				t.Fatalf("conversation around the OpenCode %s part was not preserved: %s", kind, encoded)
+			}
+			if !bytesContainAll([]byte(strings.Join(history.Warnings, "\n")), []string{kind}) {
+				t.Fatalf("OpenCode %s part was not reported: %#v", kind, history.Warnings)
 			}
 		})
 	}
@@ -987,16 +1261,20 @@ func TestOpenCodeReaderRetainsDelegationAsText(t *testing.T) {
 	}
 }
 
-func readFakeOpenCodePart(t *testing.T, part map[string]any) (*Session, error) {
+func readFakeOpenCodePart(t *testing.T, parts ...map[string]any) (*Session, error) {
 	t.Helper()
 	root := isolatedHomes(t)
 	cwd := t.TempDir()
 	exportPath := filepath.Join(root, "export.json")
+	exportParts := make([]any, 0, len(parts))
+	for _, part := range parts {
+		exportParts = append(exportParts, part)
+	}
 	exported := map[string]any{
 		"info": map[string]any{"id": "ses_source", "directory": cwd},
 		"messages": []any{map[string]any{
 			"info":  map[string]any{"id": "msg", "role": "user"},
-			"parts": []any{part},
+			"parts": exportParts,
 		}},
 	}
 	b, _ := json.Marshal(exported)
@@ -1484,36 +1762,6 @@ func TestClaudeCodeBranchRoundTrip(t *testing.T) {
 	}
 }
 
-// A destination with no branch representation must say so rather than drop the
-// runs quietly.
-func TestWritersReportBranchesTheyCannotKeep(t *testing.T) {
-	for _, agent := range []Agent{Codex, Kimi} {
-		t.Run(string(agent), func(t *testing.T) {
-			root := isolatedHomes(t)
-			if agent == Kimi {
-				t.Setenv("KIMI_SHARE_DIR", filepath.Join(root, "legacy-only"))
-				t.Setenv("AGENTSWAP_KIMI_FORMAT", "legacy")
-			}
-			cwd := t.TempDir()
-			history := sampleHistory(t, cwd)
-			history.Branches = sampleBranches()
-			result, err := NewManager().adapters[agent].Write(context.Background(), history, WriteOptions{CWD: cwd, DryRun: true})
-			if err != nil {
-				t.Fatal(err)
-			}
-			var reported bool
-			for _, warning := range result.Warnings {
-				if strings.Contains(warning, "delegated agent run") && strings.Contains(warning, "agent-0") {
-					reported = true
-				}
-			}
-			if !reported {
-				t.Fatalf("%s warnings = %#v", agent, result.Warnings)
-			}
-		})
-	}
-}
-
 func TestValidateChecksBranchesAsIndependentStreams(t *testing.T) {
 	cwd := t.TempDir()
 	base := func() *Session {
@@ -1662,5 +1910,99 @@ func TestKimiCodeLeavesAmbiguousBranchesUnattached(t *testing.T) {
 	attachKimiBranches(branches, streams, nil)
 	if branches[0].CallID != "" {
 		t.Fatalf("ambiguous branch was attached to %q", branches[0].CallID)
+	}
+}
+
+func TestCodexProviderTeleport(t *testing.T) {
+	isolatedHomes(t)
+	cwd := t.TempDir()
+	ctx := context.Background()
+	adapter := codexAdapter{}
+	source, err := adapter.Write(ctx, sampleHistory(t, cwd), WriteOptions{CWD: cwd, CodexProvider: "krill"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Saved runtime state must not bring the original provider into the copy.
+	f, err := os.OpenFile(source.Path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.WriteString("{\"type\":\"turn_context\",\"payload\":{\"model\":\"old-model\",\"model_provider\":\"krill\"}}\n{\"type\":\"response_item\",\"payload\":{\"type\":\"reasoning\",\"encrypted_content\":\"provider-secret\"}}\n")
+	f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(source.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager()
+	candidates, err := manager.Discover(ctx, DiscoverOptions{From: Codex, Target: Codex, CWD: cwd})
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("discover: %v, %v", candidates, err)
+	}
+	opts := TransferOptions{WriteOptions: WriteOptions{CWD: cwd, CodexProvider: "openai", CodexModel: "new-model", DryRun: true}}
+	dry, _, err := manager.Teleport(ctx, candidates[0], Codex, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dry.Path); !os.IsNotExist(err) {
+		t.Fatalf("dry-run destination exists: %v", err)
+	}
+	opts.DryRun = false
+	result, _, err := manager.Teleport(ctx, candidates[0], Codex, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ID == source.ID {
+		t.Fatal("reused original session ID")
+	}
+	after, _ := os.ReadFile(source.Path)
+	if string(before) != string(after) {
+		t.Fatal("source was modified")
+	}
+	body, err := os.ReadFile(result.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record struct {
+		Payload map[string]any `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(strings.SplitN(string(body), "\n", 2)[0]), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.Payload["model_provider"] != "openai" || record.Payload["model"] != "new-model" {
+		t.Fatalf("destination metadata: %v", record.Payload)
+	}
+	for _, forbidden := range []string{"provider-secret", "turn_context", "krill", "old-model"} {
+		if strings.Contains(string(body), forbidden) {
+			t.Fatalf("copied provider-bound state %q", forbidden)
+		}
+	}
+	if !strings.Contains(strings.Join(result.Warnings, "\n"), "encrypted reasoning") {
+		t.Fatal("missing encrypted reasoning warning")
+	}
+	want := []string{"codex", "resume", result.ID, "-c", `model_provider="openai"`, "-c", `model="new-model"`}
+	if !reflect.DeepEqual(result.Resume, want) {
+		t.Fatalf("resume: %v", result.Resume)
+	}
+	assertRoundTrip(t, adapter, Candidate{Agent: Codex, ID: result.ID, CWD: cwd, Path: result.Path})
+}
+
+func TestValidateProviderDestination(t *testing.T) {
+	for _, tc := range []struct {
+		source, target Agent
+		opts           WriteOptions
+	}{
+		{Codex, Codex, WriteOptions{}},
+		{Claude, Claude, WriteOptions{}},
+		{Codex, Claude, WriteOptions{CodexProvider: "openai"}},
+		{Codex, Kimi, WriteOptions{CodexModel: "model"}},
+		{Codex, Codex, WriteOptions{CodexProvider: " "}},
+		{Codex, Codex, WriteOptions{CodexProvider: "openai", CodexModel: " "}},
+	} {
+		if err := ValidateDestination(tc.source, tc.target, tc.opts); err == nil {
+			t.Fatalf("accepted invalid destination: %+v", tc)
+		}
 	}
 }

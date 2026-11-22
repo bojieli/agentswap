@@ -242,3 +242,29 @@ func TestArchiveReachHintFiresOnlyOutsideTheProject(t *testing.T) {
 		t.Fatalf("no archive produced a hint: %q", hint)
 	}
 }
+
+func TestParseHandoffProviderDestination(t *testing.T) {
+	got, err := parseHandoffArgs([]string{"--to-provider=openai", "--to-model", "new-model", "--profile", "mine"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.toProvider != "openai" || got.toModel != "new-model" || !reflect.DeepEqual(got.target, []string{"--profile", "mine"}) {
+		t.Fatalf("parsed: %+v", got)
+	}
+	for _, args := range [][]string{{"--to-provider"}, {"--to-model="}} {
+		if _, err := parseHandoffArgs(args); err == nil {
+			t.Fatalf("accepted %v", args)
+		}
+	}
+}
+
+func TestDestinationRejectsConflictingNativeSelectors(t *testing.T) {
+	for _, arg := range []string{"--oss", "--local-provider=ollama", "--model=new", "-mnew"} {
+		if err := validateDestinationArgs("openai", "new", []string{arg}); err == nil {
+			t.Fatalf("accepted conflicting %s", arg)
+		}
+	}
+	if err := validateDestinationArgs("openai", "new", []string{"--profile", "mine", "-c", `model_provider="krill"`}); err != nil {
+		t.Fatal(err)
+	}
+}

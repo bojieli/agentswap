@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -79,11 +80,14 @@ func (codexAdapter) Discover(_ context.Context, cwd string) ([]Candidate, error)
 			}
 			return walkErr
 		}
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), ".agentswap-") {
+			return filepath.SkipDir
+		}
 		if entry.IsDir() || filepath.Ext(path) != ".jsonl" {
 			return nil
 		}
 		meta, err := readCodexMeta(path)
-		if err != nil || !samePath(meta.CWD, canonical) {
+		if err != nil || meta.ParentID != "" || !samePath(meta.CWD, canonical) {
 			return nil
 		}
 		info, err := entry.Info()
@@ -110,6 +114,10 @@ type codexMeta struct {
 	ID        string
 	CWD       string
 	Timestamp time.Time
+	ParentID  string
+	Role      string
+	Nickname  string
+	Branch    *Branch
 }
 
 func readCodexMeta(path string) (codexMeta, error) {
@@ -136,13 +144,38 @@ func readCodexMeta(path string) (codexMeta, error) {
 	}
 	result.CWD, _ = record.Payload["cwd"].(string)
 	result.Timestamp = parseFlexibleTime(record.Payload["timestamp"])
+	result.ParentID = stringValue(record.Payload["parent_thread_id"])
+	result.Role = stringValue(record.Payload["agent_role"])
+	result.Nickname = stringValue(record.Payload["agent_nickname"])
+	if source, ok := record.Payload["source"].(map[string]any); ok {
+		if sub, ok := source["subagent"].(map[string]any); ok {
+			if spawn, ok := sub["thread_spawn"].(map[string]any); ok {
+				if parent := stringValue(spawn["parent_thread_id"]); parent != "" {
+					result.ParentID = parent
+				}
+				if role := stringValue(spawn["agent_role"]); role != "" {
+					result.Role = role
+				}
+				if result.Role == "" {
+					result.Role = stringValue(spawn["agent_type"])
+				}
+				result.Nickname = stringValue(spawn["agent_nickname"])
+			}
+		}
+	}
+	if branch, ok := record.Payload["agentswap_branch"]; ok {
+		b, _ := json.Marshal(branch)
+		if err := json.Unmarshal(b, &result.Branch); err != nil {
+			return result, err
+		}
+	}
 	if result.ID == "" || result.CWD == "" {
 		return result, fmt.Errorf("session_meta is missing id or cwd")
 	}
 	return result, nil
 }
 
-func (codexAdapter) Read(_ context.Context, candidate Candidate) (*Session, error) {
+func readCodexThread(candidate Candidate) (*Session, error) {
 	meta, err := readCodexMeta(candidate.Path)
 	if err != nil {
 		return nil, err
@@ -193,7 +226,7 @@ func (codexAdapter) Read(_ context.Context, candidate Candidate) (*Session, erro
 		case "world_state":
 			// Runtime environment state is recreated by the destination harness.
 		default:
-			return fmt.Errorf("unsupported Codex record type %q", record.Type)
+			history.Warnings = appendUnique(history.Warnings, fmt.Sprintf("unsupported Codex record type %q was skipped", record.Type))
 		}
 		return nil
 	})
@@ -215,19 +248,22 @@ func readCodexResponse(history *Session, payload map[string]any, ts time.Time) e
 			return nil
 		}
 		if role != "user" && role != "assistant" {
-			return fmt.Errorf("unsupported Codex message role %q", role)
+			history.Warnings = appendUnique(history.Warnings, fmt.Sprintf("unsupported Codex message role %q was skipped", role))
+			return nil
 		}
 		event := Event{Kind: Message, Role: role, Timestamp: ts}
 		event.ID, _ = payload["id"].(string)
 		content, ok := payload["content"].([]any)
 		if !ok {
-			return fmt.Errorf("Codex message content is not an array")
+			history.Warnings = appendUnique(history.Warnings, "a Codex message's content was not an array and was skipped")
+			return nil
 		}
 		var plans []string
 		for _, item := range content {
 			block, ok := item.(map[string]any)
 			if !ok {
-				return fmt.Errorf("Codex content contains a non-object block")
+				history.Warnings = appendUnique(history.Warnings, "a Codex message content contained a non-object block that was skipped")
+				continue
 			}
 			blockType, _ := block["type"].(string)
 			switch blockType {
@@ -247,11 +283,12 @@ func readCodexResponse(history *Session, payload map[string]any, ts time.Time) e
 					media, err = mediaPartFromValue(block["url"], stringValue(block["media_type"]), stringValue(block["filename"]))
 				}
 				if err != nil {
-					return fmt.Errorf("Codex image content: %w", err)
+					history.Warnings = appendUnique(history.Warnings, fmt.Sprintf("a Codex image block could not be decoded and was skipped: %v", err))
+					continue
 				}
 				event.Parts = append(event.Parts, media)
 			default:
-				return fmt.Errorf("unsupported Codex message block %q", blockType)
+				history.Warnings = appendUnique(history.Warnings, fmt.Sprintf("unsupported Codex message block %q was skipped", blockType))
 			}
 		}
 		if len(event.Parts) > 0 {
@@ -277,9 +314,9 @@ func readCodexResponse(history *Session, payload map[string]any, ts time.Time) e
 		history.Events = append(history.Events, Event{Kind: Message, Role: "assistant", Timestamp: ts, Parts: []Part{{Kind: ToolCall, ID: stringValue(payload["id"]), CallID: callID, ToolName: name, Data: data}}})
 	case "function_call_output", "custom_tool_call_output":
 		callID, _ := payload["call_id"].(string)
-		parts, err := codexOutputParts(payload["output"], callID)
-		if err != nil {
-			return err
+		parts, outputWarnings := codexOutputParts(payload["output"], callID)
+		for _, warning := range outputWarnings {
+			history.Warnings = appendUnique(history.Warnings, warning)
 		}
 		isError, _ := payload["agentswap_error"].(bool)
 		for i := range parts {
@@ -306,16 +343,20 @@ func readCodexResponse(history *Session, payload map[string]any, ts time.Time) e
 	case "compacted":
 		history.Warnings = appendUnique(history.Warnings, "source contains a Codex compaction marker; all original records still present in the rollout were retained")
 	case "web_search_call", "computer_call":
-		return fmt.Errorf("unsupported Codex conversation item %q", kind)
+		history.Warnings = appendUnique(history.Warnings, fmt.Sprintf("unsupported Codex conversation item %q was skipped", kind))
 	case "":
-		return fmt.Errorf("response_item has no payload type")
+		history.Warnings = appendUnique(history.Warnings, "a Codex response item had no payload type and was skipped")
 	default:
-		return fmt.Errorf("unsupported Codex response item %q", kind)
+		history.Warnings = appendUnique(history.Warnings, fmt.Sprintf("unsupported Codex response item %q was skipped", kind))
 	}
 	return nil
 }
 
-func codexOutputParts(value any, callID string) ([]Part, error) {
+// codexOutputParts converts one tool call output into canonical parts. A block
+// it cannot interpret — an unknown kind or media that cannot be decoded — is
+// skipped with a warning; if every block was skipped an empty result keeps the
+// call paired.
+func codexOutputParts(value any, callID string) (parts []Part, warnings []string) {
 	if value == nil {
 		return []Part{{Kind: ToolResult, CallID: callID}}, nil
 	}
@@ -326,15 +367,15 @@ func codexOutputParts(value any, callID string) ([]Part, error) {
 	if !ok {
 		text, err := stringifyOutput(value)
 		if err != nil {
-			return nil, err
+			return nil, []string{fmt.Sprintf("a Codex tool output could not be encoded and was skipped: %v", err)}
 		}
 		return []Part{{Kind: ToolResult, CallID: callID, Text: text}}, nil
 	}
-	var parts []Part
 	for _, item := range items {
 		obj, ok := item.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("Codex tool output contains a non-object block")
+			warnings = appendUnique(warnings, "a Codex tool output contained a non-object block that was skipped")
+			continue
 		}
 		kind := stringValue(obj["type"])
 		switch kind {
@@ -346,18 +387,19 @@ func codexOutputParts(value any, callID string) ([]Part, error) {
 				media, err = mediaPartFromValue(obj, stringValue(obj["media_type"]), stringValue(obj["filename"]))
 			}
 			if err != nil {
-				return nil, err
+				warnings = appendUnique(warnings, fmt.Sprintf("a Codex tool-output media block could not be decoded and was skipped: %v", err))
+				continue
 			}
 			media.CallID = callID
 			parts = append(parts, media)
 		default:
-			return nil, fmt.Errorf("unsupported Codex tool output block %q", kind)
+			warnings = appendUnique(warnings, fmt.Sprintf("unsupported Codex tool output block %q was skipped", kind))
 		}
 	}
 	if len(parts) == 0 {
 		parts = append(parts, Part{Kind: ToolResult, CallID: callID})
 	}
-	return parts, nil
+	return parts, warnings
 }
 
 func codexInputJSON(value any) (json.RawMessage, error) {
@@ -414,26 +456,31 @@ func codexPlanText(value any) string {
 	return strings.Join(lines, "\n")
 }
 
-func (codexAdapter) Write(_ context.Context, history *Session, opts WriteOptions) (result Result, err error) {
+func writeCodexThread(history *Session, opts WriteOptions, id string, dir string, extra map[string]any) (result Result, err error) {
 	now := time.Now().UTC()
-	id, err := newUUID7(now)
-	if err != nil {
-		return Result{}, err
-	}
+
 	canonical, err := canonicalPath(opts.CWD)
 	if err != nil {
 		return Result{}, err
 	}
-	dir := filepath.Join(codexRoot(), "sessions", now.Format("2006"), now.Format("01"), now.Format("02"))
+
 	name := "rollout-" + now.Format("2006-01-02T15-04-05") + "-" + id + ".jsonl"
 	final := filepath.Join(dir, name)
 	// The agentswap provider is configured in Codex's own config by
 	// `agentswap install`. Keep the resume command native: callers should not
 	// need an agentswap-specific profile flag just to open a teleported session.
 	result = Result{Agent: Codex, ID: id, Path: final, Resume: []string{"codex", "resume", id}, Files: []string{final}}
-	if len(history.Branches) > 0 {
-		result.Warnings = append(result.Warnings, branchesNotTransferred("A Codex rollout", history.Branches))
+	provider := codexConfiguredModelProvider()
+	if opts.CodexProvider != "" {
+		provider = opts.CodexProvider
+		result.Resume = append(result.Resume, "-c", "model_provider="+strconv.Quote(provider))
 	}
+	model := history.Model
+	if opts.CodexModel != "" {
+		model = opts.CodexModel
+		result.Resume = append(result.Resume, "-c", "model="+strconv.Quote(model))
+	}
+
 	if opts.DryRun {
 		return result, nil
 	}
@@ -462,13 +509,17 @@ func (codexAdapter) Write(_ context.Context, history *Session, opts WriteOptions
 	meta := map[string]any{
 		"id": id, "session_id": id, "timestamp": now.Format(time.RFC3339Nano),
 		"cwd": canonical, "originator": "agentswap", "cli_version": "agentswap",
-		"source": "cli", "thread_source": "user", "model_provider": codexConfiguredModelProvider(),
-		"model": history.Model,
+		"source": "cli", "thread_source": "user", "model_provider": provider,
+		"model": model,
 		"agentswap_source": map[string]any{
 			"agent": history.Source, "session_id": history.SourceID,
 			"created_at": history.CreatedAt, "updated_at": history.UpdatedAt,
 		},
 	}
+	for key, value := range extra {
+		meta[key] = value
+	}
+	delete(meta, "agentswap_spawn_events")
 	if err := write("session_meta", now, meta); err != nil {
 		return Result{}, err
 	}
@@ -623,6 +674,13 @@ func (codexAdapter) Write(_ context.Context, history *Session, opts WriteOptions
 		}
 		if err := flushMessage(); err != nil {
 			return Result{}, err
+		}
+	}
+	if events, ok := extra["agentswap_spawn_events"].([]map[string]any); ok {
+		for _, event := range events {
+			if err := write("event_msg", now, event); err != nil {
+				return Result{}, err
+			}
 		}
 	}
 	if err := f.Sync(); err != nil {

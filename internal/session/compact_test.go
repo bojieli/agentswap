@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -469,15 +470,41 @@ func TestParseBudgetAcceptsTheFormsPeopleWrite(t *testing.T) {
 	}
 }
 
+// fixtureDir is an absolute project directory written the way the host writes
+// one. The ledger relativizes with filepath, and "/p" is not an absolute path
+// on Windows, so a POSIX-only fixture would leave every path unrelativized
+// there and test nothing.
+func fixtureDir() string {
+	if runtime.GOOS == "windows" {
+		return `C:\p`
+	}
+	return "/p"
+}
+
+func fixturePath(name string) string { return filepath.Join(fixtureDir(), name) }
+
+// fixtureInput encodes a tool call's input, so that a Windows separator in a
+// fixture path is escaped the way a harness would write it.
+func fixtureInput(t *testing.T, input any) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
 func TestDigestLedgerReadsEveryHarnessInputShape(t *testing.T) {
 	events := []Event{
 		{Kind: Message, Role: "user", Parts: []Part{{Kind: Text, Text: "start"}}},
 		{Kind: Message, Role: "assistant", Parts: []Part{
-			{Kind: ToolCall, CallID: "a", ToolName: "Edit", Data: json.RawMessage(`{"file_path":"/p/one.go"}`)},
-			{Kind: ToolCall, CallID: "b", ToolName: "Read", Data: json.RawMessage(`{"file_path":"/p/two.go"}`)},
+			{Kind: ToolCall, CallID: "a", ToolName: "Edit", Data: fixtureInput(t, map[string]string{"file_path": fixturePath("one.go")})},
+			{Kind: ToolCall, CallID: "b", ToolName: "Read", Data: fixtureInput(t, map[string]string{"file_path": fixturePath("two.go")})},
 			{Kind: ToolCall, CallID: "c", ToolName: "shell", Data: json.RawMessage(`{"command":["bash","-lc","go test ./..."]}`)},
-			{Kind: ToolCall, CallID: "d", ToolName: "apply_patch", Data: json.RawMessage(`{"input":"*** Begin Patch\n*** Update File: /p/three.go\n"}`)},
-			{Kind: ToolCall, CallID: "e", ToolName: "MultiEdit", Data: json.RawMessage(`{"edits":[{"file_path":"/p/four.go"},{"file_path":"/p/five.go"}]}`)},
+			{Kind: ToolCall, CallID: "d", ToolName: "apply_patch", Data: fixtureInput(t, map[string]string{"input": "*** Begin Patch\n*** Update File: " + fixturePath("three.go") + "\n"})},
+			{Kind: ToolCall, CallID: "e", ToolName: "MultiEdit", Data: fixtureInput(t, map[string]any{"edits": []map[string]string{
+				{"file_path": fixturePath("four.go")}, {"file_path": fixturePath("five.go")},
+			}})},
 			{Kind: ToolCall, CallID: "f", ToolName: "Bash", Data: json.RawMessage(`{"command":"git   status\n"}`)},
 		}},
 		{Kind: Message, Role: "tool", Parts: []Part{
@@ -487,7 +514,7 @@ func TestDigestLedgerReadsEveryHarnessInputShape(t *testing.T) {
 		}},
 		{Kind: Plan, Role: "assistant", PlanText: "the plan"},
 	}
-	l := deriveLedger(events, "/p")
+	l := deriveLedger(events, fixtureDir())
 	if !reflect.DeepEqual(l.writeOrder, []string{"one.go", "three.go", "four.go", "five.go"}) {
 		t.Errorf("writes = %v", l.writeOrder)
 	}
@@ -980,12 +1007,12 @@ func TestDigestListsTheMostEditedFilesFirst(t *testing.T) {
 	events := []Event{
 		{Kind: Message, Role: "user", Parts: []Part{{Kind: Text, Text: "start"}}},
 		{Kind: Message, Role: "assistant", Parts: []Part{
-			{Kind: ToolCall, CallID: "1", ToolName: "Edit", Data: json.RawMessage(`{"file_path":"/p/rare.go"}`)},
-			{Kind: ToolCall, CallID: "2", ToolName: "Edit", Data: json.RawMessage(`{"file_path":"/p/hot.go"}`)},
-			{Kind: ToolCall, CallID: "3", ToolName: "Edit", Data: json.RawMessage(`{"file_path":"/p/hot.go"}`)},
-			{Kind: ToolCall, CallID: "4", ToolName: "Edit", Data: json.RawMessage(`{"file_path":"/p/mid.go"}`)},
-			{Kind: ToolCall, CallID: "5", ToolName: "Edit", Data: json.RawMessage(`{"file_path":"/p/hot.go"}`)},
-			{Kind: ToolCall, CallID: "6", ToolName: "Edit", Data: json.RawMessage(`{"file_path":"/p/mid.go"}`)},
+			{Kind: ToolCall, CallID: "1", ToolName: "Edit", Data: fixtureInput(t, map[string]string{"file_path": fixturePath("rare.go")})},
+			{Kind: ToolCall, CallID: "2", ToolName: "Edit", Data: fixtureInput(t, map[string]string{"file_path": fixturePath("hot.go")})},
+			{Kind: ToolCall, CallID: "3", ToolName: "Edit", Data: fixtureInput(t, map[string]string{"file_path": fixturePath("hot.go")})},
+			{Kind: ToolCall, CallID: "4", ToolName: "Edit", Data: fixtureInput(t, map[string]string{"file_path": fixturePath("mid.go")})},
+			{Kind: ToolCall, CallID: "5", ToolName: "Edit", Data: fixtureInput(t, map[string]string{"file_path": fixturePath("hot.go")})},
+			{Kind: ToolCall, CallID: "6", ToolName: "Edit", Data: fixtureInput(t, map[string]string{"file_path": fixturePath("mid.go")})},
 		}},
 		{Kind: Message, Role: "tool", Parts: []Part{
 			{Kind: ToolResult, CallID: "1", Text: "ok"}, {Kind: ToolResult, CallID: "2", Text: "ok"},
@@ -993,7 +1020,7 @@ func TestDigestListsTheMostEditedFilesFirst(t *testing.T) {
 			{Kind: ToolResult, CallID: "5", Text: "ok"}, {Kind: ToolResult, CallID: "6", Text: "ok"},
 		}},
 	}
-	l := deriveLedger(events, "/p")
+	l := deriveLedger(events, fixtureDir())
 	ordered := sortedPathCounts(l.writeCounts, append([]string(nil), l.writeOrder...))
 	if !reflect.DeepEqual(ordered, []string{"hot.go", "mid.go", "rare.go"}) {
 		t.Fatalf("ledger order = %v, want most-edited first", ordered)

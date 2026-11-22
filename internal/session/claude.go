@@ -209,13 +209,14 @@ func (s *claudeStream) record(_ int, raw json.RawMessage) error {
 		case "remove", "dequeue":
 			s.removePending(content)
 		default:
-			return fmt.Errorf("unsupported Claude queue operation %q", operation)
+			s.warnings = appendUnique(s.warnings, fmt.Sprintf("unsupported Claude queue operation %q was skipped", operation))
 		}
 		return nil
 	case "attachment":
 		attachment, ok := record["attachment"].(map[string]any)
 		if !ok {
-			return fmt.Errorf("attachment record has no attachment object")
+			s.warnings = appendUnique(s.warnings, "a Claude attachment record had no attachment object and was skipped")
+			return nil
 		}
 		kind, _ := attachment["type"].(string)
 		switch kind {
@@ -234,7 +235,8 @@ func (s *claudeStream) record(_ int, raw json.RawMessage) error {
 		case "file":
 			content, ok := attachment["content"].(map[string]any)
 			if !ok {
-				return fmt.Errorf("unsupported Claude file attachment (media cannot be teleported safely)")
+				s.warnings = appendUnique(s.warnings, "a Claude file attachment had no content object and was skipped (media cannot be teleported safely)")
+				return nil
 			}
 			contentType := stringValue(content["type"])
 			if contentType == "image" || contentType == "document" {
@@ -243,16 +245,19 @@ func (s *claudeStream) record(_ int, raw json.RawMessage) error {
 					media, mediaErr = mediaPartFromValue(content, stringValue(content["media_type"]), stringValue(attachment["filename"]))
 				}
 				if mediaErr != nil {
-					return fmt.Errorf("Claude media attachment: %w", mediaErr)
+					s.warnings = appendUnique(s.warnings, fmt.Sprintf("a Claude media attachment could not be decoded and was skipped: %v", mediaErr))
+					return nil
 				}
 				s.events = append(s.events, Event{Kind: Message, ID: stringValue(record["uuid"]), ParentID: stringValue(record["parentUuid"]), Role: "user", Timestamp: timestamp, Parts: []Part{media}})
 			} else {
 				if contentType != "text" {
-					return fmt.Errorf("unsupported Claude file attachment (media cannot be teleported safely)")
+					s.warnings = appendUnique(s.warnings, fmt.Sprintf("unsupported Claude file attachment content %q was skipped (media cannot be teleported safely)", contentType))
+					return nil
 				}
 				file, ok := content["file"].(map[string]any)
 				if !ok {
-					return fmt.Errorf("Claude text attachment has no file object")
+					s.warnings = appendUnique(s.warnings, "a Claude text attachment had no file object and was skipped")
+					return nil
 				}
 				name := stringValue(attachment["filename"])
 				if name == "" {
@@ -271,7 +276,10 @@ func (s *claudeStream) record(_ int, raw json.RawMessage) error {
 			// Runtime instructions, state deltas and UI reminders are rebuilt by
 			// the destination rather than replayed as user conversation.
 		default:
-			return fmt.Errorf("unsupported Claude attachment %q", kind)
+			// Claude introduces new attachment kinds over time. An unfamiliar
+			// attachment must not strand the whole session, so skip it with a
+			// warning like the top-level default below.
+			s.warnings = appendUnique(s.warnings, fmt.Sprintf("unsupported Claude attachment %q was skipped", kind))
 		}
 		return nil
 	case "user", "assistant":
@@ -281,15 +289,20 @@ func (s *claudeStream) record(_ int, raw json.RawMessage) error {
 		// not add user/assistant conversation beyond the records retained above.
 		return nil
 	default:
-		return fmt.Errorf("unsupported Claude record type %q", rtype)
+		// Claude adds top-level telemetry and UI bookkeeping records over time.
+		// Only the known user and assistant records carry transferable
+		// conversation; an unfamiliar envelope must not strand the whole session.
+		return nil
 	}
 	message, ok := record["message"].(map[string]any)
 	if !ok {
-		return fmt.Errorf("%s record has no message object", rtype)
+		s.warnings = appendUnique(s.warnings, fmt.Sprintf("a Claude %s record had no message object and was skipped", rtype))
+		return nil
 	}
 	role, _ := message["role"].(string)
 	if role != "user" && role != "assistant" {
-		return fmt.Errorf("unsupported Claude message role %q", role)
+		s.warnings = appendUnique(s.warnings, fmt.Sprintf("unsupported Claude message role %q was skipped", role))
+		return nil
 	}
 	if model, _ := message["model"].(string); model != "" && model != "<synthetic>" && s.model == "" {
 		s.model = model
@@ -307,7 +320,8 @@ func (s *claudeStream) record(_ int, raw json.RawMessage) error {
 		for _, item := range blocks {
 			block, ok := item.(map[string]any)
 			if !ok {
-				return fmt.Errorf("message content contains a non-object block")
+				s.warnings = appendUnique(s.warnings, "a Claude message content contained a non-object block that was skipped")
+				continue
 			}
 			kind, _ := block["type"].(string)
 			switch kind {
@@ -330,7 +344,8 @@ func (s *claudeStream) record(_ int, raw json.RawMessage) error {
 			case "image", "document":
 				source, ok := block["source"].(map[string]any)
 				if !ok {
-					return fmt.Errorf("Claude image block has no source")
+					s.warnings = appendUnique(s.warnings, "a Claude image block had no usable source and was skipped")
+					continue
 				}
 				sourceType := stringValue(source["type"])
 				var media Part
@@ -344,7 +359,8 @@ func (s *claudeStream) record(_ int, raw json.RawMessage) error {
 					mediaErr = fmt.Errorf("unsupported Claude image source %q", sourceType)
 				}
 				if mediaErr != nil {
-					return mediaErr
+					s.warnings = appendUnique(s.warnings, fmt.Sprintf("a Claude image block was skipped: %v", mediaErr))
+					continue
 				}
 				event.Parts = append(event.Parts, media)
 			case "tool_use", "server_tool_use":
@@ -368,17 +384,17 @@ func (s *claudeStream) record(_ int, raw json.RawMessage) error {
 			case "tool_result":
 				id, _ := block["tool_use_id"].(string)
 				isError, _ := block["is_error"].(bool)
-				parts, err := claudeResultParts(block["content"], id, isError)
-				if err != nil {
-					return fmt.Errorf("tool result %s: %w", id, err)
+				parts, resultWarnings := claudeResultParts(block["content"], id, isError)
+				for _, warning := range resultWarnings {
+					s.warnings = appendUnique(s.warnings, warning)
 				}
 				event.Parts = append(event.Parts, parts...)
 			default:
-				return fmt.Errorf("unsupported Claude conversation block %q", kind)
+				s.warnings = appendUnique(s.warnings, fmt.Sprintf("unsupported Claude conversation block %q was skipped", kind))
 			}
 		}
 	} else if content != nil {
-		return fmt.Errorf("message content has unsupported type %T", content)
+		s.warnings = appendUnique(s.warnings, fmt.Sprintf("a Claude message's content had unsupported type %T and was skipped", content))
 	}
 	if len(event.Parts) > 0 {
 		if hasOnlyToolResults(event.Parts) {
@@ -464,10 +480,11 @@ func (claudeAdapter) Read(_ context.Context, candidate Candidate) (*Session, err
 // transcript. toolUseId is what links that run back to the Task block in the
 // thread that spawned it.
 type claudeSubagentMeta struct {
-	AgentType   string `json:"agentType"`
-	Description string `json:"description"`
-	ToolUseID   string `json:"toolUseId"`
-	SpawnDepth  int    `json:"spawnDepth"`
+	AgentType   string  `json:"agentType"`
+	Description string  `json:"description"`
+	ToolUseID   string  `json:"toolUseId"`
+	SpawnDepth  int     `json:"spawnDepth"`
+	Branch      *Branch `json:"agentswapBranch,omitempty"`
 }
 
 // readClaudeBranches collects the delegated runs of one session: the
@@ -475,6 +492,7 @@ type claudeSubagentMeta struct {
 // sidechain records an older version inlined into the main log.
 func readClaudeBranches(transcript string, main *claudeStream) ([]Branch, []string, error) {
 	byID := make(map[string]*Branch)
+	explicitParents := make(map[string]string)
 	var order []string
 	add := func(id string, events []Event) *Branch {
 		if branch, ok := byID[id]; ok {
@@ -517,6 +535,7 @@ func readClaudeBranches(transcript string, main *claudeStream) ([]Branch, []stri
 			continue
 		}
 		branch := add(id, stream.events)
+		branch.CWD, _ = claudeSessionCWD(filepath.Join(dir, name))
 		branch.Model = stream.model
 		warnings = append(warnings, stream.warnings...)
 		metaPath := filepath.Join(dir, strings.TrimSuffix(name, ".jsonl")+".meta.json")
@@ -531,43 +550,62 @@ func readClaudeBranches(transcript string, main *claudeStream) ([]Branch, []stri
 		if err := json.Unmarshal(b, &meta); err != nil {
 			return nil, nil, fmt.Errorf("parse %s: %w", metaPath, err)
 		}
+		if meta.Branch != nil {
+			saved := *meta.Branch
+			saved.ID = branch.ID
+			saved.Events = branch.Events
+			*branch = saved
+			explicitParents[branch.ID] = branch.ParentID
+		}
 		branch.CallID = meta.ToolUseID
 		branch.Name = meta.AgentType
 		branch.Description = meta.Description
 	}
 	branches := make([]Branch, 0, len(order))
-	var unattached []string
 	for _, id := range order {
 		branch := byID[id]
 		if len(branch.Events) == 0 {
 			continue
 		}
-		if branch.CallID == "" {
-			unattached = append(unattached, id)
-		}
 		branches = append(branches, *branch)
+	}
+	linkBranchesFromResults(branches, main.events, Claude)
+	var unattached []string
+	for _, b := range branches {
+		if b.CallID == "" {
+			unattached = append(unattached, b.ID)
+		}
 	}
 	if len(unattached) > 0 {
 		warnings = appendUnique(warnings, fmt.Sprintf("Claude recorded no spawning tool call for subagent %s; %s moved as unattached branches", strings.Join(unattached, ", "), plural(len(unattached), "it", "they")))
 	}
 	// Claude's sidecar records the spawning call but not the agent tree, so a
 	// nested run's parent is recovered from which stream owns that call.
-	linkBranchParents(branches)
+	linkBranchParents(branches, main.events)
+	for i := range branches {
+		if parent, ok := explicitParents[branches[i].ID]; ok {
+			branches[i].ParentID = parent
+		}
+	}
 	return branches, warnings, nil
 }
 
-func claudeResultParts(content any, callID string, isError bool) ([]Part, error) {
+// claudeResultParts converts one Claude tool_result content value into
+// canonical parts. A block it cannot interpret — an unknown kind, an image
+// without a usable source, media that cannot be decoded — is skipped with a
+// warning so one foreign block cannot strand the rest of the session.
+func claudeResultParts(content any, callID string, isError bool) (parts []Part, warnings []string) {
 	switch value := content.(type) {
 	case nil:
 		return []Part{{Kind: ToolResult, CallID: callID, Error: isError}}, nil
 	case string:
 		return []Part{{Kind: ToolResult, CallID: callID, Text: value, Error: isError}}, nil
 	case []any:
-		var parts []Part
 		for _, item := range value {
 			block, ok := item.(map[string]any)
 			if !ok {
-				return nil, fmt.Errorf("contains a non-object content block")
+				warnings = appendUnique(warnings, "a Claude tool result contained a non-object block that was skipped")
+				continue
 			}
 			kind, _ := block["type"].(string)
 			switch kind {
@@ -577,7 +615,8 @@ func claudeResultParts(content any, callID string, isError bool) ([]Part, error)
 			case "image", "document":
 				source, ok := block["source"].(map[string]any)
 				if !ok {
-					return nil, fmt.Errorf("image block has no source")
+					warnings = appendUnique(warnings, "a Claude tool-result image block had no usable source and was skipped")
+					continue
 				}
 				var media Part
 				var err error
@@ -587,20 +626,21 @@ func claudeResultParts(content any, callID string, isError bool) ([]Part, error)
 				case "url":
 					media, err = mediaPart(stringValue(source["url"]), stringValue(source["media_type"]), stringValue(block["filename"]))
 				default:
-					err = fmt.Errorf("unsupported image source %q", stringValue(source["type"]))
+					err = fmt.Errorf("unsupported Claude image source %q", stringValue(source["type"]))
 				}
 				if err != nil {
-					return nil, err
+					warnings = appendUnique(warnings, fmt.Sprintf("a Claude tool-result image block was skipped: %v", err))
+					continue
 				}
 				media.CallID, media.Error = callID, isError
 				parts = append(parts, media)
 			default:
-				return nil, fmt.Errorf("unsupported content block %q (media cannot be teleported safely)", kind)
+				warnings = appendUnique(warnings, fmt.Sprintf("unsupported Claude tool-result content block %q was skipped", kind))
 			}
 		}
-		return parts, nil
+		return parts, warnings
 	default:
-		return nil, fmt.Errorf("unsupported content type %T", content)
+		return nil, []string{fmt.Sprintf("a Claude tool result's content had unsupported type %T and was skipped", content)}
 	}
 }
 
@@ -769,7 +809,7 @@ func writeClaudeEvents(w io.Writer, events []Event, model, sessionID, cwd, slug 
 // meta sidecar Claude writes natively, under the session's own directory. The
 // meta's toolUseId is the source call id, which the main transcript preserves
 // verbatim, so the run stays linked to the call that spawned it.
-func writeClaudeBranches(branches []Branch, dir, sessionID, cwd, slug, model string, now time.Time) (files []string, warnings []string, err error) {
+func writeClaudeBranches(branches []Branch, names map[string]string, dir, sessionID, cwd, slug, model string, now time.Time) (files []string, warnings []string, err error) {
 	if len(branches) == 0 {
 		return nil, nil, nil
 	}
@@ -777,18 +817,6 @@ func writeClaudeBranches(branches []Branch, dir, sessionID, cwd, slug, model str
 		return nil, nil, err
 	}
 	depth := make(map[string]int, len(branches))
-	names := make(map[string]string, len(branches))
-	for i, branch := range branches {
-		suffix, err := shortID("")
-		if err != nil {
-			return nil, nil, err
-		}
-		// Claude agent ids are opaque hex. Leading with the branch index keeps
-		// the lexical order of the transcript directory equal to the order the
-		// source recorded, which is the only signal a re-read has when several
-		// runs share one spawning call.
-		names[branch.ID] = fmt.Sprintf("agent-a%04x%s", i&0xffff, suffix[:12])
-	}
 	var unattached []string
 	for _, branch := range branches {
 		name := names[branch.ID]
@@ -808,7 +836,11 @@ func writeClaudeBranches(branches []Branch, dir, sessionID, cwd, slug, model str
 			branchModel = model
 		}
 		extra := map[string]any{"isSidechain": true, "agentId": strings.TrimPrefix(name, "agent-"), "promptId": promptID}
-		_, branchWarnings, err := writeClaudeEvents(f, branch.Events, branchModel, sessionID, cwd, slug, extra, now)
+		branchCWD := cwd
+		if branch.CWD != "" {
+			branchCWD = branch.CWD
+		}
+		_, branchWarnings, err := writeClaudeEvents(f, branch.Events, branchModel, sessionID, branchCWD, slug, extra, now)
 		if err != nil {
 			_ = f.Close()
 			return nil, nil, fmt.Errorf("write Claude subagent %s: %w", branch.ID, err)
@@ -827,7 +859,13 @@ func writeClaudeBranches(branches []Branch, dir, sessionID, cwd, slug, model str
 		if branch.CallID == "" {
 			unattached = append(unattached, branch.ID)
 		}
+		saved := branchMetadata(branch)
+		saved.ID = name
+		if branch.ParentID != "" {
+			saved.ParentID = names[branch.ParentID]
+		}
 		meta := claudeSubagentMeta{
+			Branch:    &saved,
 			AgentType: branch.Name, Description: branch.Description,
 			ToolUseID: branch.CallID, SpawnDepth: depth[branch.ID],
 		}
@@ -840,7 +878,7 @@ func writeClaudeBranches(branches []Branch, dir, sessionID, cwd, slug, model str
 		}
 		files = append(files, metaPath)
 	}
-	warnings = append(warnings, fmt.Sprintf("%d delegated agent %s moved as Claude subagent %s; the transcripts are readable but a subagent cannot be resumed in the new session", len(branches), plural(len(branches), "run", "runs"), plural(len(branches), "transcript", "transcripts")))
+	warnings = append(warnings, fmt.Sprintf("%d delegated agent %s moved as Claude subagent %s; the histories are readable; live execution and runtime agent registration were not transferred", len(branches), plural(len(branches), "run", "runs"), plural(len(branches), "transcript", "transcripts")))
 	if len(unattached) > 0 {
 		warnings = append(warnings, fmt.Sprintf("delegated %s %s had no spawning tool call to reference, so Claude will not show %s under a Task block", plural(len(unattached), "run", "runs"), strings.Join(unattached, ", "), plural(len(unattached), "it", "them")))
 	}
@@ -856,6 +894,28 @@ func (claudeAdapter) Write(_ context.Context, history *Session, opts WriteOption
 	if err != nil {
 		return Result{}, err
 	}
+	branches, err := orderedBranches(history.Branches)
+	if err != nil {
+		return Result{}, err
+	}
+	names := map[string]string{}
+	refs := map[string]string{}
+	for i, branch := range branches {
+		suffix, err := shortID("")
+		if err != nil {
+			return Result{}, err
+		}
+		names[branch.ID] = fmt.Sprintf("agent-a%04x%s", i&0xffff, suffix[:12])
+		refs[branch.ID] = strings.TrimPrefix(names[branch.ID], "agent-")
+	}
+	refs = branchReferenceIDs(history.Source, branches, refs)
+	copied := *history
+	copied.Events = remapDelegation(history.Events, refs)
+	copied.Branches = append([]Branch(nil), branches...)
+	for i := range copied.Branches {
+		copied.Branches[i].Events = remapDelegation(copied.Branches[i].Events, refs)
+	}
+	history = &copied
 	projectDir := filepath.Join(claudeRoot(), "projects", encodeClaudeProject(canonical))
 	final := filepath.Join(projectDir, id+".jsonl")
 	title := safeTitle(history.Title, firstText(history))
@@ -917,7 +977,7 @@ func (claudeAdapter) Write(_ context.Context, history *Session, opts WriteOption
 		planFinal = filepath.Join(claudeRoot(), "plans", slug+".md")
 		planTmp = planFinal + ".tmp"
 	}
-	branchFiles, branchWarnings, err := writeClaudeBranches(history.Branches, filepath.Join(projectDir, id, "subagents"), id, canonical, slug, history.Model, time.Now())
+	branchFiles, branchWarnings, err := writeClaudeBranches(history.Branches, names, filepath.Join(projectDir, id, "subagents"), id, canonical, slug, history.Model, time.Now())
 	if err != nil {
 		return Result{}, err
 	}

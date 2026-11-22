@@ -4,7 +4,107 @@ Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html); until 1.0 the minor
 version moves for anything that changes behaviour.
 
-## Unreleased
+## v0.8.0 — 2026-10-01
+
+### Added
+
+- **Claude Code ↔ Codex handoffs preserve subagent histories.** Codex reads
+  native child rollouts recursively and writes separate target rollouts with
+  parent metadata and collaboration events. Claude writes native subagent
+  transcripts and sidecars. Nested relationships, delegation references, and
+  each run's independent tool-call namespace survive transfers in both
+  directions. Child IDs are regenerated without rewriting ordinary messages
+  or shell commands, and child rollouts stay out of the root resume picker.
+  Child histories in isolated worktrees are discovered by parentage. Their
+  working directories are preserved where supported, with a warning for Kimi.
+- **Subagent trees transfer across all four harnesses.** OpenCode child
+  sessions are discovered through task metadata, exported and imported through
+  its native CLI, and linked through `parentID`. Both current Kimi agent trees
+  and Python Kimi subagent directories are supported. Missing histories are
+  reported; unfinished calls get interrupted results and Kimi tasks receive
+  terminal statuses. Live processes are not transferred.
+- **Convert reusable agent definitions with `agentswap agents A B`.** Converts
+  Claude/OpenCode Markdown, Codex TOML roles, Kimi YAML and prompt files, and
+  OpenCode JSON agent maps. Known tool policies are mapped; incompatible
+  settings are reported and retained in an inert round-trip manifest. Includes
+  model overrides, explicit source/destination paths, Kimi inheritance,
+  collision refusal, dry runs, and strict compatibility mode. The configuration
+  parser remains dependency-free and explicitly rejects unsupported syntax.
+
+### Fixed
+
+- Parent cycles are rejected before writing. Spawning-call validation respects
+  each parent's tool-call namespace, including repeated IDs across branches.
+- Failed child writes/imports roll back the newly created session tree instead
+  of leaving a partial transfer. Codex publishes the root after its children.
+
+### Validation
+
+- All twelve directed branch transfers and all twelve definition conversions
+  have automated coverage, including both Kimi layouts and Claude ↔ Codex CLI
+  round trips. Native offline checks against Codex 0.159.3 and OpenCode 1.18.30
+  confirmed child import/export and Codex parent/child `thread/read` and
+  `thread/resume` without starting a model turn.
+
+## v0.7.1 — 2026-10-01
+
+### Fixed
+
+- **Handoffs no longer fail on a concurrently written Claude transcript.** If
+  Claude Code is still appending a JSONL record, agentswap now ignores only an
+  unterminated final record while continuing to reject malformed complete
+  records.
+
+## v0.7.0 — 2026-09-22
+
+### Added
+
+- **Move a Codex conversation between providers.** `agentswap teleport codex
+  codex --session <id> --to-provider <provider>` creates a new session with the
+  chosen provider, leaving the original unchanged. `handoff` also launches the
+  copy. Optional `--to-model` selects a destination model. Both options are
+  recorded in destination metadata and explicitly applied on resume, so the
+  copied conversation does not restore the old provider's runtime settings.
+- Provider transfers support dry-run validation and the existing compaction
+  options. Discovery reads local sessions across provider labels. Supported
+  messages and tool interactions transfer; provider-bound encrypted reasoning
+  and unsupported records are omitted with warnings. Destination providers and
+  credentials must already be configured.
+
+## v0.6.0 — 2026-09-02
+
+### Changed
+
+- **Every session reader now skips what it does not understand instead of
+  failing.** v0.5.0 applied this to unknown top-level Claude Code records; the
+  rule is now general. Claude, Codex, Kimi (current and legacy), and OpenCode
+  sessions are read with the same policy at every layer: an unfamiliar record
+  type, message role, conversation block, attachment kind, queue operation,
+  wire record, tool-result block, or media payload that cannot be decoded is
+  skipped with a warning naming exactly what was dropped, and the rest of the
+  session transfers normally. A handoff that previously stopped with
+  `unsupported Claude attachment "remote_session_change"`,
+  `unsupported Kimi wire record ...`, or `unsupported Codex record type ...`
+  now completes and reports the gap. What still fails closed is corruption
+  rather than evolution: a file that cannot be read, a line that is not valid
+  JSON, a plan whose SHA-256 does not match, and the structural validation of
+  the assembled session. Writers remain strict — an incomplete or inconsistent
+  target is never produced silently.
+
+## v0.5.0 — 2026-08-31
+
+### Fixed
+
+- **New Claude Code bookkeeping records no longer abort a handoff.** Claude
+  Code added a top-level `cost-state` record containing usage and timing
+  totals. The session reader treated every unrecognized top-level record as a
+  fatal format change, so an otherwise valid handoff stopped at that line with
+  `unsupported Claude record type "cost-state"`. Unknown top-level Claude
+  records are now ignored while known conversation records and their content
+  remain strictly validated, allowing telemetry and UI metadata to evolve
+  without stranding the transcript.
+
+## v0.4.0 — 2026-08-28
 
 ### Added
 
@@ -46,6 +146,25 @@ version moves for anything that changes behaviour.
   documented.
 
 ### Fixed
+
+- **Two Kimi bookkeeping records aborted the whole transfer.** The Kimi Code
+  reader fails closed on a wire record it does not know, so that new content
+  can never be dropped in silence, but `staleGuard.recorded` (a file path and
+  its mtime, kept so the agent can detect an edit underneath it) and
+  `token_counting.turn_recorded` (a per-turn token tally) carry no conversation
+  content at all. Any session that had read a file since being resumed refused
+  to move, with `unsupported Kimi wire record "staleGuard.recorded"`. Both now
+  join the other UI, permission and usage records the reader skips.
+
+- **Four tests failed on Windows, none of them for a reason the product was
+  responsible for.** Two digest tests built their fixtures from POSIX paths, so
+  the relativization under test — which goes through `filepath` — did nothing
+  on a host where `/p/one.go` is not an absolute path; two teleport end-to-end
+  tests looked for an archive path in the raw text of a Codex rollout, which is
+  JSONL, where a Windows separator appears escaped. The fixtures now use the
+  host's own path syntax and the assertions search for the encoded form. A
+  session recorded on Windows always carried Windows paths and was never
+  affected.
 
 - **Four end-to-end tests failed on any machine already running agentswap.**
   The suite gives each test its own config directory, its own stand-ins for the

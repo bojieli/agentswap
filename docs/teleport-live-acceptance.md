@@ -101,6 +101,32 @@ native session logs can contain conversation content.
 
 The test is an acceptance check for the currently installed CLI versions.
 
+## Subagent native format checks (v0.8.0)
+
+On 2026-10-01, an isolated, fabricated Claude parent/child history was imported
+into OpenCode 1.18.30, transferred to Codex 0.159.3, then transferred back to
+Claude. Native OpenCode `export` confirmed both imported sessions and the
+child's `parentID`. Codex's native app server accepted `thread/read` and
+`thread/resume` for both parent and child. No `turn/start` request was sent and
+no provider inference was performed. Claude's returned files were checked by
+AgentSwap's reader; this check did not exercise a Claude model turn.
+
+Run the reproducible check with:
+
+```sh
+python3 scripts/subagent-native-readback.py
+```
+
+It requires Go, Python 3, Codex and OpenCode, builds into a temporary directory,
+isolates harness data/configuration, and retains its fabricated artifacts.
+Windows is covered by file-based unit and E2E tests; this native readback script
+uses POSIX pipe polling. The automatic suite additionally checks all twelve
+directed branch transfers, nested histories, both Kimi layouts, missing links,
+rollback, dry runs, and all twelve reusable-definition conversions. These are
+format and history checks, distinct from the credit-consuming model-turn matrix
+above. Runtime reactivation of imported custom agent types can require their
+definitions to be converted separately.
+
 ## Compaction check
 
 `--compact` has one property no unit test can settle: whether a resumed agent

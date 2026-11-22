@@ -34,6 +34,8 @@ func cmdTransfer(args []string, handoff bool) error {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fromValue := fs.String("from", "", "deprecated: source agent for the old target-first syntax")
+	toProvider := fs.String("to-provider", "", "destination Codex provider id")
+	toModel := fs.String("to-model", "", "destination Codex model")
 	sessionID := fs.String("session", "", "exact source session id")
 	cwdValue := fs.String("cwd", "", "project directory (default: current directory)")
 	latest := fs.Bool("latest", false, "deprecated: the newest source session is now selected by default")
@@ -58,6 +60,7 @@ func cmdTransfer(args []string, handoff bool) error {
 		fmt.Fprintln(os.Stderr, "Discovery is scoped to the current working directory unless --cwd is given.")
 		fmt.Fprintln(os.Stderr, "\nAgents: claude, codex, opencode, kimi")
 		fmt.Fprintln(os.Stderr, "\nExamples:")
+		fmt.Fprintf(os.Stderr, "  agentswap %s codex codex --session <id> --to-provider openai\n", name)
 		if handoff {
 			fmt.Fprintln(os.Stderr, "  agentswap handoff claude codex")
 			fmt.Fprintln(os.Stderr, "  agentswap handoff opencode claude --session <id> --dangerously-skip-permissions")
@@ -69,6 +72,8 @@ func cmdTransfer(args []string, handoff bool) error {
 		}
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "Flags:")
+		fmt.Fprintln(os.Stderr, "  --to-provider id  destination Codex provider (required for codex -> codex)")
+		fmt.Fprintln(os.Stderr, "  --to-model name   destination Codex model")
 		fmt.Fprintln(os.Stderr, "  --cwd path     project directory (default: current directory)")
 		fmt.Fprintln(os.Stderr, "  --session id   exact source session id (default: newest source session)")
 		fmt.Fprintln(os.Stderr, "  --compact      abridge the history to fit the target's context window,")
@@ -117,6 +122,7 @@ func cmdTransfer(args []string, handoff bool) error {
 		}
 		*sessionID, *cwdValue, *compact, *budget = owned.sessionID, owned.cwd, owned.compact, owned.budget
 		*archiveDir = owned.archiveDir
+		*toProvider, *toModel = owned.toProvider, owned.toModel
 		targetArgs = owned.target
 	} else {
 		if err := fs.Parse(flagArgs); err != nil {
@@ -156,8 +162,23 @@ func cmdTransfer(args []string, handoff bool) error {
 	if err != nil {
 		return fmt.Errorf("target: %w", err)
 	}
-	if from == target {
-		return errors.New("source and target agents are the same")
+	if !handoff {
+		var emptyFlag string
+		fs.Visit(func(f *flag.Flag) {
+			if (f.Name == "to-provider" || f.Name == "to-model") && f.Value.String() == "" {
+				emptyFlag = f.Name
+			}
+		})
+		if emptyFlag != "" {
+			return fmt.Errorf("--%s requires a non-empty value", emptyFlag)
+		}
+	}
+	if err := validateDestinationArgs(*toProvider, *toModel, targetArgs); err != nil {
+		return err
+	}
+	destination := session.WriteOptions{CodexProvider: *toProvider, CodexModel: *toModel}
+	if err := session.ValidateDestination(from, target, destination); err != nil {
+		return err
 	}
 	cwd := *cwdValue
 	if cwd == "" {
@@ -197,14 +218,22 @@ func cmdTransfer(args []string, handoff bool) error {
 	}
 	fmt.Fprintf(os.Stderr, "%s %s -> %s (%s)\n", selected.Agent.Display(), selected.ID, target.Display(), cwd)
 	result, history, err := manager.Teleport(ctx, selected, target, session.TransferOptions{
-		WriteOptions: session.WriteOptions{CWD: cwd, DryRun: *dryRun},
+		WriteOptions: session.WriteOptions{CWD: cwd, DryRun: *dryRun, CodexProvider: *toProvider, CodexModel: *toModel},
 		Compact:      compactOptions,
 	})
 	if err != nil {
 		return err
 	}
 	if handoff {
-		result.Resume = append(result.Resume, targetArgs...)
+		if target == session.Codex && (*toProvider != "" || *toModel != "") {
+			// Destination overrides follow passthrough flags so the copied metadata
+			// and launch agree even when a target profile selects another provider.
+			resume := append([]string{}, result.Resume[:3]...)
+			resume = append(resume, targetArgs...)
+			result.Resume = append(resume, result.Resume[3:]...)
+		} else {
+			result.Resume = append(result.Resume, targetArgs...)
+		}
 	}
 	if *dryRun {
 		fmt.Fprintf(os.Stdout, "Dry run succeeded: %d events can be teleported to %s.\n", len(history.Events), target.Display())
@@ -255,6 +284,8 @@ type handoffArgs struct {
 	compact    bool
 	budget     string
 	archiveDir string
+	toProvider string
+	toModel    string
 	target     []string
 }
 
@@ -278,7 +309,7 @@ func parseHandoffArgs(args []string) (handoffArgs, error) {
 				return handoffArgs{}, fmt.Errorf("%s takes no value; use --budget %s", name, value)
 			}
 			out.compact = true
-		case "--session", "-session", "--cwd", "-cwd", "--budget", "-budget", "--archive-dir", "-archive-dir":
+		case "--session", "-session", "--cwd", "-cwd", "--budget", "-budget", "--archive-dir", "-archive-dir", "--to-provider", "-to-provider", "--to-model", "-to-model":
 			if !hasValue {
 				if i+1 >= len(args) {
 					return handoffArgs{}, fmt.Errorf("%s requires a value", name)
@@ -296,6 +327,10 @@ func parseHandoffArgs(args []string) (handoffArgs, error) {
 				out.cwd = value
 			case "--budget", "-budget":
 				out.budget = value
+			case "--to-provider", "-to-provider":
+				out.toProvider = value
+			case "--to-model", "-to-model":
+				out.toModel = value
 			default:
 				out.archiveDir = value
 			}
@@ -430,4 +465,19 @@ func uniqueStrings(values []string) []string {
 		}
 	}
 	return out
+}
+
+// Native model/OSS selectors can outrank -c overrides, so reject conflicting
+// selectors before creating a destination that the launch would not use.
+func validateDestinationArgs(provider, model string, args []string) error {
+	for _, arg := range args {
+		name, _, _ := strings.Cut(arg, "=")
+		if provider != "" && (name == "--oss" || name == "--local-provider") {
+			return fmt.Errorf("%s conflicts with --to-provider; select the destination with --to-provider", name)
+		}
+		if model != "" && (name == "--model" || strings.HasPrefix(name, "-m") && !strings.HasPrefix(name, "--")) {
+			return errors.New("--model/-m conflicts with --to-model; select the destination model with --to-model")
+		}
+	}
+	return nil
 }

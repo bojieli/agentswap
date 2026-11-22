@@ -48,6 +48,58 @@ Automatic resume needs the supervisor. A bare `claude` or `codex` process can
 receive a `503` after the configured maximum hold time because no parent
 process is available to resume it.
 
+## Continue a Codex session with another provider
+
+Codex's resume picker can filter history by provider, and an existing session
+can retain settings from its original provider. To move the recorded
+conversation to another provider, create a new Codex session explicitly:
+
+```sh
+agentswap teleport codex codex --session <source-id> --to-provider openai
+```
+
+The source is selected from local rollouts regardless of its provider label.
+Discovery still uses the current project directory; add `--cwd /path/to/project`
+when running elsewhere. Without `--session`, the active Codex session is used
+when available, otherwise the newest matching session.
+
+`--to-provider` is a Codex provider ID, such as `openai`, `krill`, or `agentswap`,
+not an account ID from `agentswap list`. The provider and its credentials must
+already be configured in Codex. This offline command does not validate network
+access or model availability. Run `agentswap install` and start the daemon
+before using the `agentswap` provider; its account pool determines the upstream.
+
+If the destination needs a different model, specify it with `--to-model`:
+
+```sh
+agentswap teleport codex codex --session <source-id> \
+  --to-provider agentswap --to-model <supported-model> --dry-run
+
+agentswap handoff codex codex --session <source-id> \
+  --to-provider agentswap --to-model <supported-model>
+```
+
+`teleport` prints the resume command; `handoff` creates the copy and launches it.
+The destination provider is written into the new session metadata and passed
+explicitly in its resume command. `--to-model` is handled the same way.
+These explicit destination options take precedence over passthrough `-c`
+settings and provider selection in a target profile. Use `--to-model` rather
+than a conflicting target `--model` flag. Without `--to-model`, recorded model
+metadata is retained and Codex resolves the model on resume.
+
+This is a conversation transfer through the same reader and writer used for
+cross-harness teleport, not a byte-for-byte clone. It preserves supported
+messages and tool interactions, creates a new session ID, and leaves the source
+unchanged. Original runtime settings, approvals, caches, and credentials do not
+move. Provider-bound encrypted reasoning is omitted with a warning; unfamiliar
+records are skipped with warnings. For compacted rollouts, the transfer uses
+original response items still present in the file and does not recreate hidden
+or missing history. `--compact` and `--budget` are available for large histories.
+
+Codex-to-Codex transfers require `--to-provider`. The two destination options
+also work when transferring from another harness into Codex; they are rejected
+for non-Codex targets.
+
 ## Continue in another harness
 
 Suppose Claude Code has exhausted its subscriptions and provider fallback,
@@ -141,44 +193,98 @@ summary prompt. Depending on what the source recorded, the target retains:
 - delegated agent runs, where the destination has a place to keep them.
 
 The source remains read-only. Validation completes before a target is written.
-Unknown conversation-bearing records fail closed rather than producing a session
-that only looks resumable.
+Unknown or undecodable conversation-bearing records are skipped with a warning
+naming what was skipped, so one unfamiliar record cannot strand the rest of the
+session.
 
 OpenCode's session database is accessed through its own `export` and `import`
 commands. agentswap does not write OpenCode's SQLite schema directly.
 
 ### Delegated agent runs
 
-When a session spawns subagents — Claude's `Task`, Kimi's `Agent` and
-`AgentSwarm` — the delegated run is a separate transcript. The main model never
-read it: it saw only the delegating tool call and the result the harness
-recorded for that call. The main thread is therefore complete on its own, and
-the delegated transcript travels as archived detail linked to that call.
+Claude Code ↔ Codex handoffs preserve the main conversation and separate
+subagent histories in both directions. The same branch representation connects
+all four harnesses, including nested runs and both Kimi layouts. The parent
+keeps the delegation call and its recorded result; child messages never become
+extra parent context.
 
-Claude Code and Kimi Code both have a native place for one, so a transfer
-between them keeps every run:
-
-| Harness | Where a delegated run lives |
+| Harness | Native child history |
 | --- | --- |
-| Claude Code | `<session-id>/subagents/agent-*.jsonl` plus a `.meta.json` naming the spawning `toolUseId` |
-| Kimi Code | `agents/agent-*/wire.jsonl`, an entry in `state.json`, and a task record under the agent that spawned it |
+| Claude Code | `<session-id>/subagents/agent-*.jsonl` and `.meta.json` with the spawning `toolUseId` |
+| Codex | Separate rollouts with `source.subagent.thread_spawn.parent_thread_id`, parent metadata, and collaboration events |
+| Kimi Code | `agents/agent-*/wire.jsonl`, `state.json` agent tree, and parent task records |
+| Python Kimi | `subagents/agent-*/context.jsonl`, `wire.jsonl`, and `meta.json` |
+| OpenCode | Separate imported sessions with `parentID` and task tool metadata linking the child session |
 
-Codex rollouts and the OpenCode import boundary have no equivalent, and neither
-does the Python-era Kimi layout. Those targets receive the complete main thread
-and a warning naming each run that could not come with it.
+Codex discovery follows native parent metadata recursively and correlates
+spawning calls through collaboration events or recorded delegation results.
+Child rollouts stay out of the root resume picker. Children in isolated
+worktrees are discovered by parentage even when their working directory differs
+from the root; Claude, Codex, and OpenCode retain that child directory. Kimi
+retains it as metadata and warns that its runtime uses the session directory. OpenCode discovery follows
+`state.metadata.sessionId` (or older `sessionID`/`session_id` results), exporting
+each referenced child through the native CLI. No SQLite schema is copied.
 
-Two limits are worth knowing. A delegated run is readable in the target but
-cannot be resumed there, because resuming one needs live harness state that no
-transfer carries; a Kimi run still marked running is recorded as failed rather
-than left for Kimi to poll. And Kimi records no spawning call for a swarm
-member, so agentswap matches it by the swarm item it was given — if one item is
-claimed by more than one `AgentSwarm` call, that branch moves unattached and
-says so.
+Every destination allocates fresh native IDs. References inside delegation
+inputs and results are rewritten; ordinary message text and shell commands are
+left intact. Writers order parents before children and roll back newly created
+artifacts if a child write/import fails. Codex publishes the root after its
+children. OpenCode also retains an inert tree manifest under
+`$AGENTSWAP_HOME/session-trees/opencode/` so unlinked runs and metadata that its
+session schema does not retain remain discoverable by AgentSwap.
 
-OpenCode is the exception on the read side. It keeps a delegated run in a
-separate child session, and neither `opencode export` nor
-`opencode session list` exposes the link to it. The delegation itself is
-retained as visible text, with a warning; the child session stays where it is.
+The parent can continue from recorded work after the source reaches its rate
+limit:
+
+```sh
+agentswap handoff claude codex
+agentswap handoff codex claude
+```
+
+A transfer moves stored history, not live execution. Unanswered calls receive
+interrupted results; Kimi tasks without a terminal state are recorded as failed
+so the destination cannot poll a nonexistent process. Native child resumption
+also depends on the destination's runtime and installed agent definitions. The
+history is preserved even when the target cannot reactivate that agent type.
+Missing local child rollouts and unavailable OpenCode child exports produce
+warnings. Kimi swarm linkage remains approximate when multiple calls claim the
+same item; those histories stay unattached instead of receiving a guessed link.
+
+### Reusable agent definitions
+
+Session transfer does not alter installed agent configuration. Use
+[`agentswap agents`](commands.md#agents) to convert reusable agents explicitly:
+
+```sh
+agentswap agents claude codex --dry-run
+agentswap agents codex claude --source-dir .codex/agents --target-dir ./claude-agents
+agentswap agents kimi opencode --agent-file ./my-kimi-agent.yaml
+```
+
+Claude/OpenCode Markdown frontmatter, standalone Codex TOML, legacy Codex
+`config_file` roles, Kimi YAML inheritance and prompt files, and OpenCode JSON
+agent maps are supported. Generated Kimi definitions include a root agent file
+whose `subagents` mapping selects the converted types.
+
+A provenance manifest retains source settings without activating unsupported
+hooks, credentials, or permission overrides in another harness. On a later
+conversion back to that harness, its native settings can be restored. Provider
+model names are not guessed; specify `--model` or inherit the target's model.
+Known tool names are mapped. Policies without an exact equivalent produce
+warnings; Codex falls back to a read-only sandbox for tool-restricted agents.
+`--strict` refuses any conversion with compatibility warnings before writing.
+This fallback is not an exact substitute for an arbitrary tool allowlist.
+
+The dependency-free configuration reader accepts JSON, YAML mappings and scalar
+sequences, block strings, and TOML tables, arrays and strings. It rejects YAML
+anchors/tags, YAML sequences of mappings, and TOML arrays of tables. Convert
+those constructs to supported forms first; AgentSwap never guesses their
+meaning. Existing target files are never overwritten.
+
+Native format references: [Claude subagents](https://code.claude.com/docs/en/sub-agents),
+[Codex subagents](https://developers.openai.com/codex/subagents/),
+[Kimi agents](https://github.com/MoonshotAI/kimi-cli/blob/main/docs/en/customization/agents.md),
+and [OpenCode agents](https://opencode.ai/docs/agents/).
 
 ## When the target cannot hold the whole history
 

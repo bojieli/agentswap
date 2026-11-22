@@ -58,27 +58,53 @@ func readJSONL(path string, fn func(int, json.RawMessage) error) error {
 		return err
 	}
 	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64<<10), maxJSONLRecord)
+	reader := bufio.NewReaderSize(f, 64<<10)
 	line := 0
-	for scanner.Scan() {
+	for {
+		text, readErr := reader.ReadString('\n')
+		if len(text) == 0 && readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return readErr
+		}
 		line++
-		trimmed := strings.TrimSpace(scanner.Text())
+		// ReadString includes the delimiter. Keep the same record-size limit
+		// as the old Scanner, while allowing a final record to be read without
+		// a newline (which is how a concurrently appended JSONL record appears).
+		if len(text) > maxJSONLRecord+1 {
+			return fmt.Errorf("%s: JSONL record exceeds %d MiB safety limit", path, maxJSONLRecord>>20)
+		}
+		terminated := strings.HasSuffix(text, "\n")
+		trimmed := strings.TrimSpace(text)
 		if trimmed == "" {
+			if readErr != nil {
+				if errors.Is(readErr, io.EOF) {
+					break
+				}
+				return readErr
+			}
 			continue
 		}
 		if !json.Valid([]byte(trimmed)) {
+			// Claude writes transcripts incrementally. A handoff can observe the
+			// process between writes, leaving a partial final line without its
+			// newline. Ignore only that transient tail; malformed complete lines
+			// remain hard errors so actual corruption is never hidden.
+			if errors.Is(readErr, io.EOF) && !terminated {
+				break
+			}
 			return fmt.Errorf("%s:%d: invalid JSON", path, line)
 		}
 		if err := fn(line, json.RawMessage(append([]byte(nil), trimmed...))); err != nil {
 			return fmt.Errorf("%s:%d: %w", path, line, err)
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		if errors.Is(err, bufio.ErrTooLong) || strings.Contains(err.Error(), "token too long") {
-			return fmt.Errorf("%s: JSONL record exceeds %d MiB safety limit", path, maxJSONLRecord>>20)
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return readErr
 		}
-		return err
 	}
 	return nil
 }

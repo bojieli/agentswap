@@ -43,7 +43,7 @@ type DiscoverOptions struct {
 func (m *Manager) Discover(ctx context.Context, opts DiscoverOptions) ([]Candidate, error) {
 	var agents []Agent
 	if opts.From != "" {
-		if opts.From == opts.Target {
+		if opts.From == opts.Target && opts.From != Codex {
 			return nil, errors.New("source and target agents are the same")
 		}
 		agents = []Agent{opts.From}
@@ -121,8 +121,8 @@ func (m *Manager) Teleport(ctx context.Context, source Candidate, target Agent, 
 	if reader == nil || writer == nil {
 		return Result{}, nil, errors.New("source or target adapter is unavailable")
 	}
-	if source.Agent == target {
-		return Result{}, nil, errors.New("source and target agents are the same")
+	if err := ValidateDestination(source.Agent, target, opts.WriteOptions); err != nil {
+		return Result{}, nil, err
 	}
 	history, err := reader.Read(ctx, source)
 	if err != nil {
@@ -199,4 +199,26 @@ func (m *Manager) compact(history *Session, target Agent, opts TransferOptions) 
 		}
 	}
 	return transferred, archive, report, nil
+}
+
+// ValidateDestination keeps same-harness transfers explicit and Codex-only.
+func ValidateDestination(source, target Agent, opts WriteOptions) error {
+	if target != Codex && (opts.CodexProvider != "" || opts.CodexModel != "") {
+		return errors.New("--to-provider and --to-model require a Codex target")
+	}
+	if opts.CodexProvider != "" && strings.TrimSpace(opts.CodexProvider) != opts.CodexProvider {
+		return errors.New("--to-provider must not contain surrounding whitespace")
+	}
+	if opts.CodexModel != "" && strings.TrimSpace(opts.CodexModel) != opts.CodexModel {
+		return errors.New("--to-model must not contain surrounding whitespace")
+	}
+	if source == target {
+		if target != Codex {
+			return errors.New("source and target agents are the same")
+		}
+		if opts.CodexProvider == "" {
+			return errors.New("Codex-to-Codex teleport requires --to-provider")
+		}
+	}
+	return nil
 }

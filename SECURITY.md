@@ -92,8 +92,12 @@ and your normal process environment.
   boundary would be unsafe; the resumed target is a new process with its own
   configuration and permissions.
 - Text-file attachments and edited-file context become visible conversation
-  text in targets that have no attachment representation. Binary media and
-  branched subagent transcripts are rejected rather than silently omitted.
+  text in targets that have no attachment representation. Supported binary media and
+  subagent transcripts are retained in their native target layouts. Missing
+  child histories and unsupported content produce explicit warnings.
+- Agent definition conversion never overwrites installed files. Unrepresentable
+  settings remain inert in its provenance manifest. Tool policies may require
+  an approximation across harnesses; `agents --strict` refuses those conversions.
 
 ## Not a vulnerability
 
