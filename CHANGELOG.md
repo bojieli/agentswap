@@ -4,6 +4,15 @@ Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html); until 1.0 the minor
 version moves for anything that changes behaviour.
 
+## v0.9.0 — 2026-11-22
+
+### Fixed
+
+- Named Codex logins can renew rotated tokens for the same workspace.
+  The daemon detects the renewed credentials and restores the account to service.
+- Anthropic model suspensions and explicit permission errors reach the caller
+  while the same account remains available for other permitted requests.
+
 ## v0.8.0 — 2026-10-01
 
 ### Added
