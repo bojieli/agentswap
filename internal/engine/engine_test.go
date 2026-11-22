@@ -543,3 +543,41 @@ func TestInBandFatalPassesThroughWithoutRotating(t *testing.T) {
 		t.Errorf("body = %q, want byte-for-byte %q", body, payload)
 	}
 }
+
+func TestModelSuspensionPreservesLongLivedAccount(t *testing.T) {
+	const denied = `{"error":{"type":"permission_error","message":"model: restricted is suspended for this organization until tomorrow"}}`
+	h := newHarness(t, []string{"a"}, func(_ string, w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "restricted") {
+			w.WriteHeader(http.StatusForbidden)
+			io.WriteString(w, denied)
+			return
+		}
+		io.WriteString(w, `{"ok":true}`)
+	})
+	if err := h.engine.store.UpdateAccount("a", func(a *store.Account) {
+		a.Kind, a.APIKey, a.AccessToken = store.KindOAuth, "", "fixture-only"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		model  string
+		status int
+		body   string
+	}{
+		{"restricted", 403, denied}, {"other", 200, `{"ok":true}`},
+	} {
+		res, err := run(t, h, `{"model":"`+tc.model+`"}`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(res.Response.Body)
+		res.Response.Body.Close()
+		if err != nil || res.Response.StatusCode != tc.status || string(body) != tc.body || res.Attempts != 1 {
+			t.Fatalf("unexpected response for %s: status %d, attempts %d", tc.model, res.Response.StatusCode, res.Attempts)
+		}
+		if h.engine.store.Health("a").State != store.StateAvailable {
+			t.Fatal("account lost availability")
+		}
+	}
+}

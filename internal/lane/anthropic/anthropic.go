@@ -315,7 +315,14 @@ func (*Lane) Classify(resp *http.Response, body []byte, cfg config.Retry, now ti
 			Reason: fmt.Sprintf("upstream redirect (%d)", resp.StatusCode),
 		}
 
-	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+	case resp.StatusCode == http.StatusForbidden:
+		msg := strings.ToLower(strings.TrimSpace(errorMessage(body)))
+		modelSuspended := strings.HasPrefix(msg, "model:") && strings.Contains(msg, " is suspended for this organization")
+		if etype == "permission_error" || (etype != "authentication_error" && modelSuspended) {
+			return lane.Outcome{Action: lane.ActionFatal, Reason: "upstream denied permission"}
+		}
+		fallthrough
+	case resp.StatusCode == http.StatusUnauthorized:
 		return lane.Outcome{
 			Action: lane.ActionRefreshAuth,
 			Reason: authReason(resp.StatusCode, errorMessage(body)),

@@ -55,6 +55,18 @@ func TestClassify(t *testing.T) {
 			want: lane.ActionRefreshAuth,
 		},
 		{
+			name: "model-specific plain text suspension", resp: resp(403, nil),
+			body: `model: "restricted" is suspended for this organization until tomorrow`, want: lane.ActionFatal,
+		},
+		{
+			name: "permission denied", resp: resp(403, nil),
+			body: `{"error":{"type":"permission_error","message":"access denied"}}`, want: lane.ActionFatal,
+		},
+		{
+			name: "explicit authentication failure", resp: resp(403, nil),
+			body: `{"error":{"type":"authentication_error","message":"invalid bearer"}}`, want: lane.ActionRefreshAuth,
+		},
+		{
 			name:      "429 with short retry-after is a burst limit, stays put",
 			resp:      resp(429, map[string]string{"Retry-After": "30"}),
 			want:      lane.ActionRetrySame,
