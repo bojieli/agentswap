@@ -736,3 +736,23 @@ func TestResetHealth(t *testing.T) {
 		t.Errorf("health = %+v, want a clean slate", h)
 	}
 }
+
+func TestReloadReportsRotatedCodexToken(t *testing.T) {
+	st, dir := openTemp(t)
+	seed(t, st, &Account{ID: "work", Lane: LaneOpenAI, Kind: KindOAuth, Enabled: true, ChatGPTAccountID: "fixture-account", AccessToken: "old", RefreshToken: "fixture-refresh"})
+	cli, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.UpdateAccount("work", func(a *Account) { a.AccessToken = "renewed" }); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := st.Reload()
+	if err != nil || len(changed) != 1 || changed[0] != "work" {
+		t.Fatal("reload did not report renewed identity")
+	}
+	changed, err = st.Reload()
+	if err != nil || len(changed) != 0 {
+		t.Fatal("unchanged identity reported twice")
+	}
+}

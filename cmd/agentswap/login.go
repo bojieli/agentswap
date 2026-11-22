@@ -67,9 +67,12 @@ func cmdLogin(args []string) error {
 	// This is the common case when someone signs in first and reaches for
 	// agentswap afterwards.
 	if acct, err := readCredential(lane); err == nil {
-		if existing := matchingAccount(st, acct); existing == nil {
+		if existing := matchingAccount(st, acct); canAdoptLogin(existing, acct, *id) {
 			return adopt(st, acct, lane, *id, *label, "found a new sign-in")
-		} else if *id == "" || *id == existing.ID {
+		} else if *id == existing.ID {
+			fmt.Printf("Sign in again to renew the credential for %q.\n", existing.ID)
+			printSignInHint(lane)
+		} else {
 			fmt.Printf("%s is already signed in as %q.\n\n", cliName(lane), existing.ID)
 			fmt.Printf("To pool a different account, sign out and back in as that one:\n")
 			printSignInHint(lane)
@@ -83,7 +86,7 @@ func cmdLogin(args []string) error {
 		fmt.Printf("\nWaiting… (Ctrl-C to stop)\n")
 	}
 
-	acct, err := waitForNewCredential(ctx, st, lane, *timeout)
+	acct, err := waitForNewCredential(ctx, st, lane, *id, *timeout)
 	if err != nil {
 		return err
 	}
@@ -183,9 +186,14 @@ func readCredential(lane store.LaneID) (*store.Account, error) {
 	return importer.ImportClaude()
 }
 
-// waitForNewCredential blocks until the CLI holds a credential that is not
-// already pooled.
-func waitForNewCredential(ctx context.Context, st *store.Store, lane store.LaneID, timeout time.Duration) (*store.Account, error) {
+// An explicit replacement can renew an existing identity. A second pool
+// entry must still represent a different identity.
+func canAdoptLogin(existing, candidate *store.Account, id string) bool {
+	return existing == nil || (id != "" && existing.ID == id && !existing.SameTokenMaterialAs(candidate))
+}
+
+// waitForNewCredential polls for a new identity or the requested renewal.
+func waitForNewCredential(ctx context.Context, st *store.Store, lane store.LaneID, id string, timeout time.Duration) (*store.Account, error) {
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(loginPoll)
 	defer ticker.Stop()
@@ -198,7 +206,7 @@ func waitForNewCredential(ctx context.Context, st *store.Store, lane store.LaneI
 		}
 
 		acct, err := readCredential(lane)
-		if err == nil && matchingAccount(st, acct) == nil {
+		if err == nil && canAdoptLogin(matchingAccount(st, acct), acct, id) {
 			return acct, nil
 		}
 		if time.Now().After(deadline) {

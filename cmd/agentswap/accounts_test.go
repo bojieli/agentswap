@@ -1,6 +1,12 @@
 package main
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/bojieli/agentswap/internal/store"
@@ -123,5 +129,68 @@ func TestImportNamesNewOverrideAfterKnownSubscription(t *testing.T) {
 	}
 	if found[1].ID != "anthropic-2" {
 		t.Errorf("new override id = %q, want anthropic-2", found[1].ID)
+	}
+}
+
+func TestLoginAcceptsRotatedCodexTokensOnlyForNamedIdentity(t *testing.T) {
+	a := store.Account{ID: "work", Lane: store.LaneOpenAI, Kind: store.KindOAuth, ChatGPTAccountID: "fixture-account", AccessToken: "fixture-access", RefreshToken: "fixture-refresh"}
+	next := a
+	if canAdoptLogin(&a, &next, "work") {
+		t.Fatal("unchanged sign-in accepted")
+	}
+	next.RefreshToken = "fixture-rotated"
+	if !canAdoptLogin(&a, &next, "work") {
+		t.Fatal("named renewal ignored")
+	}
+	if canAdoptLogin(&a, &next, "") || canAdoptLogin(&a, &next, "another") {
+		t.Fatal("duplicate identity accepted")
+	}
+}
+
+func TestLoginRenewsRejectedCodexAccount(t *testing.T) {
+	dir, loginDir := t.TempDir(), t.TempDir()
+	t.Setenv("AGENTSWAP_HOME", dir)
+	t.Setenv("CODEX_HOME", loginDir)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/_agentswap/reload" {
+			t.Errorf("unexpected request: %s", req.URL.Path)
+		}
+	}))
+	defer server.Close()
+	cfg := fmt.Sprintf(`{"addr":%q}`, strings.TrimPrefix(server.URL, "http://"))
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(cfg), 0600); err != nil {
+		t.Fatal(err)
+	}
+	st, _, err := openStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := &store.Account{ID: "work", Label: "Work", Kind: store.KindOAuth, Lane: store.LaneOpenAI,
+		ChatGPTAccountID: "fixture", AccessToken: "old-access", RefreshToken: "old-refresh"}
+	if err := st.Upsert(account); err != nil {
+		t.Fatal(err)
+	}
+	st.MutateHealth("work", func(h *store.Health) { h.State = store.StateInvalid })
+	if err := st.FlushHealth(); err != nil {
+		t.Fatal(err)
+	}
+	auth := `{"tokens":{"access_token":"new-access","refresh_token":"new-refresh","account_id":"fixture"}}`
+	if err := os.WriteFile(filepath.Join(loginDir, "auth.json"), []byte(auth), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdLogin([]string{"--id", "work", "--timeout", "10ms"}); err != nil {
+		t.Fatal(err)
+	}
+	updated, _, err := openStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := updated.Get("work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated.All()) != 1 || got.AccessToken != "new-access" || got.Label != "Work" ||
+		updated.Health("work").State != store.StateAvailable {
+		t.Fatal("renewed login did not restore the named account")
 	}
 }
