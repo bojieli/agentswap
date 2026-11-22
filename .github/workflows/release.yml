@@ -166,7 +166,7 @@ jobs:
           git push --quiet origin "HEAD:$branch"
 
       - name: attest release assets
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         if: github.event.repository.private == false
         with:
           subject-path: 'dist/*'
