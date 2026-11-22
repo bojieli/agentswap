@@ -516,7 +516,7 @@ func (s *Store) Reload() (changed []string, err error) {
 	}
 	for _, a := range accts {
 		old, existed := previous[a.ID]
-		if !existed || !old.SameCredentialAs(a) {
+		if !existed || !old.SameTokenMaterialAs(a) {
 			changed = append(changed, a.ID)
 		}
 	}

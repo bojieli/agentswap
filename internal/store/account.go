@@ -154,6 +154,17 @@ func (a *Account) SameCredentialAs(other *Account) bool {
 	}
 }
 
+// SameTokenMaterialAs checks whether a pooled identity still uses the same credentials.
+func (a *Account) SameTokenMaterialAs(other *Account) bool {
+	if !a.SameCredentialAs(other) {
+		return false
+	}
+	if a.Kind == KindAPIKey {
+		return true
+	}
+	return a.AccessToken == other.AccessToken && a.RefreshToken == other.RefreshToken
+}
+
 // Problem describes why this account cannot serve a request, or "" when it
 // can. It covers what a hand-edited file can get wrong about one entry, as
 // opposed to what makes the whole file ambiguous.
